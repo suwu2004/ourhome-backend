@@ -1,4 +1,5 @@
 {
+ {
   "name": "ourhome-backend",
   "version": "1.0.0",
   "main": "server.js",
@@ -6,6 +7,8 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
