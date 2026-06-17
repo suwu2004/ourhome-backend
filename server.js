@@ -176,6 +176,7 @@ app.post('/chat', async (req, res) => {
 
     if (!response.ok) {
       const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
       return res.status(500).json({ error: `API错误: ${err}` });
     }
 
