@@ -180,6 +180,7 @@ app.post('/chat', async (req, res) => {
     }
 
     const result = await response.json();
+    console.log('API返回:', JSON.stringify(result));
     const replyText = result.content?.[0]?.text || '';
 
     await supabase.from('messages').insert({
