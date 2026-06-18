@@ -232,6 +232,25 @@ app.post('/memories', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
+app.get('/export', async (req, res) => {
+  try {
+    const { data: sessions } = await supabase.from('sessions').select('*');
+    const result = [];
+    for (const s of sessions || []) {
+      const { data: msgs } = await supabase
+        .from('messages')
+        .select('role, content, created_at')
+        .eq('session_id', s.id)
+        .order('created_at', { ascending: true });
+      result.push({ session: s.name, id: s.id, messages: msgs || [] });
+    }
+    res.setHeader('Content-Disposition', 'attachment; filename="ourhome-export.json"');
+    res.setHeader('Content-Type', 'application/json');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
 });
