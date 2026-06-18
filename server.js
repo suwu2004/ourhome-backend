@@ -252,6 +252,21 @@ app.get('/export', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.post('/upload', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: '没有文件' });
+    const filePath = `${Date.now()}-${file.originalname}`;
+    const { error } = await supabase.storage
+      .from('uploads')
+      .upload(filePath, file.buffer, { contentType: file.mimetype });
+    if (error) return res.status(500).json({ error: error.message });
+    const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
+    res.json({ url: urlData.publicUrl, type: file.mimetype });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
 });
