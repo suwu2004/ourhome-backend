@@ -256,7 +256,7 @@ app.post('/chat', async (req, res) => {
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+   const response = await fetch('https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -264,13 +264,14 @@ app.post('/chat', async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-  model: selectedModel,
-  max_tokens: maxReplyTokens,
-  system: fullSystemPrompt,
-  messages,
-  temperature,
-  tools: [{ type: "web_search_20250305", name: "web_search" }],
-}),
+        model: selectedModel,
+        max_tokens: maxReplyTokens,
+        system: fullSystemPrompt,
+        messages,
+        temperature,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      }),
+    });
 
     if (!response.ok) {
       const err = await response.text();
