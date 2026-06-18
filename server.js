@@ -219,16 +219,21 @@ app.post('/letters', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
-app.listen(PORT, () => {
-  console.log(`OurHome后端运行中，端口：${PORT}`);
-});
-app.get('/letters', async (req, res) => {
-  const { category } = req.query;
-  let query = supabase.from('letters').select('*').order('created_at', { ascending: true });
-  if (category) query = query.eq('category', category);
-  const { data, error } = await query;
+app.post('/memories', async (req, res) => {
+  const { summary } = req.body;
+  if (!summary) {
+    return res.status(400).json({ error: '缺少summary' });
+  }
+  const { data, error } = await supabase
+    .from('memories')
+    .insert({ summary, session_id: 'global' })
+    .select()
+    .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+app.listen(PORT, () => {
+  console.log(`OurHome后端运行中，端口：${PORT}`);
 });
 
 app.post('/letters', async (req, res) => {
