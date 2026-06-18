@@ -27,15 +27,112 @@ app.get('/sessions', async (req, res) => {
   res.json(data);
 });
 
-app.post('/sessions', async (req, res) => {
-  const { name } = req.body;
-  const { data, error } = await supabase
-    .from('sessions')
-    .insert({ name: name || '新对话' })
-    .select()
-    .single();
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+app.post('/chat', async (req, res) => {
+  const { session_id, message, model, attachment_url } = req.body;
+  if (!session_id || !message) {
+    return res.status(400).json({ error: '缺少session_id或message' });
+  }
+
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxContextRounds = settings?.max_context_rounds || 20;
+
+    await supabase.from('messages').insert({
+      session_id,
+      role: 'user',
+      content: message,
+      attachment_url: attachment_url || null,
+    });
+
+    await supabase
+      .from('sessions')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', session_id);
+
+    const { data: history } = await supabase
+      .from('messages')
+      .select('role, content, attachment_url')
+      .eq('session_id', session_id)
+      .eq('visible', true)
+      .order('created_at', { ascending: true });
+
+    const { data: memories } = await supabase
+      .from('memories')
+      .select('summary')
+      .order('timestamp', { ascending: false })
+      .limit(3);
+
+    const memorySummary = memories?.map(m => m.summary).join('\n') || '';
+    const recentHistory = history?.slice(-maxContextRounds * 2) || [];
+
+    const messages = recentHistory.map(m => {
+      const role = m.role === 'user' ? 'user' : 'assistant';
+      if (m.attachment_url) {
+        return {
+          role,
+          content: [
+            { type: 'image', source: { type: 'url', url: m.attachment_url } },
+            { type: 'text', text: m.content || '' },
+          ],
+        };
+      }
+      return { role, content: m.content };
+    });
+
+    let fullSystemPrompt = systemPrompt;
+    if (memorySummary) {
+      fullSystemPrompt += `\n\n【之前的记忆】\n${memorySummary}`;
+    }
+
+    const selectedModel = model || 'claude-sonnet-4-6';
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: maxReplyTokens,
+        system: fullSystemPrompt,
+        messages,
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+
+    const result = await response.json();
+    console.log('API返回:', JSON.stringify(result));
+    const replyText = result.content?.[0]?.text || '';
+
+    await supabase.from('messages').insert({
+      session_id,
+      role: 'assistant',
+      content: replyText,
+    });
+
+    res.json({ reply: replyText });
+
+  } catch (err) {
+    console.error('对话错误:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.patch('/sessions/:id', async (req, res) => {
