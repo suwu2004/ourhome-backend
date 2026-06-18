@@ -264,13 +264,13 @@ app.post('/chat', async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: selectedModel,
-        max_tokens: maxReplyTokens,
-        system: fullSystemPrompt,
-        messages,
-        temperature,
-      }),
-    });
+  model: selectedModel,
+  max_tokens: maxReplyTokens,
+  system: fullSystemPrompt,
+  messages,
+  temperature,
+  tools: [{ type: "web_search_20250305", name: "web_search" }],
+}),
 
     if (!response.ok) {
       const err = await response.text();
@@ -280,7 +280,10 @@ app.post('/chat', async (req, res) => {
 
     const result = await response.json();
     console.log('API返回:', JSON.stringify(result));
-    const replyText = result.content?.[0]?.text || '';
+    const replyText = (result.content || [])
+  .filter(block => block.type === 'text')
+  .map(block => block.text)
+  .join('\n') || '';
 
     await supabase.from('messages').insert({
       session_id,
