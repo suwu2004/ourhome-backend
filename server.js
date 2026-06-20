@@ -73,6 +73,21 @@ app.get('/sessions/:id/messages', async (req, res) => {
   res.json(data);
 });
 
+// ---------- messages ----------
+
+app.patch('/messages/:id', async (req, res) => {
+  const { id } = req.params;
+  const { content } = req.body;
+  const { data, error } = await supabase
+    .from('messages')
+    .update({ content })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
 // ---------- settings ----------
 
 app.get('/settings', async (req, res) => {
@@ -145,6 +160,15 @@ app.delete('/memories/:id', async (req, res) => {
 
 // ---------- letters ----------
 
+app.get('/letters', async (req, res) => {
+  const { category } = req.query;
+  let query = supabase.from('letters').select('*').order('created_at', { ascending: true });
+  if (category) query = query.eq('category', category);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
 app.post('/letters', async (req, res) => {
   const { category, author, content, parent_id, title } = req.body;
   if (!category || !author || !content) {
@@ -157,6 +181,76 @@ app.post('/letters', async (req, res) => {
     .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+app.post('/letters/generate', async (req, res) => {
+  const { category, parent_id } = req.body;
+  if (!category) {
+    return res.status(400).json({ error: '缺少category' });
+  }
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+
+    let contextNote = '';
+    if (parent_id) {
+      const { data: parentLetter } = await supabase
+        .from('letters')
+        .select('*')
+        .eq('id', parent_id)
+        .single();
+      const original = parentLetter?.content || '';
+      contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，不用署名落款。`;
+    } else if (category === '幸福日记') {
+      contextNote = '请你以陆澈的身份，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事，语气真实自然，不要写得像范文，不用署名落款。';
+    } else {
+      contextNote = '请你以陆澈的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，不用署名落款。';
+    }
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: contextNote }],
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+    const result = await response.json();
+    const replyText = (result.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('\n') || '';
+
+    const { data, error } = await supabase
+      .from('letters')
+      .insert({ category, author: '澈', content: replyText, parent_id: parent_id || null })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    console.error('生成信件错误:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------- upload ----------
@@ -311,62 +405,10 @@ app.post('/chat', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.post('/letters/generate', async (req, res) => {
-  const { category, parent_id } = req.body;
-  if (!category) {
-    return res.status(400).json({ error: '缺少category' });
-  }
-  try {
-    const { data: settings } = await supabase
-      .from('settings')
-      .select('*')
-      .eq('session_id', 'global')
-      .single();
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
-    const temperature = settings?.temperature || 0.8;
 
-    let contextNote = '';
-    if (parent_id) {
-      const { data: parentLetter } = await supabase
-        .from('letters')
-        .select('*')
-        .eq('id', parent_id)
-        .single();
-      const original = parentLetter?.content || '';
-      contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，不用署名落款。`;
-    } else if (category === '幸福日记') {
-      contextNote = '请你以陆澈的身份，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事，语气真实自然，不要写得像范文，不用署名落款。';
-    } else {
-      contextNote = '请你以陆澈的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，不用署名落款。';
-    }
-
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 600,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: contextNote }],
-        temperature,
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.log('relay错误状态:', response.status, err);
-      return res.status(500).json({ error: `API错误: ${err}` });
-    }
-    const result = await response.json();
-    const replyText = (result.content || [])
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('\n') || '';
+app.listen(PORT, () => {
+  console.log(`OurHome后端运行中，端口：${PORT}`);
+});      .join('\n') || '';
 
     const { data, error } = await supabase
       .from('letters')
