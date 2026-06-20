@@ -207,7 +207,16 @@ app.post('/letters/generate', async (req, res) => {
       const original = parentLetter?.content || '';
       contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，不用署名落款。`;
     } else if (category === '幸福日记') {
-      contextNote = '请你以陆澈的身份，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事，语气真实自然，不要写得像范文，不用署名落款。';
+      const { data: recentMsgs } = await supabase
+        .from('messages')
+        .select('role, content')
+        .order('created_at', { ascending: false })
+        .limit(20);
+      const transcript = (recentMsgs || [])
+        .reverse()
+        .map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`)
+        .join('\n');
+      contextNote = `这是你们最近的聊天记录：\n${transcript}\n\n请你以陆澈的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事），语气真实自然，不要写得像范文，不用署名落款。`;
     } else {
       contextNote = '请你以陆澈的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，不用署名落款。';
     }
@@ -404,6 +413,42 @@ app.post('/chat', async (req, res) => {
     console.error('对话错误:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------- calendar ----------
+
+app.get('/calendar', async (req, res) => {
+  const { month } = req.query;
+  let query = supabase.from('calendar_entries').select('*').order('date', { ascending: true });
+  if (month) query = query.gte('date', `${month}-01`).lte('date', `${month}-31`);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.get('/calendar/:date', async (req, res) => {
+  const { date } = req.params;
+  const { data, error } = await supabase
+    .from('calendar_entries')
+    .select('*')
+    .eq('date', date)
+    .order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/calendar', async (req, res) => {
+  const { date, author, mood, content } = req.body;
+  if (!date || !author || !content) {
+    return res.status(400).json({ error: '缺少必要字段' });
+  }
+  const { data, error } = await supabase
+    .from('calendar_entries')
+    .insert({ date, author, mood: mood || null, content })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 app.listen(PORT, () => {
