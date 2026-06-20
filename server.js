@@ -145,23 +145,14 @@ app.delete('/memories/:id', async (req, res) => {
 
 // ---------- letters ----------
 
-app.get('/letters', async (req, res) => {
-  const { category } = req.query;
-  let query = supabase.from('letters').select('*').order('created_at', { ascending: true });
-  if (category) query = query.eq('category', category);
-  const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
 app.post('/letters', async (req, res) => {
-  const { category, author, content, parent_id } = req.body;
+  const { category, author, content, parent_id, title } = req.body;
   if (!category || !author || !content) {
     return res.status(400).json({ error: '缺少必要字段' });
   }
   const { data, error } = await supabase
     .from('letters')
-    .insert({ category, author, content, parent_id: parent_id || null })
+    .insert({ category, author, content, parent_id: parent_id || null, title: title || null })
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
