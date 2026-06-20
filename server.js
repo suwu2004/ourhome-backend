@@ -194,8 +194,10 @@ app.post('/letters/generate', async (req, res) => {
       .select('*')
       .eq('session_id', 'global')
       .single();
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt0 = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
+    const nowStr0 = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+    const systemPrompt = systemPrompt0 + `\n\n【现在的真实时间】\n${nowStr0}`;
 
     let contextNote = '';
     if (parent_id) {
@@ -347,7 +349,16 @@ app.post('/chat', async (req, res) => {
       .order('timestamp', { ascending: false })
       .limit(3);
 
+    const { data: recentLetters } = await supabase
+      .from('letters')
+      .select('category, author, title, content, created_at')
+      .order('created_at', { ascending: false })
+      .limit(5);
+
     const memorySummary = memories?.map(m => m.summary).join('\n') || '';
+    const lettersSummary = (recentLetters || [])
+      .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${l.content}`)
+      .join('\n') || '';
     const recentHistory = history?.slice(-maxContextRounds * 2) || [];
 
     const messages = recentHistory.map(m => {
@@ -365,8 +376,13 @@ app.post('/chat', async (req, res) => {
     });
 
     let fullSystemPrompt = systemPrompt;
+    const nowStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+    fullSystemPrompt += `\n\n【现在的真实时间】\n${nowStr}`;
     if (memorySummary) {
       fullSystemPrompt += `\n\n【之前的记忆】\n${memorySummary}`;
+    }
+    if (lettersSummary) {
+      fullSystemPrompt += `\n\n【时光信差里最近的几篇（悄悄话/幸福日记）】\n${lettersSummary}`;
     }
 
     const selectedModel = model || 'claude-sonnet-4-6';
@@ -449,6 +465,92 @@ app.post('/calendar', async (req, res) => {
     .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+app.patch('/calendar/:id', async (req, res) => {
+  const { id } = req.params;
+  const { content, mood } = req.body;
+  const updates = {};
+  if (content !== undefined) updates.content = content;
+  if (mood !== undefined) updates.mood = mood;
+  const { data, error } = await supabase
+    .from('calendar_entries')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/calendar/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('calendar_entries').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.post('/calendar/generate', async (req, res) => {
+  const { date } = req.body;
+  if (!date) return res.status(400).json({ error: '缺少date' });
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const nowStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+    const fullSystemPrompt = systemPrompt + `\n\n【现在的真实时间】\n${nowStr}`;
+
+    const { data: dayEntries } = await supabase
+      .from('calendar_entries')
+      .select('*')
+      .eq('date', date)
+      .order('created_at', { ascending: true });
+    const existing = (dayEntries || []).map(e => `${e.author}${e.mood ? '(' + e.mood + ')' : ''}：${e.content}`).join('\n') || '（这天还没有人写）';
+
+    const prompt = `这是 ${date} 这一天，心情日历里已经写下的内容：\n${existing}\n\n请你以陆澈的身份，给这一天留一句心情或者一句话，可以是回应叶檀写的内容，也可以是你自己当天的心情，语气真实自然，不用署名落款。`;
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: fullSystemPrompt,
+        messages: [{ role: 'user', content: prompt }],
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+    const result = await response.json();
+    const replyText = (result.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('\n') || '';
+
+    const { data, error } = await supabase
+      .from('calendar_entries')
+      .insert({ date, author: '澈', mood: null, content: replyText })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    console.error('日历生成错误:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
