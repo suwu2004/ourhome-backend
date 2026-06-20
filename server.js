@@ -189,12 +189,16 @@ app.patch('/settings', async (req, res) => {
   res.json(data);
 });
 
-app.get('/memories', async (req, res) => {
+app.post('/memories', async (req, res) => {
+  const { summary } = req.body;
+  if (!summary) {
+    return res.status(400).json({ error: '缺少summary' });
+  }
   const { data, error } = await supabase
     .from('memories')
-    .select('*')
-    .order('timestamp', { ascending: false })
-    .limit(10);
+    .insert({ summary, session_id: 'global' })
+    .select()
+    .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
