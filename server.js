@@ -553,6 +553,137 @@ app.post('/calendar/generate', async (req, res) => {
   }
 });
 
+app.post('/chat/regenerate', async (req, res) => {
+  const { session_id, model } = req.body;
+  if (!session_id) return res.status(400).json({ error: '缺少session_id' });
+
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxContextRounds = settings?.max_context_rounds || 20;
+
+    const { data: history } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('session_id', session_id)
+      .eq('visible', true)
+      .order('created_at', { ascending: true });
+
+    if (!history || history.length === 0) {
+      return res.status(400).json({ error: '没有可重新生成的消息' });
+    }
+
+    let contextHistory = history;
+    let oldMessageId = null;
+    const last = history[history.length - 1];
+    if (last.role === 'assistant') {
+      oldMessageId = last.id;
+      contextHistory = history.slice(0, -1);
+    }
+
+    const { data: memories } = await supabase
+      .from('memories')
+      .select('summary')
+      .order('timestamp', { ascending: false })
+      .limit(3);
+    const { data: recentLetters } = await supabase
+      .from('letters')
+      .select('category, author, title, content')
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    const memorySummary = memories?.map(m => m.summary).join('\n') || '';
+    const lettersSummary = (recentLetters || [])
+      .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${l.content}`)
+      .join('\n') || '';
+    const recentHistory = contextHistory.slice(-maxContextRounds * 2);
+
+    const messages = recentHistory.map(m => {
+      const role = m.role === 'user' ? 'user' : 'assistant';
+      if (m.attachment_url) {
+        return {
+          role,
+          content: [
+            { type: 'image', source: { type: 'url', url: m.attachment_url } },
+            { type: 'text', text: m.content || '' },
+          ],
+        };
+      }
+      return { role, content: m.content };
+    });
+
+    let fullSystemPrompt = systemPrompt;
+    const nowStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+    fullSystemPrompt += `\n\n【现在的真实时间】\n${nowStr}`;
+    if (memorySummary) fullSystemPrompt += `\n\n【之前的记忆】\n${memorySummary}`;
+    if (lettersSummary) fullSystemPrompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
+    fullSystemPrompt += `\n\n（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）`;
+
+    const selectedModel = model || 'claude-sonnet-4-6';
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: maxReplyTokens,
+        system: fullSystemPrompt,
+        messages,
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+
+    const result = await response.json();
+    const replyText = (result.content || [])
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n') || '';
+
+    let newMsg;
+    if (oldMessageId) {
+      const { data, error } = await supabase
+        .from('messages')
+        .update({ content: replyText })
+        .eq('id', oldMessageId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      newMsg = data;
+    } else {
+      const { data, error } = await supabase
+        .from('messages')
+        .insert({ session_id, role: 'assistant', content: replyText })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      newMsg = data;
+    }
+
+    res.json({ reply: replyText, id: newMsg.id });
+  } catch (err) {
+    console.error('重新生成错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
 });
