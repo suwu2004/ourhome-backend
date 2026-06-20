@@ -263,13 +263,13 @@ app.post('/chat', async (req, res) => {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: selectedModel,
-        max_tokens: maxReplyTokens,
-        system: fullSystemPrompt,
-        messages,
-        temperature,
-    });
+     body: JSON.stringify({
+  model: selectedModel,
+  max_tokens: maxReplyTokens,
+  system: fullSystemPrompt,
+  messages,
+  temperature,
+}),
 
     if (!response.ok) {
       const err = await response.text();
