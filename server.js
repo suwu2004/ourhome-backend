@@ -408,6 +408,252 @@ app.post('/chat', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
+});  let query = supabase.from('letters').select('*').order('created_at', { ascending: true });
+  if (category) query = query.eq('category', category);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/letters', async (req, res) => {
+  const { category, author, content, parent_id, title } = req.body;
+  if (!category || !author || !content) {
+    return res.status(400).json({ error: '缺少必要字段' });
+  }
+  const { data, error } = await supabase
+    .from('letters')
+    .insert({ category, author, content, parent_id: parent_id || null, title: title || null })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/letters/generate', async (req, res) => {
+  const { category, parent_id } = req.body;
+  if (!category) {
+    return res.status(400).json({ error: '缺少category' });
+  }
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+
+    let contextNote = '';
+    if (parent_id) {
+      const { data: parentLetter } = await supabase
+        .from('letters')
+        .select('*')
+        .eq('id', parent_id)
+        .single();
+      const original = parentLetter?.content || '';
+      contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，不用署名落款。`;
+    } else if (category === '幸福日记') {
+      contextNote = '请你以陆澈的身份，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事，语气真实自然，不要写得像范文，不用署名落款。';
+    } else {
+      contextNote = '请你以陆澈的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，不用署名落款。';
+    }
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: contextNote }],
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+    const result = await response.json();
+    const replyText = (result.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('\n') || '';
+
+    const { data, error } = await supabase
+      .from('letters')
+      .insert({ category, author: '澈', content: replyText, parent_id: parent_id || null })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    console.error('生成信件错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- upload ----------
+
+app.post('/upload', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: '没有文件' });
+    const filePath = `${Date.now()}-${file.originalname}`;
+    const { error } = await supabase.storage
+      .from('uploads')
+      .upload(filePath, file.buffer, { contentType: file.mimetype });
+    if (error) return res.status(500).json({ error: error.message });
+    const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
+    res.json({ url: urlData.publicUrl, type: file.mimetype });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- export ----------
+
+app.get('/export', async (req, res) => {
+  try {
+    const { data: sessions } = await supabase.from('sessions').select('*');
+    const result = [];
+    for (const s of sessions || []) {
+      const { data: msgs } = await supabase
+        .from('messages')
+        .select('role, content, created_at')
+        .eq('session_id', s.id)
+        .order('created_at', { ascending: true });
+      result.push({ session: s.name, id: s.id, messages: msgs || [] });
+    }
+    res.setHeader('Content-Disposition', 'attachment; filename="ourhome-export.json"');
+    res.setHeader('Content-Type', 'application/json');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- chat ----------
+
+app.post('/chat', async (req, res) => {
+  const { session_id, message, model, attachment_url } = req.body;
+  if (!session_id || !message) {
+    return res.status(400).json({ error: '缺少session_id或message' });
+  }
+
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxContextRounds = settings?.max_context_rounds || 20;
+
+    await supabase.from('messages').insert({
+      session_id,
+      role: 'user',
+      content: message,
+      attachment_url: attachment_url || null,
+    });
+
+    await supabase
+      .from('sessions')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', session_id);
+
+    const { data: history } = await supabase
+      .from('messages')
+      .select('role, content, attachment_url')
+      .eq('session_id', session_id)
+      .eq('visible', true)
+      .order('created_at', { ascending: true });
+
+    const { data: memories } = await supabase
+      .from('memories')
+      .select('summary')
+      .order('timestamp', { ascending: false })
+      .limit(3);
+
+    const memorySummary = memories?.map(m => m.summary).join('\n') || '';
+    const recentHistory = history?.slice(-maxContextRounds * 2) || [];
+
+    const messages = recentHistory.map(m => {
+      const role = m.role === 'user' ? 'user' : 'assistant';
+      if (m.attachment_url) {
+        return {
+          role,
+          content: [
+            { type: 'image', source: { type: 'url', url: m.attachment_url } },
+            { type: 'text', text: m.content || '' },
+          ],
+        };
+      }
+      return { role, content: m.content };
+    });
+
+    let fullSystemPrompt = systemPrompt;
+    if (memorySummary) {
+      fullSystemPrompt += `\n\n【之前的记忆】\n${memorySummary}`;
+    }
+
+    const selectedModel = model || 'claude-sonnet-4-6';
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: maxReplyTokens,
+        system: fullSystemPrompt,
+        messages,
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+
+    const result = await response.json();
+    console.log('API返回:', JSON.stringify(result));
+    const replyText = (result.content || [])
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n') || '';
+
+    await supabase.from('messages').insert({
+      session_id,
+      role: 'assistant',
+      content: replyText,
+    });
+
+    res.json({ reply: replyText });
+
+  } catch (err) {
+    console.error('对话错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`OurHome后端运行中，端口：${PORT}`);
 });      .join('\n') || '';
 
     const { data, error } = await supabase
