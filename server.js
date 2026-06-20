@@ -204,7 +204,7 @@ app.post('/memories', async (req, res) => {
 });
 
 app.post('/chat', async (req, res) => {
-  const { session_id, message, model } = req.body;
+  const { session_id, message, model, attachment_url } = req.body;
   if (!session_id || !message) {
     return res.status(400).json({ error: '缺少session_id或message' });
   }
@@ -216,7 +216,7 @@ app.post('/chat', async (req, res) => {
       .eq('session_id', 'global')
       .single();
 
-    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
@@ -225,6 +225,7 @@ app.post('/chat', async (req, res) => {
       session_id,
       role: 'user',
       content: message,
+      attachment_url: attachment_url || null,
     });
 
     await supabase
@@ -234,7 +235,7 @@ app.post('/chat', async (req, res) => {
 
     const { data: history } = await supabase
       .from('messages')
-      .select('role, content')
+      .select('role, content, attachment_url')
       .eq('session_id', session_id)
       .eq('visible', true)
       .order('created_at', { ascending: true });
@@ -247,10 +248,20 @@ app.post('/chat', async (req, res) => {
 
     const memorySummary = memories?.map(m => m.summary).join('\n') || '';
     const recentHistory = history?.slice(-maxContextRounds * 2) || [];
-    const messages = recentHistory.map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content,
-    }));
+
+    const messages = recentHistory.map(m => {
+      const role = m.role === 'user' ? 'user' : 'assistant';
+      if (m.attachment_url) {
+        return {
+          role,
+          content: [
+            { type: 'image', source: { type: 'url', url: m.attachment_url } },
+            { type: 'text', text: m.content || '' },
+          ],
+        };
+      }
+      return { role, content: m.content };
+    });
 
     let fullSystemPrompt = systemPrompt;
     if (memorySummary) {
@@ -260,20 +271,21 @@ app.post('/chat', async (req, res) => {
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
-   const response = await fetch('https://api.dzzi.ai/v1/messages', {
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-     body: JSON.stringify({
-  model: selectedModel,
-  max_tokens: maxReplyTokens,
-  system: fullSystemPrompt,
-  messages,
-  temperature,
-}),
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: maxReplyTokens,
+        system: fullSystemPrompt,
+        messages,
+        temperature,
+      }),
+    });
 
     if (!response.ok) {
       const err = await response.text();
@@ -284,9 +296,9 @@ app.post('/chat', async (req, res) => {
     const result = await response.json();
     console.log('API返回:', JSON.stringify(result));
     const replyText = (result.content || [])
-  .filter(block => block.type === 'text')
-  .map(block => block.text)
-  .join('\n') || '';
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n') || '';
 
     await supabase.from('messages').insert({
       session_id,
