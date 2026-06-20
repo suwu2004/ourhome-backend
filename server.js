@@ -366,6 +366,25 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.delete('/memories/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('memories').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.patch('/memories/:id', async (req, res) => {
+  const { id } = req.params;
+  const { summary } = req.body;
+  const { data, error } = await supabase
+    .from('memories')
+    .update({ summary })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
 });
