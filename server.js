@@ -40,7 +40,7 @@ app.post('/chat', async (req, res) => {
       .eq('session_id', 'global')
       .single();
 
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
@@ -212,7 +212,7 @@ app.post('/chat', async (req, res) => {
       .eq('session_id', 'global')
       .single();
 
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
