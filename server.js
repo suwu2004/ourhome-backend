@@ -408,46 +408,7 @@ app.post('/chat', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
-});  let query = supabase.from('letters').select('*').order('created_at', { ascending: true });
-  if (category) query = query.eq('category', category);
-  const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
-app.post('/letters', async (req, res) => {
-  const { category, author, content, parent_id, title } = req.body;
-  if (!category || !author || !content) {
-    return res.status(400).json({ error: '缺少必要字段' });
-  }
-  const { data, error } = await supabase
-    .from('letters')
-    .insert({ category, author, content, parent_id: parent_id || null, title: title || null })
-    .select()
-    .single();
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
-app.post('/letters/generate', async (req, res) => {
-  const { category, parent_id } = req.body;
-  if (!category) {
-    return res.status(400).json({ error: '缺少category' });
-  }
-  try {
-    const { data: settings } = await supabase
-      .from('settings')
-      .select('*')
-      .eq('session_id', 'global')
-      .single();
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
-    const temperature = settings?.temperature || 0.8;
-
-    let contextNote = '';
-    if (parent_id) {
-      const { data: parentLetter } = await supabase
-        .from('letters')
-        .select('*')
+});        .select('*')
         .eq('id', parent_id)
         .single();
       const original = parentLetter?.content || '';
