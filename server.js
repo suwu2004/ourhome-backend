@@ -170,13 +170,13 @@ app.get('/letters', async (req, res) => {
 });
 
 app.post('/letters', async (req, res) => {
-  const { category, author, content, parent_id, title } = req.body;
+  const { category, author, content, parent_id, title, paper_style } = req.body;
   if (!category || !author || !content) {
     return res.status(400).json({ error: '缺少必要字段' });
   }
   const { data, error } = await supabase
     .from('letters')
-    .insert({ category, author, content, parent_id: parent_id || null, title: title || null })
+    .insert({ category, author, content, parent_id: parent_id || null, title: title || null, paper_style: paper_style || null })
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
@@ -242,7 +242,7 @@ app.post('/letters/generate', async (req, res) => {
 
     const { data, error } = await supabase
       .from('letters')
-      .insert({ category, author: '澈', content: replyText, parent_id: parent_id || null })
+      .insert({ category, author: '澈', content: replyText, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
