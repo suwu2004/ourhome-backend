@@ -269,8 +269,6 @@ app.post('/chat', async (req, res) => {
         system: fullSystemPrompt,
         messages,
         temperature,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
     });
 
     if (!response.ok) {
