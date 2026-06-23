@@ -388,6 +388,7 @@ app.post('/chat', async (req, res) => {
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
+    const thinkingBudget = 1500;
     const response = await fetch('https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
@@ -397,10 +398,10 @@ app.post('/chat', async (req, res) => {
       },
       body: JSON.stringify({
         model: selectedModel,
-        max_tokens: maxReplyTokens,
+        max_tokens: Math.max(maxReplyTokens + thinkingBudget, 2000),
         system: fullSystemPrompt,
         messages,
-        temperature,
+        thinking: { type: "enabled", budget_tokens: thinkingBudget },
       }),
     });
 
@@ -412,6 +413,10 @@ app.post('/chat', async (req, res) => {
 
     const result = await response.json();
     console.log('API返回:', JSON.stringify(result));
+    const thinkingText = (result.content || [])
+      .filter(block => block.type === 'thinking')
+      .map(block => block.thinking)
+      .join('\n') || '';
     const replyText = (result.content || [])
       .filter(block => block.type === 'text')
       .map(block => block.text)
@@ -421,9 +426,10 @@ app.post('/chat', async (req, res) => {
       session_id,
       role: 'assistant',
       content: replyText,
+      reasoning_content: thinkingText || null,
     });
 
-    res.json({ reply: replyText });
+    res.json({ reply: replyText, thinking: thinkingText });
 
   } catch (err) {
     console.error('对话错误:', err);
@@ -638,10 +644,10 @@ app.post('/chat/regenerate', async (req, res) => {
       },
       body: JSON.stringify({
         model: selectedModel,
-        max_tokens: maxReplyTokens,
+        max_tokens: Math.max(maxReplyTokens + 1500, 2000),
         system: fullSystemPrompt,
         messages,
-        temperature,
+        thinking: { type: "enabled", budget_tokens: 1500 },
       }),
     });
 
@@ -652,6 +658,10 @@ app.post('/chat/regenerate', async (req, res) => {
     }
 
     const result = await response.json();
+    const thinkingText = (result.content || [])
+      .filter(block => block.type === 'thinking')
+      .map(block => block.thinking)
+      .join('\n') || '';
     const replyText = (result.content || [])
       .filter(block => block.type === 'text')
       .map(block => block.text)
@@ -661,7 +671,7 @@ app.post('/chat/regenerate', async (req, res) => {
     if (oldMessageId) {
       const { data, error } = await supabase
         .from('messages')
-        .update({ content: replyText })
+        .update({ content: replyText, reasoning_content: thinkingText || null })
         .eq('id', oldMessageId)
         .select()
         .single();
@@ -670,18 +680,26 @@ app.post('/chat/regenerate', async (req, res) => {
     } else {
       const { data, error } = await supabase
         .from('messages')
-        .insert({ session_id, role: 'assistant', content: replyText })
+        .insert({ session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null })
         .select()
         .single();
       if (error) return res.status(500).json({ error: error.message });
       newMsg = data;
     }
 
-    res.json({ reply: replyText, id: newMsg.id });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id });
   } catch (err) {
     console.error('重新生成错误:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+app.delete('/letters/:id', async (req, res) => {
+  const { id } = req.params;
+  await supabase.from('letters').delete().eq('parent_id', id);
+  const { error } = await supabase.from('letters').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
 app.listen(PORT, () => {
