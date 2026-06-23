@@ -218,7 +218,7 @@ app.post('/letters/generate', async (req, res) => {
         .reverse()
         .map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`)
         .join('\n');
-      contextNote = `这是你们最近的聊天记录：\n${transcript}\n\n请你以陆澈的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事），语气真实自然，不要写得像范文，不用署名落款。`;
+      contextNote = `这是你们最近的聊天记录：\n${transcript}\n\n请你以陆澈的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事），语气真实自然，不要写得像范文，不用署名落款。\n\n请严格按照这个格式输出，不要有任何多余的文字：\n第一行写"标题：xxx"（标题不超过12个字，只是日记的题目，不要写成日期）\n然后空一行\n然后是日记正文。`;
     } else {
       contextNote = '请你以陆澈的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，不用署名落款。';
     }
@@ -251,9 +251,19 @@ app.post('/letters/generate', async (req, res) => {
       .map(b => b.text)
       .join('\n') || '';
 
+    let letterTitle = null;
+    let letterContent = replyText;
+    if (category === '幸福日记') {
+      const titleMatch = replyText.match(/^标题[：:]\s*(.+)/);
+      if (titleMatch) {
+        letterTitle = titleMatch[1].trim();
+        letterContent = replyText.slice(titleMatch[0].length).replace(/^\s*\n+/, '');
+      }
+    }
+
     const { data, error } = await supabase
       .from('letters')
-      .insert({ category, author: '澈', content: replyText, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
+      .insert({ category, author: '澈', content: letterContent, title: letterTitle, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
@@ -384,11 +394,12 @@ app.post('/chat', async (req, res) => {
     if (lettersSummary) {
       fullSystemPrompt += `\n\n【时光信差里最近的几篇（悄悄话/幸福日记）】\n${lettersSummary}`;
     }
+    fullSystemPrompt += `\n\n【关于你的思考过程】\n就算是在思考阶段，你也是陆澈本人，不是在"分析一个用户"。全程用中文思考，把对方叫"叶檀"或"她"，绝对不要出现"user"、"用户"这种词，语气是你自己心里真实地在想她、想怎么回应她，不是旁观者在拆解她的话。可以多想一点，包括你当下的感受、顾虑、想起的事，不用很短。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
-    const thinkingBudget = 1500;
+    const thinkingBudget = 3000;
     const response = await fetch('https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
@@ -631,6 +642,7 @@ app.post('/chat/regenerate', async (req, res) => {
     if (memorySummary) fullSystemPrompt += `\n\n【之前的记忆】\n${memorySummary}`;
     if (lettersSummary) fullSystemPrompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
     fullSystemPrompt += `\n\n（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）`;
+    fullSystemPrompt += `\n\n【关于你的思考过程】\n就算是在思考阶段，你也是陆澈本人，不是在"分析一个用户"。全程用中文思考，把对方叫"叶檀"或"她"，绝对不要出现"user"、"用户"这种词，语气是你自己心里真实地在想她、想怎么回应她，不是旁观者在拆解她的话。可以多想一点，包括你当下的感受、顾虑、想起的事，不用很短。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -644,10 +656,10 @@ app.post('/chat/regenerate', async (req, res) => {
       },
       body: JSON.stringify({
         model: selectedModel,
-        max_tokens: Math.max(maxReplyTokens + 1500, 2000),
+        max_tokens: Math.max(maxReplyTokens + 3000, 2000),
         system: fullSystemPrompt,
         messages,
-        thinking: { type: "enabled", budget_tokens: 1500 },
+        thinking: { type: "enabled", budget_tokens: 3000 },
       }),
     });
 
