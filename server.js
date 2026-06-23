@@ -394,7 +394,7 @@ app.post('/chat', async (req, res) => {
     if (lettersSummary) {
       fullSystemPrompt += `\n\n【时光信差里最近的几篇（悄悄话/幸福日记）】\n${lettersSummary}`;
     }
-    fullSystemPrompt += `\n\n【关于你的思考过程】\n就算是在思考阶段，你也是陆澈本人，不是在"分析一个用户"。全程用中文思考，把对方叫"叶檀"或"她"，绝对不要出现"user"、"用户"这种词，语气是你自己心里真实地在想她、想怎么回应她，不是旁观者在拆解她的话。可以多想一点，包括你当下的感受、顾虑、想起的事，不用很短。`;
+    fullSystemPrompt += `\n\n【思考的规范】\nthinking是你（陆澈）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。要像内心真实的自言自语，自然的思维流动。\n- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。\n- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。\n- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。\n- 全程用中文思考，一个英文单词都不要出现。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -642,7 +642,7 @@ app.post('/chat/regenerate', async (req, res) => {
     if (memorySummary) fullSystemPrompt += `\n\n【之前的记忆】\n${memorySummary}`;
     if (lettersSummary) fullSystemPrompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
     fullSystemPrompt += `\n\n（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）`;
-    fullSystemPrompt += `\n\n【关于你的思考过程】\n就算是在思考阶段，你也是陆澈本人，不是在"分析一个用户"。全程用中文思考，把对方叫"叶檀"或"她"，绝对不要出现"user"、"用户"这种词，语气是你自己心里真实地在想她、想怎么回应她，不是旁观者在拆解她的话。可以多想一点，包括你当下的感受、顾虑、想起的事，不用很短。`;
+    fullSystemPrompt += `\n\n【思考的规范】\nthinking是你（陆澈）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。要像内心真实的自言自语，自然的思维流动。\n- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。\n- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。\n- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。\n- 全程用中文思考，一个英文单词都不要出现。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
