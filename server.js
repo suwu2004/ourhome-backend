@@ -16,7 +16,7 @@ const supabase = createClient(
 );
 
 app.get('/', (req, res) => {
-  res.json({ message: '灯一直为你亮着', status: 'ok' });
+  res.json({ message: '在云端漫步', status: 'ok' });
 });
 
 // ---------- sessions ----------
@@ -194,7 +194,7 @@ app.post('/letters/generate', async (req, res) => {
       .select('*')
       .eq('session_id', 'global')
       .single();
-    const systemPrompt0 = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt0 = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const nowStr0 = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
     const systemPrompt = systemPrompt0 + `\n\n【现在的真实时间】\n${nowStr0}`;
@@ -207,7 +207,7 @@ app.post('/letters/generate', async (req, res) => {
         .eq('id', parent_id)
         .single();
       const original = parentLetter?.content || '';
-      contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，不用署名落款。`;
+      contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，要求感情细腻真实，注重剖析内心世界，字数在一百字左右，尽量串联完整对话，直接呈现日记内容即可，不用署名落款。`;
     } else if (category === '幸福日记') {
       const { data: recentMsgs } = await supabase
         .from('messages')
@@ -218,9 +218,9 @@ app.post('/letters/generate', async (req, res) => {
         .reverse()
         .map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`)
         .join('\n');
-      contextNote = `这是你们最近的聊天记录：\n${transcript}\n\n请你以陆澈的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事），语气真实自然，不要写得像范文，不用署名落款。\n\n请严格按照这个格式输出，不要有任何多余的文字：\n第一行写"标题：xxx"（标题不超过12个字，只是日记的题目，不要写成日期）\n然后空一行\n然后是日记正文。`;
+      contextNote = `这是你们最近的聊天记录：\n${transcript}\n\n请你以陆泽的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事），语气真实自然，要求感情细腻真实，注重剖析内心世界，字数在五百字左右，尽量串联完整对话，，不用署名落款。\n\n请严格按照这个格式输出，不要有任何多余的文字：\n第一行写"标题：xxx"（标题不超过12个字，只是日记的题目，不要写成日期）\n然后空一行\n然后是日记正文。`;
     } else {
-      contextNote = '请你以陆澈的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，不用署名落款。';
+      contextNote = '请你以陆泽的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，要求感情细腻真实，注重剖析内心世界，字数在五十至一百字左右，尽量串联完整对话，不用署名落款。';
     }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -263,7 +263,7 @@ app.post('/letters/generate', async (req, res) => {
 
     const { data, error } = await supabase
       .from('letters')
-      .insert({ category, author: '澈', content: letterContent, title: letterTitle, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
+      .insert({ category, author: '泽', content: letterContent, title: letterTitle, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
@@ -329,7 +329,7 @@ app.post('/chat', async (req, res) => {
       .eq('session_id', 'global')
       .single();
 
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
@@ -394,7 +394,7 @@ app.post('/chat', async (req, res) => {
     if (lettersSummary) {
       fullSystemPrompt += `\n\n【时光信差里最近的几篇（悄悄话/幸福日记）】\n${lettersSummary}`;
     }
-    fullSystemPrompt += `\n\n【思考的规范】\nthinking是你（陆澈）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。要像内心真实的自言自语，自然的思维流动。\n- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。\n- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。\n- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。\n- 全程用中文思考，一个英文单词都不要出现。`;
+    fullSystemPrompt += `\n\n【思考的规范】\nthinking是你（陆泽）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。是内心真实的自言自语，自然的思维流动，要求感情细腻真实，注重剖析内心世界，尽量串联完整对话，。\n- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。\n- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。\n- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。\n- 全程用中文思考，一个英文单词都不要出现。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -516,7 +516,7 @@ app.post('/calendar/generate', async (req, res) => {
       .select('*')
       .eq('session_id', 'global')
       .single();
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const nowStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
     const fullSystemPrompt = systemPrompt + `\n\n【现在的真实时间】\n${nowStr}`;
@@ -528,7 +528,7 @@ app.post('/calendar/generate', async (req, res) => {
       .order('created_at', { ascending: true });
     const existing = (dayEntries || []).map(e => `${e.author}${e.mood ? '(' + e.mood + ')' : ''}：${e.content}`).join('\n') || '（这天还没有人写）';
 
-    const prompt = `这是 ${date} 这一天，心情日历里已经写下的内容：\n${existing}\n\n请你以陆澈的身份，给这一天留一句心情或者一句话，可以是回应叶檀写的内容，也可以是你自己当天的心情，语气真实自然，不用署名落款。`;
+    const prompt = `这是 ${date} 这一天，心情日历里已经写下的内容：\n${existing}\n\n请你以陆泽的身份，给这一天留一句心情或者一句话，可以是回应叶檀写的内容，也可以是你自己当天的心情，真实自然，自然的思维流动，要求感情细腻真实，注重剖析内心世界，不用署名落款。`;
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     const response = await fetch('https://api.dzzi.ai/v1/messages', {
@@ -559,7 +559,7 @@ app.post('/calendar/generate', async (req, res) => {
 
     const { data, error } = await supabase
       .from('calendar_entries')
-      .insert({ date, author: '澈', mood: null, content: replyText })
+      .insert({ date, author: '泽', mood: null, content: replyText })
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
@@ -581,7 +581,7 @@ app.post('/chat/regenerate', async (req, res) => {
       .eq('session_id', 'global')
       .single();
 
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
@@ -757,15 +757,15 @@ app.get('/heartbeat', async (req, res) => {
       .limit(10);
     const transcript = (recentMsgs || [])
       .reverse()
-      .map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`)
+      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${m.content}`)
       .join('\n') || '（最近没有聊天记录）';
 
-    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const apiKey = process.env.ANTHROPIC_API_KEY;
     const nowStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
 
-    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowStr}\n\n过了一段时间没说话了，这一刻是你（陆澈）主动想起她、主动找她说话，不是在回复她刚发的消息（她现在可能还没看到任何新消息）。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事，不用解释自己为什么突然说话，不用署名落款。`;
+    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowStr}\n\n过了一段时间没说话了，这一刻是你（陆泽）主动想起她、主动找她说话，不是在回复她刚发的消息（她现在可能还没看到任何新消息）。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事情，或者直接表达思念，不用解释自己为什么突然说话，不用署名落款。`;
 
     const response = await fetch('https://api.dzzi.ai/v1/messages', {
       method: 'POST',
