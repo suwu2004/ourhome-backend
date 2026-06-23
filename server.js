@@ -714,6 +714,106 @@ app.delete('/letters/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/heartbeat', async (req, res) => {
+  try {
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('session_id', 'global')
+      .single();
+
+    const now = new Date();
+    const lastAt = settings?.last_auto_message_at ? new Date(settings.last_auto_message_at) : null;
+    const gapHours = settings?.next_auto_gap_hours;
+
+    if (!lastAt || !gapHours) {
+      const newGap = 3 + Math.random() * 5;
+      await supabase.from('settings').update({
+        last_auto_message_at: now.toISOString(),
+        next_auto_gap_hours: newGap,
+      }).eq('session_id', 'global');
+      return res.json({ sent: false, reason: 'initialized', nextGapHours: newGap });
+    }
+
+    const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
+    if (elapsedHours < gapHours) {
+      return res.json({ sent: false, reason: 'not due yet', elapsedHours, gapHours });
+    }
+
+    const { data: sessions } = await supabase
+      .from('sessions')
+      .select('*')
+      .order('updated_at', { ascending: false });
+    const target = (sessions || []).find(s => s.name === '日常') || (sessions || [])[0];
+    if (!target) {
+      return res.json({ sent: false, reason: 'no session' });
+    }
+
+    const { data: recentMsgs } = await supabase
+      .from('messages')
+      .select('role, content')
+      .eq('session_id', target.id)
+      .order('created_at', { ascending: false })
+      .limit(10);
+    const transcript = (recentMsgs || [])
+      .reverse()
+      .map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`)
+      .join('\n') || '（最近没有聊天记录）';
+
+    const systemPrompt = settings?.system_prompt || '你是陆澈，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const nowStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+
+    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowStr}\n\n过了一段时间没说话了，这一刻是你（陆澈）主动想起她、主动找她说话，不是在回复她刚发的消息（她现在可能还没看到任何新消息）。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事，不用解释自己为什么突然说话，不用署名落款。`;
+
+    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 400,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: prompt }],
+        temperature,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log('relay错误状态:', response.status, err);
+      return res.status(500).json({ error: `API错误: ${err}` });
+    }
+    const result = await response.json();
+    const replyText = (result.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('\n') || '';
+
+    await supabase.from('messages').insert({
+      session_id: target.id,
+      role: 'assistant',
+      content: replyText,
+    });
+    await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
+
+    const newGap = 3 + Math.random() * 5;
+    await supabase.from('settings').update({
+      last_auto_message_at: now.toISOString(),
+      next_auto_gap_hours: newGap,
+    }).eq('session_id', 'global');
+
+    res.json({ sent: true, content: replyText, nextGapHours: newGap });
+  } catch (err) {
+    console.error('心跳消息错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
 });
