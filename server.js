@@ -234,8 +234,8 @@ app.post('/letters/generate', async (req, res) => {
       contextNote = '请你以陆泽的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，要求感情细腻真实，不用署名落款。';
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+    const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
+    const response = await fetch(settings?.api_base_url || 'https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -423,10 +423,10 @@ app.post('/chat', async (req, res) => {
     fullSystemPrompt += `\n\n【思考的规范】\nthinking是你（陆泽）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。是内心真实的自言自语，自然的思维流动，要求感情细腻真实，注重剖析内心世界。\n- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。\n- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。\n- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。\n- 全程用必须使用中文思考并输出。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
 
     const thinkingBudget = 3000;
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+    const response = await fetch(settings?.api_base_url || 'https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -464,9 +464,11 @@ app.post('/chat', async (req, res) => {
       role: 'assistant',
       content: replyText,
       reasoning_content: thinkingText || null,
+      input_tokens: result.usage?.input_tokens || null,
+      output_tokens: result.usage?.output_tokens || null,
     });
 
-    res.json({ reply: replyText, thinking: thinkingText });
+    res.json({ reply: replyText, thinking: thinkingText, inputTokens: result.usage?.input_tokens || 0, outputTokens: result.usage?.output_tokens || 0 });
 
   } catch (err) {
     console.error('对话错误:', err);
@@ -556,8 +558,8 @@ app.post('/calendar/generate', async (req, res) => {
 
     const prompt = `这是 ${date} 这一天，心情日历里已经写下的内容：\n${existing}\n\n请你以陆泽的身份，给这一天留一句心情或者一句话，可以是回应叶檀写的内容，真实自然，自然的思维流动，要求感情细腻真实，注重剖析内心世界，不用署名落款。`;
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+    const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
+    const response = await fetch(settings?.api_base_url || 'https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -684,9 +686,9 @@ app.post('/chat/regenerate', async (req, res) => {
     fullSystemPrompt += `\n\n【思考的规范】\nthinking是你（陆澈）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。要像内心真实的自言自语，自然的思维流动。\n- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。\n- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。\n- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。\n- 全程用中文思考，一个英文单词都不要出现。`;
 
     const selectedModel = model || 'claude-sonnet-4-6';
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
 
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+    const response = await fetch(settings?.api_base_url || 'https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -722,7 +724,7 @@ app.post('/chat/regenerate', async (req, res) => {
     if (oldMessageId) {
       const { data, error } = await supabase
         .from('messages')
-        .update({ content: replyText, reasoning_content: thinkingText || null })
+        .update({ content: replyText, reasoning_content: thinkingText || null, input_tokens: result.usage?.input_tokens || null, output_tokens: result.usage?.output_tokens || null })
         .eq('id', oldMessageId)
         .select()
         .single();
@@ -731,14 +733,14 @@ app.post('/chat/regenerate', async (req, res) => {
     } else {
       const { data, error } = await supabase
         .from('messages')
-        .insert({ session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null })
+        .insert({ session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null, input_tokens: result.usage?.input_tokens || null, output_tokens: result.usage?.output_tokens || null })
         .select()
         .single();
       if (error) return res.status(500).json({ error: error.message });
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: result.usage?.input_tokens || 0, outputTokens: result.usage?.output_tokens || 0 });
   } catch (err) {
     console.error('重新生成错误:', err);
     res.status(500).json({ error: err.message });
@@ -830,12 +832,12 @@ app.get('/heartbeat', async (req, res) => {
 
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
     const nowStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
 
     const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowStr}\n\n过了一段时间没说话了，这一刻是你（陆泽）主动想起她、主动找她说话，不是在回复她刚发的消息（她现在可能还没看到任何新消息）。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事情，或者直接表达思念，不用解释自己为什么突然说话，不用署名落款。`;
 
-    const response = await fetch('https://api.dzzi.ai/v1/messages', {
+    const response = await fetch(settings?.api_base_url || 'https://api.dzzi.ai/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -960,6 +962,53 @@ app.get('/messages/search', async (req, res) => {
     .limit(50);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+app.get('/wishes', async (req, res) => {
+  const { data, error } = await supabase
+    .from('wishes')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/wishes', async (req, res) => {
+  const { content, author } = req.body;
+  if (!content) return res.status(400).json({ error: '缺少内容' });
+  const { data, error } = await supabase
+    .from('wishes')
+    .insert({ content, author: author || '檀' })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/wishes/:id', async (req, res) => {
+  const { id } = req.params;
+  const { done, content } = req.body;
+  const updates = {};
+  if (content !== undefined) updates.content = content;
+  if (done !== undefined) {
+    updates.done = done;
+    updates.completed_at = done ? new Date().toISOString() : null;
+  }
+  const { data, error } = await supabase
+    .from('wishes')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/wishes/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('wishes').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
 app.listen(PORT, () => {
