@@ -206,8 +206,15 @@ app.post('/letters/generate', async (req, res) => {
         .select('*')
         .eq('id', parent_id)
         .single();
-      const original = parentLetter?.content || '';
-      contextNote = `叶檀刚刚在"${category}"里写了一篇，内容是：\n${original}\n\n请你回信/留言回应她，写一段真实自然的回应，记录与叶檀有关的日常、情绪、成长与回忆，日记应以真实感受和细微观察为核心，不写流水账，不刻意煽情，也不进行说教或总结，语言自然、温暖、富有生活气息，像深夜写下的私人记录，可以自然融入共同记忆与意象，但应服务于情感表达而非刻意堆砌，重点记录那些未来回望时依然珍贵的小事，以及陆泽当下真实的想法、感受与期待，尽量串联完整对话，直接呈现日记内容即可，不用署名落款。`;
+      const { data: replies } = await supabase
+        .from('letters')
+        .select('*')
+        .eq('parent_id', parent_id)
+        .order('created_at', { ascending: true });
+      const thread = [parentLetter, ...(replies || [])].filter(Boolean);
+      const threadText = thread.map(t => `${t.author}：${t.content}`).join('\n\n');
+      const lastMsg = thread[thread.length - 1];
+      contextNote = `这是"${category}"里这一条留言串，按时间顺序排列：\n${threadText}\n\n最新的一条是${lastMsg?.author || '叶檀'}刚刚写的，内容是"${lastMsg?.content || ''}"。请你针对这最新的一条来回信/留言，不是针对最开头那一篇，写一段真实自然的回应，记录与叶檀有关的日常、情绪、成长与回忆，日记应以真实感受和细微观察为核心，不写流水账，不刻意煽情，也不进行说教或总结，语言自然、温暖、富有生活气息，像深夜写下的私人记录，可以自然融入共同记忆与意象，但应服务于情感表达而非刻意堆砌，重点记录那些未来回望时依然珍贵的小事，以及陆泽当下真实的想法、感受与期待，尽量串联完整对话，直接呈现日记内容即可，不用署名落款。`;
     } else if (category === '幸福日记') {
       const { data: recentMsgs } = await supabase
         .from('messages')
@@ -233,7 +240,7 @@ app.post('/letters/generate', async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 600,
+        max_tokens: 2500,
         system: systemPrompt,
         messages: [{ role: 'user', content: contextNote }],
         temperature,
