@@ -3,6 +3,10 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
+const webpush = require('web-push');
+const VAPID_PUBLIC_KEY = 'BNU9oZIO5mJOwzYI45Ew-RgP9HZC2kpwRVJNB6hQ9v7y1N2lWtSj9GwZmjJexJJgFnC4ju08COR6rrTfXweffS0';
+const VAPID_PRIVATE_KEY = 'Mee8YBmEBoeyC0eSZJn1CyOaugi6wBLDfTZKOupSMBI';
+webpush.setVapidDetails('mailto:ourhome@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -751,6 +755,35 @@ app.delete('/letters/:id', async (req, res) => {
 
 app.get('/heartbeat', async (req, res) => {
   try {
+    const nowForSchedule = new Date();
+    const { data: dueEvents } = await supabase
+      .from('schedule_events')
+      .select('*')
+      .eq('notified', false)
+      .lte('remind_at', nowForSchedule.toISOString());
+
+    if (dueEvents && dueEvents.length > 0) {
+      const { data: subs } = await supabase.from('push_subscriptions').select('*');
+      for (const ev of dueEvents) {
+        const payload = JSON.stringify({ title: '✦ ' + ev.title, body: ev.content || '到时间了' });
+        for (const sub of (subs || [])) {
+          try {
+            await webpush.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+              payload
+            );
+          } catch (pushErr) {
+            if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+              await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+            } else {
+              console.error('推送失败:', pushErr.message);
+            }
+          }
+        }
+        await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
+      }
+    }
+
     const { data: settings } = await supabase
       .from('settings')
       .select('*')
@@ -847,6 +880,73 @@ app.get('/heartbeat', async (req, res) => {
     console.error('心跳消息错误:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------- push notifications ----------
+
+app.get('/push/public-key', (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/push/subscribe', async (req, res) => {
+  const { endpoint, keys } = req.body;
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return res.status(400).json({ error: '缺少订阅信息' });
+  }
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert({ endpoint, p256dh: keys.p256dh, auth: keys.auth }, { onConflict: 'endpoint' });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ---------- schedule ----------
+
+app.get('/schedule', async (req, res) => {
+  const { data, error } = await supabase
+    .from('schedule_events')
+    .select('*')
+    .order('remind_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/schedule', async (req, res) => {
+  const { title, content, remind_at, author } = req.body;
+  if (!title || !remind_at) {
+    return res.status(400).json({ error: '缺少标题或提醒时间' });
+  }
+  const { data, error } = await supabase
+    .from('schedule_events')
+    .insert({ title, content: content || null, remind_at, author: author || '檀' })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/schedule/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, content, remind_at } = req.body;
+  const updates = {};
+  if (title !== undefined) updates.title = title;
+  if (content !== undefined) updates.content = content;
+  if (remind_at !== undefined) { updates.remind_at = remind_at; updates.notified = false; }
+  const { data, error } = await supabase
+    .from('schedule_events')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/schedule/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('schedule_events').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
 app.listen(PORT, () => {
