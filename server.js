@@ -293,7 +293,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       .upload(filePath, file.buffer, { contentType: file.mimetype });
     if (error) return res.status(500).json({ error: error.message });
     const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
-    res.json({ url: urlData.publicUrl, type: file.mimetype });
+    res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -324,7 +324,7 @@ app.get('/export', async (req, res) => {
 // ---------- chat ----------
 
 app.post('/chat', async (req, res) => {
-  const { session_id, message, model, attachment_url } = req.body;
+  const { session_id, message, model, attachment_url, attachment_type, attachment_name } = req.body;
   if (!session_id || !message) {
     return res.status(400).json({ error: '缺少session_id或message' });
   }
@@ -346,6 +346,8 @@ app.post('/chat', async (req, res) => {
       role: 'user',
       content: message,
       attachment_url: attachment_url || null,
+      attachment_type: attachment_type || null,
+      attachment_name: attachment_name || null,
     });
 
     await supabase
@@ -355,7 +357,7 @@ app.post('/chat', async (req, res) => {
 
     const { data: history } = await supabase
       .from('messages')
-      .select('role, content, attachment_url')
+      .select('role, content, attachment_url, attachment_type, attachment_name')
       .eq('session_id', session_id)
       .eq('visible', true)
       .order('created_at', { ascending: true });
@@ -381,13 +383,26 @@ app.post('/chat', async (req, res) => {
     const messages = recentHistory.map(m => {
       const role = m.role === 'user' ? 'user' : 'assistant';
       if (m.attachment_url) {
-        return {
-          role,
-          content: [
-            { type: 'image', source: { type: 'url', url: m.attachment_url } },
-            { type: 'text', text: m.content || '' },
-          ],
-        };
+        if (m.attachment_type && m.attachment_type.startsWith('image/')) {
+          return {
+            role,
+            content: [
+              { type: 'image', source: { type: 'url', url: m.attachment_url } },
+              { type: 'text', text: m.content || '' },
+            ],
+          };
+        }
+        if (m.attachment_type === 'application/pdf') {
+          return {
+            role,
+            content: [
+              { type: 'document', source: { type: 'url', url: m.attachment_url } },
+              { type: 'text', text: m.content || '' },
+            ],
+          };
+        }
+        const fileNote = `[附件文件：${m.attachment_name || '一个文件'}]`;
+        return { role, content: `${fileNote}\n${m.content || ''}` };
       }
       return { role, content: m.content };
     });
@@ -632,13 +647,26 @@ app.post('/chat/regenerate', async (req, res) => {
     const messages = recentHistory.map(m => {
       const role = m.role === 'user' ? 'user' : 'assistant';
       if (m.attachment_url) {
-        return {
-          role,
-          content: [
-            { type: 'image', source: { type: 'url', url: m.attachment_url } },
-            { type: 'text', text: m.content || '' },
-          ],
-        };
+        if (m.attachment_type && m.attachment_type.startsWith('image/')) {
+          return {
+            role,
+            content: [
+              { type: 'image', source: { type: 'url', url: m.attachment_url } },
+              { type: 'text', text: m.content || '' },
+            ],
+          };
+        }
+        if (m.attachment_type === 'application/pdf') {
+          return {
+            role,
+            content: [
+              { type: 'document', source: { type: 'url', url: m.attachment_url } },
+              { type: 'text', text: m.content || '' },
+            ],
+          };
+        }
+        const fileNote = `[附件文件：${m.attachment_name || '一个文件'}]`;
+        return { role, content: `${fileNote}\n${m.content || ''}` };
       }
       return { role, content: m.content };
     });
