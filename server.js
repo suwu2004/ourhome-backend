@@ -949,6 +949,19 @@ app.delete('/schedule/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/messages/search', async (req, res) => {
+  const { q } = req.query;
+  if (!q || !q.trim()) return res.json([]);
+  const { data, error } = await supabase
+    .from('messages')
+    .select('id, session_id, role, content, created_at, sessions(name)')
+    .ilike('content', `%${q.trim()}%`)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
 app.listen(PORT, () => {
   console.log(`OurHome后端运行中，端口：${PORT}`);
 });
