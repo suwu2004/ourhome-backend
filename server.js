@@ -19,6 +19,38 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// 根据当前这句话，挑出可能相关的记忆，再跟最近的几条合并去重
+async function getRelevantMemories(message) {
+  const text = (message || '').replace(/[\s,，。！？、!?.]/g, '');
+  const bigrams = [];
+  for (let i = 0; i < text.length - 1; i++) {
+    bigrams.push(text.slice(i, i + 2));
+  }
+  const uniqueBigrams = [...new Set(bigrams)].slice(0, 15);
+
+  let relevant = [];
+  if (uniqueBigrams.length > 0) {
+    const orFilter = uniqueBigrams.map(bg => `summary.ilike.%${bg}%`).join(',');
+    const { data } = await supabase
+      .from('memories')
+      .select('*')
+      .or(orFilter)
+      .order('timestamp', { ascending: false })
+      .limit(5);
+    relevant = data || [];
+  }
+
+  const { data: recent } = await supabase
+    .from('memories')
+    .select('*')
+    .order('timestamp', { ascending: false })
+    .limit(3);
+
+  const map = new Map();
+  [...relevant, ...(recent || [])].forEach(m => map.set(m.id, m));
+  return Array.from(map.values());
+}
+
 app.get('/', (req, res) => {
   res.json({ message: '在云端漫步', status: 'ok' });
 });
@@ -366,11 +398,7 @@ app.post('/chat', async (req, res) => {
       .eq('visible', true)
       .order('created_at', { ascending: true });
 
-    const { data: memories } = await supabase
-      .from('memories')
-      .select('summary')
-      .order('timestamp', { ascending: false })
-      .limit(3);
+    const memories = await getRelevantMemories(message);
 
     const { data: recentLetters } = await supabase
       .from('letters')
@@ -633,11 +661,8 @@ app.post('/chat/regenerate', async (req, res) => {
       contextHistory = history.slice(0, -1);
     }
 
-    const { data: memories } = await supabase
-      .from('memories')
-      .select('summary')
-      .order('timestamp', { ascending: false })
-      .limit(3);
+    const lastUserMsg = [...contextHistory].reverse().find(m => m.role === 'user');
+    const memories = await getRelevantMemories(lastUserMsg?.content || '');
     const { data: recentLetters } = await supabase
       .from('letters')
       .select('category, author, title, content')
