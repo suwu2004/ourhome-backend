@@ -849,10 +849,10 @@ app.get('/heartbeat', async (req, res) => {
       .select('role, content')
       .eq('session_id', target.id)
       .order('created_at', { ascending: false })
-      .limit(10);
+      .limit(5);
     const transcript = (recentMsgs || [])
       .reverse()
-      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${m.content}`)
+      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`)
       .join('\n') || '（最近没有聊天记录）';
 
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
@@ -881,7 +881,7 @@ app.get('/heartbeat', async (req, res) => {
     if (!response.ok) {
       const err = await response.text();
       console.log('relay错误状态:', response.status, err);
-      return res.status(500).json({ error: `API错误: ${err}` });
+      return res.json({ sent: false, reason: 'relay error' });
     }
     const result = await response.json();
     const replyText = (result.content || [])
