@@ -34,10 +34,19 @@ function todayStartUTC() {
   return new Date(start.getTime() - offset).toISOString();
 }
 
-// 统一调用Claude API
+const DEFAULT_API_BASE = 'https://api.dzzi.ai/v1';
+
+// 把网址和路径拼干净，避免"/messages"被重复拼接
+function buildEndpoint(base, path) {
+  const clean = (base || DEFAULT_API_BASE).replace(/\/+$/, '');
+  return clean.endsWith(path) ? clean : `${clean}${path}`;
+}
+
+// 统一调用Claude API（根据 use_custom_api 决定走默认还是自定义中转）
 async function callClaude({ settings, model, maxTokens, system, messages, temperature, thinking }) {
-  const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
-  const apiBaseUrl = settings?.api_base_url || 'https://api.dzzi.ai/v1/messages';
+  const useCustom = !!settings?.use_custom_api;
+  const apiKey = useCustom ? (settings?.api_key || process.env.ANTHROPIC_API_KEY) : process.env.ANTHROPIC_API_KEY;
+  const apiBaseUrl = buildEndpoint(useCustom ? settings?.api_base_url : DEFAULT_API_BASE, '/messages');
   const body = { model: model || 'claude-sonnet-4-6', max_tokens: maxTokens, messages };
   if (system) body.system = system;
   if (temperature !== undefined) body.temperature = temperature;
@@ -224,6 +233,30 @@ app.patch('/settings', async (req, res) => {
   const { data, error } = await supabase.from('settings').update(updates).eq('session_id', 'global').select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+// 拉取中转站支持的模型列表（依赖 use_custom_api 开关）
+app.get('/settings/models', async (req, res) => {
+  try {
+    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    if (!settings?.use_custom_api || !settings?.api_key) {
+      return res.status(400).json({ error: '请先打开"使用自定义API"并填写密钥' });
+    }
+    const modelsUrl = buildEndpoint(settings.api_base_url, '/models');
+    const response = await fetch(modelsUrl, {
+      headers: { 'Authorization': `Bearer ${settings.api_key}`, 'x-api-key': settings.api_key },
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      return res.status(500).json({ error: `拉取模型列表失败: ${err}` });
+    }
+    const result = await response.json();
+    const models = (result.data || []).map(m => m.id).filter(Boolean);
+    res.json({ models });
+  } catch (err) {
+    console.error('拉取模型错误:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============ memories ============
