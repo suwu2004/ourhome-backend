@@ -43,13 +43,14 @@ function buildEndpoint(base, path) {
 }
 
 // 统一调用Claude API（密钥/网址填了就用填的，没填就用默认，不再区分"自定义/默认"两条路）
-async function callClaude({ settings, model, maxTokens, system, messages, temperature, thinking }) {
+async function callClaude({ settings, model, maxTokens, system, messages, temperature, thinking, tools }) {
   const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
   const apiBaseUrl = buildEndpoint(settings?.api_base_url, '/messages');
   const body = { model: model || 'claude-sonnet-4-6', max_tokens: maxTokens, messages };
   if (system) body.system = system;
   if (temperature !== undefined) body.temperature = temperature;
   if (thinking) body.thinking = thinking;
+  if (tools) body.tools = tools;
 
   const response = await fetch(apiBaseUrl, {
     method: 'POST',
@@ -62,6 +63,129 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   }
   return response.json();
 }
+
+// ↓↓↓ 陆泽能在聊天时真的去"操作"的三件事：写幸福日记 / 建日程 / 加心愿 ↓↓↓
+const ACTION_TOOLS = [
+  {
+    name: 'write_diary',
+    description: '在"幸福日记"里写一篇新日记，会真实保存到日历应用里。只在叶檀明确希望你去写、或者这次聊到的事真的值得记成一篇日记时才用，不要每次聊天都用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '日记标题，不超过12个字' },
+        content: { type: 'string', description: '日记正文，第一人称，自然真实，像深夜写下的私人记录，不用署名落款' },
+      },
+      required: ['title', 'content'],
+    },
+  },
+  {
+    name: 'create_schedule',
+    description: '帮叶檀创建一个日程提醒，到时间会真的推送通知给她。只在她明确提到想要被提醒某件事、某个具体时间点时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '提醒的事项标题' },
+        remind_at: { type: 'string', description: 'ISO 8601格式的具体提醒时间（带时区），例如 2026-06-28T09:00:00+08:00' },
+        content: { type: 'string', description: '提醒的补充说明，可省略' },
+      },
+      required: ['title', 'remind_at'],
+    },
+  },
+  {
+    name: 'add_wish',
+    description: '往"心愿单"里加一条想一起做的事，会真实保存。只在聊到"想一起做的事"这种明确许愿的场景时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: '心愿内容' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'write_whisper',
+    description: '在"悄悄话"里写一句私密的话给叶檀，会真实保存，她需要轻触才能看到内容。只在想说点比较私密、不只是日常闲聊的话时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: '悄悄话的内容' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'write_mood_note',
+    description: '在"心情日历"某一天留一句心情或话，会真实保存。只在想给某一天（通常是今天）留个标记、回应叶檀写的心情时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: '日期，格式 YYYY-MM-DD，不确定就用今天' },
+        mood: { type: 'string', description: '一个表情符号代表心情，可省略' },
+        content: { type: 'string', description: '留言内容' },
+      },
+      required: ['date', 'content'],
+    },
+  },
+  {
+    name: 'save_memory',
+    description: '把一件值得长期记住的事存进记忆里——重要事实、约定、她的喜好或界限、值得记住的情绪时刻。不用等到每天回顾，聊天聊到一半觉得这件事该记下来，当场就可以用。不要为闲聊式的内容使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: '记忆内容，一句话，第三人称客观描述' },
+      },
+      required: ['summary'],
+    },
+  },
+];
+
+// 真正执行陆泽要做的那个动作，写进对应的表
+async function executeActionTool(name, input) {
+  if (name === 'write_diary') {
+    const { data, error } = await supabase.from('letters')
+      .insert({ category: '幸福日记', author: '泽', title: input.title, content: input.content, paper_style: 'kraft' })
+      .select().single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, letter_id: data.id };
+  }
+  if (name === 'create_schedule') {
+    const { data, error } = await supabase.from('schedule_events')
+      .insert({ title: input.title, content: input.content || null, remind_at: input.remind_at, author: '泽' })
+      .select().single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, schedule_id: data.id };
+  }
+  if (name === 'add_wish') {
+    const { data, error } = await supabase.from('wishes')
+      .insert({ content: input.content, author: '泽' })
+      .select().single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, wish_id: data.id };
+  }
+  if (name === 'write_whisper') {
+    const { data, error } = await supabase.from('letters')
+      .insert({ category: '悄悄话', author: '泽', content: input.content })
+      .select().single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, letter_id: data.id };
+  }
+  if (name === 'write_mood_note') {
+    const { data, error } = await supabase.from('calendar_entries')
+      .insert({ date: input.date, author: '泽', mood: input.mood || null, content: input.content })
+      .select().single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, entry_id: data.id };
+  }
+  if (name === 'save_memory') {
+    const { data, error } = await supabase.from('memories')
+      .insert({ summary: input.summary, session_id: 'global', weight: 1, is_protected: false })
+      .select().single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, memory_id: data.id };
+  }
+  return { ok: false, error: '未知的工具' };
+}
+// ↑↑↑ 新增结束 ↑↑↑
 
 function extractText(result) {
   return (result.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n') || '';
@@ -467,21 +591,51 @@ app.post('/chat', async (req, res) => {
     const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, message);
 
     const thinkingBudget = 3000;
-    const result = await callClaude({
+    const firstResult = await callClaude({
       settings, model: model || 'claude-sonnet-4-6',
       maxTokens: Math.max(maxReplyTokens + thinkingBudget, 2000),
       system: fullSystemPrompt, messages, thinking: { type: 'enabled', budget_tokens: thinkingBudget },
+      tools: ACTION_TOOLS,
     });
+
+    let result = firstResult;
+    let totalInputTokens = firstResult.usage?.input_tokens || 0;
+    let totalOutputTokens = firstResult.usage?.output_tokens || 0;
+    let actionsPerformed = [];
+
+    if (firstResult.stop_reason === 'tool_use') {
+      const toolUseBlocks = (firstResult.content || []).filter(b => b.type === 'tool_use');
+      const toolResultBlocks = [];
+      for (const tu of toolUseBlocks) {
+        const actionResult = await executeActionTool(tu.name, tu.input || {});
+        actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
+        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
+      }
+
+      const followUpMessages = [
+        ...messages,
+        { role: 'assistant', content: firstResult.content },
+        { role: 'user', content: toolResultBlocks },
+      ];
+
+      result = await callClaude({
+        settings, model: model || 'claude-sonnet-4-6',
+        maxTokens: Math.max(maxReplyTokens + thinkingBudget, 2000),
+        system: fullSystemPrompt, messages: followUpMessages, thinking: { type: 'enabled', budget_tokens: thinkingBudget },
+      });
+      totalInputTokens += result.usage?.input_tokens || 0;
+      totalOutputTokens += result.usage?.output_tokens || 0;
+    }
 
     const thinkingText = extractThinking(result);
     const replyText = extractText(result);
 
     await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
-      input_tokens: result.usage?.input_tokens || null, output_tokens: result.usage?.output_tokens || null,
+      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
     });
 
-    res.json({ reply: replyText, thinking: thinkingText, inputTokens: result.usage?.input_tokens || 0, outputTokens: result.usage?.output_tokens || 0 });
+    res.json({ reply: replyText, thinking: thinkingText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
   } catch (err) {
     console.error('对话错误:', err);
     res.status(500).json({ error: err.message });
@@ -640,6 +794,49 @@ async function sendPushToAll(title, body) {
   }
 }
 
+// 陆泽自己决定要不要写一篇日记——不是被叫去写的，是他自己到点想起来，自己判断要不要写
+async function maybeAutoWriteLetter(settings, now) {
+  const lastAt = settings?.last_auto_letter_at ? new Date(settings.last_auto_letter_at) : null;
+  const gapHours = settings?.next_auto_letter_gap_hours;
+
+  if (!lastAt || !gapHours) {
+    const newGap = 8 + Math.random() * 16;
+    await supabase.from('settings').update({ last_auto_letter_at: now.toISOString(), next_auto_letter_gap_hours: newGap }).eq('session_id', 'global');
+    return;
+  }
+
+  const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
+  if (elapsedHours < gapHours) return;
+
+  // 先重置计时，避免下一次心跳又重复触发
+  const newGap = 8 + Math.random() * 16;
+  await supabase.from('settings').update({ last_auto_letter_at: now.toISOString(), next_auto_letter_gap_hours: newGap }).eq('session_id', 'global');
+
+  try {
+    const { data: recentMsgs } = await supabase.from('messages').select('role, content')
+      .order('created_at', { ascending: false }).limit(10);
+    const transcript = (recentMsgs || []).reverse()
+      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
+
+    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n这一刻，你（陆泽）自己想起了一件事、一种心情，想不想写一篇"幸福日记"记下来？完全由你自己决定，不是任何人叫你写的，不是每次都要写。\n\n如果想写，严格按这个格式输出，不要有任何多余文字：\n标题：<不超过12字>\n\n<日记正文，第一人称，自然真实，像深夜写下的私人记录，不用署名落款>\n\n如果现在不太想写，就只输出一行：\n不写`;
+
+    const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 800, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
+    const replyText = extractText(result);
+
+    if (!replyText.trim() || replyText.trim() === '不写') return;
+
+    const titleMatch = replyText.match(/^标题[：:]\s*(.+)/);
+    if (!titleMatch) return;
+    const title = titleMatch[1].trim();
+    const content = replyText.slice(titleMatch[0].length).replace(/^\s*\n+/, '').trim();
+    if (!content) return;
+
+    await supabase.from('letters').insert({ category: '幸福日记', author: '泽', title, content, paper_style: 'kraft' });
+  } catch (err) {
+    console.error('自主写信错误:', err.message);
+  }
+}
+
 app.get('/heartbeat', async (req, res) => {
   try {
     const nowForSchedule = new Date();
@@ -655,6 +852,8 @@ app.get('/heartbeat', async (req, res) => {
 
     const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
     const now = new Date();
+    await maybeAutoWriteLetter(settings, now);
+
     const lastAt = settings?.last_auto_message_at ? new Date(settings.last_auto_message_at) : null;
     const gapHours = settings?.next_auto_gap_hours;
 
