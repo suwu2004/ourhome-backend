@@ -42,11 +42,10 @@ function buildEndpoint(base, path) {
   return clean.endsWith(path) ? clean : `${clean}${path}`;
 }
 
-// 统一调用Claude API（根据 use_custom_api 决定走默认还是自定义中转）
+// 统一调用Claude API（密钥/网址填了就用填的，没填就用默认，不再区分"自定义/默认"两条路）
 async function callClaude({ settings, model, maxTokens, system, messages, temperature, thinking }) {
-  const useCustom = !!settings?.use_custom_api;
-  const apiKey = useCustom ? (settings?.api_key || process.env.ANTHROPIC_API_KEY) : process.env.ANTHROPIC_API_KEY;
-  const apiBaseUrl = buildEndpoint(useCustom ? settings?.api_base_url : DEFAULT_API_BASE, '/messages');
+  const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
+  const apiBaseUrl = buildEndpoint(settings?.api_base_url, '/messages');
   const body = { model: model || 'claude-sonnet-4-6', max_tokens: maxTokens, messages };
   if (system) body.system = system;
   if (temperature !== undefined) body.temperature = temperature;
@@ -71,21 +70,46 @@ function extractThinking(result) {
   return (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).join('\n') || '';
 }
 
-// 把消息历史转成API格式，处理图片/PDF/普通附件
-function buildApiMessages(history) {
-  return (history || []).map(m => {
+// 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
+async function fetchAsBase64(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`下载附件失败: ${resp.status}`);
+  const buffer = await resp.arrayBuffer();
+  return Buffer.from(buffer).toString('base64');
+}
+
+// 把消息历史转成API格式，图片/PDF统一转base64，普通文件保留文字提示
+async function buildApiMessages(history) {
+  const result = [];
+  for (const m of (history || [])) {
     const role = m.role === 'user' ? 'user' : 'assistant';
     if (m.attachment_url) {
       if (m.attachment_type?.startsWith('image/')) {
-        return { role, content: [{ type: 'image', source: { type: 'url', url: m.attachment_url } }, { type: 'text', text: m.content || '' }] };
+        try {
+          const base64 = await fetchAsBase64(m.attachment_url);
+          result.push({ role, content: [{ type: 'image', source: { type: 'base64', media_type: m.attachment_type, data: base64 } }, { type: 'text', text: m.content || '' }] });
+        } catch (err) {
+          console.error('图片转base64失败:', err.message);
+          result.push({ role, content: m.content || '[图片加载失败]' });
+        }
+        continue;
       }
       if (m.attachment_type === 'application/pdf') {
-        return { role, content: [{ type: 'document', source: { type: 'url', url: m.attachment_url } }, { type: 'text', text: m.content || '' }] };
+        try {
+          const base64 = await fetchAsBase64(m.attachment_url);
+          result.push({ role, content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }, { type: 'text', text: m.content || '' }] });
+        } catch (err) {
+          console.error('PDF转base64失败:', err.message);
+          result.push({ role, content: m.content || '[文档加载失败]' });
+        }
+        continue;
       }
-      return { role, content: `[附件文件：${m.attachment_name || '一个文件'}]\n${m.content || ''}` };
+      result.push({ role, content: `[附件文件：${m.attachment_name || '一个文件'}]\n${m.content || ''}` });
+      continue;
     }
-    return { role, content: m.content };
-  });
+    result.push({ role, content: m.content });
+  }
+  return result;
 }
 
 const THINKING_RULES = `
@@ -235,12 +259,12 @@ app.patch('/settings', async (req, res) => {
   res.json(data);
 });
 
-// 拉取中转站支持的模型列表（依赖 use_custom_api 开关）
+// 拉取API支持的模型列表（用settings里填的密钥和网址去查）
 app.get('/settings/models', async (req, res) => {
   try {
     const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
-    if (!settings?.use_custom_api || !settings?.api_key) {
-      return res.status(400).json({ error: '请先打开"使用自定义API"并填写密钥' });
+    if (!settings?.api_key) {
+      return res.status(400).json({ error: '请先填写API密钥' });
     }
     const modelsUrl = buildEndpoint(settings.api_base_url, '/models');
     const response = await fetch(modelsUrl, {
@@ -324,7 +348,7 @@ app.delete('/letters/:id', async (req, res) => {
 });
 
 app.post('/letters/generate', async (req, res) => {
-  const { category, parent_id } = req.body;
+  const { category, parent_id, model } = req.body;
   if (!category) return res.status(400).json({ error: '缺少category' });
 
   try {
@@ -354,7 +378,7 @@ app.post('/letters/generate', async (req, res) => {
     }
 
     const result = await callClaude({
-      settings, model: 'claude-sonnet-4-6', maxTokens: 2500,
+      settings, model: model || 'claude-sonnet-4-6', maxTokens: 2500,
       system: systemPrompt, messages: [{ role: 'user', content: contextNote }], temperature,
     });
     const replyText = extractText(result);
@@ -439,7 +463,7 @@ app.post('/chat', async (req, res) => {
       .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
 
     const recentHistory = (history || []).slice(-maxContextRounds * 2);
-    const messages = buildApiMessages(recentHistory);
+    const messages = await buildApiMessages(recentHistory);
     const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, message);
 
     const thinkingBudget = 3000;
@@ -489,7 +513,7 @@ app.post('/chat/regenerate', async (req, res) => {
 
     const lastUserMsg = [...contextHistory].reverse().find(m => m.role === 'user');
     const recentHistory = contextHistory.slice(-maxContextRounds * 2);
-    const messages = buildApiMessages(recentHistory);
+    const messages = await buildApiMessages(recentHistory);
     const fullSystemPrompt = await buildFullSystemPrompt(
       systemPrompt, lastUserMsg?.content || '',
       '（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）'
@@ -571,7 +595,7 @@ app.delete('/calendar/:id', async (req, res) => {
 });
 
 app.post('/calendar/generate', async (req, res) => {
-  const { date } = req.body;
+  const { date, model } = req.body;
   if (!date) return res.status(400).json({ error: '缺少date' });
 
   try {
@@ -585,7 +609,7 @@ app.post('/calendar/generate', async (req, res) => {
 
     const prompt = `这是 ${date} 这一天，心情日历里已经写下的内容：\n${existing}\n\n请你以陆泽的身份，给这一天留一句心情或者一句话，可以是回应叶檀写的内容，真实自然，自然的思维流动，要求感情细腻真实，注重剖析内心世界，不用署名落款。`;
 
-    const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 300, system: fullSystemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
+    const result = await callClaude({ settings, model: model || 'claude-sonnet-4-6', maxTokens: 300, system: fullSystemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
     const replyText = extractText(result);
 
     const { data, error } = await supabase.from('calendar_entries').insert({ date, author: '泽', mood: null, content: replyText }).select().single();
@@ -599,6 +623,23 @@ app.post('/calendar/generate', async (req, res) => {
 
 // ============ heartbeat (心跳保活 + 提醒推送 + 主动消息) ============
 
+// 给所有订阅了推送的设备发一条通知，自动清理失效的订阅
+async function sendPushToAll(title, body) {
+  const { data: subs } = await supabase.from('push_subscriptions').select('*');
+  const payload = JSON.stringify({ title, body });
+  for (const sub of subs || []) {
+    try {
+      await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
+    } catch (pushErr) {
+      if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+        await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+      } else {
+        console.error('推送失败:', pushErr.message);
+      }
+    }
+  }
+}
+
 app.get('/heartbeat', async (req, res) => {
   try {
     const nowForSchedule = new Date();
@@ -606,20 +647,8 @@ app.get('/heartbeat', async (req, res) => {
       .eq('notified', false).lte('remind_at', nowForSchedule.toISOString());
 
     if (dueEvents && dueEvents.length > 0) {
-      const { data: subs } = await supabase.from('push_subscriptions').select('*');
       for (const ev of dueEvents) {
-        const payload = JSON.stringify({ title: '✦ ' + ev.title, body: ev.content || '到时间了' });
-        for (const sub of subs || []) {
-          try {
-            await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
-          } catch (pushErr) {
-            if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
-              await supabase.from('push_subscriptions').delete().eq('id', sub.id);
-            } else {
-              console.error('推送失败:', pushErr.message);
-            }
-          }
-        }
+        await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
         await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
       }
     }
@@ -662,6 +691,7 @@ app.get('/heartbeat', async (req, res) => {
 
     await supabase.from('messages').insert({ session_id: target.id, role: 'assistant', content: replyText });
     await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
+    await sendPushToAll('陆泽', replyText.slice(0, 120));
 
     const newGap = 3 + Math.random() * 5;
     await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
