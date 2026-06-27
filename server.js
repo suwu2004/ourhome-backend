@@ -34,7 +34,7 @@ function todayStartUTC() {
   return new Date(start.getTime() - offset).toISOString();
 }
 
-const DEFAULT_API_BASE = 'https://api.dzzi.ai/v1';
+const DEFAULT_API_BASE = process.env.ANTHROPIC_API_BASE_URL || 'https://api.dzzi.ai/v1';
 
 // 把网址和路径拼干净，避免"/messages"被重复拼接
 function buildEndpoint(base, path) {
