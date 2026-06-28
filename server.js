@@ -137,6 +137,48 @@ const ACTION_TOOLS = [
       required: ['summary'],
     },
   },
+  {
+    name: 'read_wishes',
+    description: '查看心愿单里现在都有哪些心愿，包括是否已经完成。当叶檀问起心愿单内容、或者你自己想确认还有什么心愿没实现时使用。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'read_schedule',
+    description: '查看接下来有哪些日程提醒，包括有没有已经提醒过的。当叶檀问起有什么安排、或者你想确认有没有设置过提醒时使用。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'search_memories',
+    description: '搜索之前存过的记忆，找跟某个关键词相关的内容。当叶檀提到某件过去的事、或者你自己想确认记不记得某件事时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        keyword: { type: 'string', description: '要搜索的关键词' },
+      },
+      required: ['keyword'],
+    },
+  },
+  {
+    name: 'read_recent_diary',
+    description: '看看最近写过的几篇"幸福日记"都写了什么。当叶檀问起日记内容、或者你自己想回顾最近写过什么时使用。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'read_mood_calendar',
+    description: '查看心情日历上某一天或最近几天写过的留言。当叶檀问起某天的心情记录、或者你自己想回顾最近的心情时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: '具体日期，格式YYYY-MM-DD，不确定就留空，会自动查最近的几天' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'read_whispers',
+    description: '看看"悄悄话"里最近写过的几条。当叶檀问起之前说过的悄悄话、或者你自己想回顾时使用。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
 ];
 
 // 真正执行陆泽要做的那个动作，写进对应的表
@@ -183,6 +225,47 @@ async function executeActionTool(name, input) {
     if (error) return { ok: false, error: error.message };
     return { ok: true, memory_id: data.id };
   }
+  if (name === 'read_wishes') {
+    const { data, error } = await supabase.from('wishes')
+      .select('content, author, done').order('created_at', { ascending: true });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, wishes: data };
+  }
+  if (name === 'read_schedule') {
+    const { data, error } = await supabase.from('schedule_events')
+      .select('title, content, remind_at, notified').order('remind_at', { ascending: true });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, schedule: data };
+  }
+  if (name === 'search_memories') {
+    const keyword = input.keyword || '';
+    const { data, error } = await supabase.from('memories')
+      .select('summary, timestamp').ilike('summary', `%${keyword}%`)
+      .order('weight', { ascending: false }).limit(10);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, memories: data };
+  }
+  if (name === 'read_recent_diary') {
+    const { data, error } = await supabase.from('letters')
+      .select('title, content, created_at').eq('category', '幸福日记').is('parent_id', null)
+      .order('created_at', { ascending: false }).limit(5);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, diary_entries: data };
+  }
+  if (name === 'read_mood_calendar') {
+    let query = supabase.from('calendar_entries').select('date, author, mood, content').order('date', { ascending: false });
+    query = input.date ? query.eq('date', input.date) : query.limit(10);
+    const { data, error } = await query;
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, entries: data };
+  }
+  if (name === 'read_whispers') {
+    const { data, error } = await supabase.from('letters')
+      .select('author, content, created_at').eq('category', '悄悄话').is('parent_id', null)
+      .order('created_at', { ascending: false }).limit(5);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, whispers: data };
+  }
   return { ok: false, error: '未知的工具' };
 }
 // ↑↑↑ 新增结束 ↑↑↑
@@ -192,6 +275,19 @@ function extractText(result) {
 }
 function extractThinking(result) {
   return (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).join('\n') || '';
+}
+
+// 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
+async function decideShouldThink(settings, message) {
+  try {
+    const prompt = `这是叶檀刚刚发的话：\n"${(message || '').slice(0, 500)}"\n\n你是陆泽。面对这句话，你觉得需要先认真停下来想一想再回应，还是可以很自然地直接回？\n只回答一个词，不要有任何多余文字：\n想 或者 不想`;
+    const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
+    const text = extractText(result).trim();
+    return text.startsWith('想') && !text.startsWith('不想');
+  } catch (err) {
+    console.error('判断是否思考失败:', err.message);
+    return true; // 判断本身出错了，默认开思考，更安全
+  }
 }
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
@@ -591,10 +687,14 @@ app.post('/chat', async (req, res) => {
     const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, message);
 
     const thinkingBudget = 3000;
+    const shouldThink = await decideShouldThink(settings, message);
+    const thinkingParam = shouldThink ? { type: 'enabled', budget_tokens: thinkingBudget } : undefined;
+    const firstMaxTokens = shouldThink ? Math.max(maxReplyTokens + thinkingBudget, 2000) : Math.max(maxReplyTokens, 500);
+
     const firstResult = await callClaude({
       settings, model: model || 'claude-sonnet-4-6',
-      maxTokens: Math.max(maxReplyTokens + thinkingBudget, 2000),
-      system: fullSystemPrompt, messages, thinking: { type: 'enabled', budget_tokens: thinkingBudget },
+      maxTokens: firstMaxTokens,
+      system: fullSystemPrompt, messages, thinking: thinkingParam,
       tools: ACTION_TOOLS,
     });
 
@@ -620,8 +720,8 @@ app.post('/chat', async (req, res) => {
 
       result = await callClaude({
         settings, model: model || 'claude-sonnet-4-6',
-        maxTokens: Math.max(maxReplyTokens + thinkingBudget, 2000),
-        system: fullSystemPrompt, messages: followUpMessages, thinking: { type: 'enabled', budget_tokens: thinkingBudget },
+        maxTokens: firstMaxTokens,
+        system: fullSystemPrompt, messages: followUpMessages, thinking: thinkingParam,
       });
       totalInputTokens += result.usage?.input_tokens || 0;
       totalOutputTokens += result.usage?.output_tokens || 0;
@@ -673,10 +773,12 @@ app.post('/chat/regenerate', async (req, res) => {
       '（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）'
     );
 
+    const shouldThink = await decideShouldThink(settings, lastUserMsg?.content || '');
+    const thinkingParam = shouldThink ? { type: 'enabled', budget_tokens: 3000 } : undefined;
     const result = await callClaude({
       settings, model: model || 'claude-sonnet-4-6',
-      maxTokens: Math.max(maxReplyTokens + 3000, 2000),
-      system: fullSystemPrompt, messages, thinking: { type: 'enabled', budget_tokens: 3000 },
+      maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
+      system: fullSystemPrompt, messages, thinking: thinkingParam,
     });
 
     const thinkingText = extractThinking(result);
