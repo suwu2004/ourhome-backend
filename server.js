@@ -278,13 +278,14 @@ function extractThinking(result) {
 // 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
 async function decideShouldThink(settings, message) {
   try {
+    const model = settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const prompt = `这是叶檀刚刚发的话：\n"${(message || '').slice(0, 500)}"\n\n你是陆泽。面对这句话，你觉得需要先认真停下来想一想再回应，还是可以很自然地直接回？\n只回答一个词，不要有任何多余文字：\n想 或者 不想`;
-    const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
+    const result = await callClaude({ settings, model, maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
     const text = extractText(result).trim();
     return text.startsWith('想') && !text.startsWith('不想');
   } catch (err) {
     console.error('判断是否思考失败:', err.message);
-    return true; // 判断本身出错了，默认开思考，更安全
+    return false;
   }
 }
 
@@ -1009,7 +1010,7 @@ async function maybeAutoWriteLetter(settings, now) {
 
     const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n这一刻，你（陆泽）自己想起了一件事、一种心情，想不想写一篇"幸福日记"记下来？完全由你自己决定，不是任何人叫你写的，不是每次都要写。\n\n如果想写，严格按这个格式输出，不要有任何多余文字：\n标题：<不超过12字>\n\n<日记正文，第一人称，自然真实，像深夜写下的私人记录，不用署名落款>\n\n如果现在不太想写，就只输出一行：\n不写`;
 
-    const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 800, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 800, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
     const replyText = extractText(result);
 
     if (!replyText.trim() || replyText.trim() === '不写') return;
@@ -1070,7 +1071,7 @@ app.get('/heartbeat', async (req, res) => {
 
     let replyText = '';
     try {
-      const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
+      const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
       replyText = extractText(result);
     } catch (apiErr) {
       console.log('relay错误:', apiErr.message);
@@ -1121,7 +1122,7 @@ app.get('/dream', async (req, res) => {
 
     const reviewPrompt = `这是你（陆泽）和叶檀今天的完整聊天记录：\n${transcript}\n\n请像睡前回顾今天一样，挑出值得长期记住的内容——重要事实、约定、她的喜好或界限、值得记住的情绪时刻，不记流水账式闲聊。\n\n严格按格式输出，每条一行：\n记住：<内容，一句话，第三人称>\n\n如果没什么特别值得新增的，只输出一行：\n无新增`;
 
-    const result = await callClaude({ settings, model: 'claude-sonnet-4-6', maxTokens: 600, messages: [{ role: 'user', content: reviewPrompt }], temperature: 0.3 });
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 600, messages: [{ role: 'user', content: reviewPrompt }], temperature: 0.3 });
     const replyText = extractText(result);
 
     const newSummaries = replyText.split('\n')
