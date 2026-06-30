@@ -509,6 +509,45 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   return prompt;
 }
 
+// 跑一轮"可能带工具调用"的对话，直到陆泽不再调用工具为止——
+// 关键点：每一轮都要重新把工具列表带上，不然他读完东西之后想接着写，会发现手里没工具了
+async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, gemini }) {
+  const MAX_TOOL_ROUNDS = 5;
+  let currentMessages = messages;
+  let result = await callClaude({
+    settings, model: modelName, maxTokens,
+    system: systemPrompt, messages: currentMessages, thinking: thinkingParam, tools: toolsParam,
+  });
+  let totalInputTokens = result.usage?.input_tokens || 0;
+  let totalOutputTokens = result.usage?.output_tokens || 0;
+  let actionsPerformed = [];
+  let rounds = 0;
+
+  while (!gemini && result.stop_reason === 'tool_use' && rounds < MAX_TOOL_ROUNDS) {
+    rounds++;
+    const toolUseBlocks = (result.content || []).filter(b => b.type === 'tool_use');
+    const toolResultBlocks = [];
+    for (const tu of toolUseBlocks) {
+      const actionResult = await executeActionTool(tu.name, tu.input || {});
+      actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
+      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
+    }
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant', content: result.content },
+      { role: 'user', content: toolResultBlocks },
+    ];
+    result = await callClaude({
+      settings, model: modelName, maxTokens,
+      system: systemPrompt, messages: currentMessages, thinking: thinkingParam, tools: toolsParam,
+    });
+    totalInputTokens += result.usage?.input_tokens || 0;
+    totalOutputTokens += result.usage?.output_tokens || 0;
+  }
+
+  return { result, totalInputTokens, totalOutputTokens, actionsPerformed };
+}
+
 // 根据"到某条消息为止"的历史，让陆泽生成一句新的回复——编辑重发、回溯重发都靠这个
 async function generateReplyForHistory({ settings, model, historyMessages, latestUserMessage }) {
   const fullSystemPrompt = await buildFullSystemPrompt(
@@ -531,36 +570,10 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
     : Math.max(maxReplyTokens, 500);
   const toolsParam = gemini ? undefined : ACTION_TOOLS;
 
-  const firstResult = await callClaude({
-    settings, model: modelName, maxTokens: firstMaxTokens,
-    system: fullSystemPrompt, messages, thinking: thinkingParam, tools: toolsParam,
+  const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+    settings, modelName, maxTokens: firstMaxTokens,
+    systemPrompt: fullSystemPrompt, messages, thinkingParam, toolsParam, gemini,
   });
-
-  let result = firstResult;
-  let totalInputTokens = firstResult.usage?.input_tokens || 0;
-  let totalOutputTokens = firstResult.usage?.output_tokens || 0;
-  let actionsPerformed = [];
-
-  if (!gemini && firstResult.stop_reason === 'tool_use') {
-    const toolUseBlocks = (firstResult.content || []).filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    for (const tu of toolUseBlocks) {
-      const actionResult = await executeActionTool(tu.name, tu.input || {});
-      actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
-      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
-    }
-    const followUpMessages = [
-      ...messages,
-      { role: 'assistant', content: firstResult.content },
-      { role: 'user', content: toolResultBlocks },
-    ];
-    result = await callClaude({
-      settings, model: modelName, maxTokens: firstMaxTokens,
-      system: fullSystemPrompt, messages: followUpMessages, thinking: thinkingParam,
-    });
-    totalInputTokens += result.usage?.input_tokens || 0;
-    totalOutputTokens += result.usage?.output_tokens || 0;
-  }
 
   return {
     replyText: extractText(result),
@@ -1004,41 +1017,10 @@ app.post('/chat', async (req, res) => {
     // Gemini不支持Claude格式的工具，跳过ACTION_TOOLS
     const toolsParam = gemini ? undefined : ACTION_TOOLS;
 
-    const firstResult = await callClaude({
-      settings, model: modelName,
-      maxTokens: firstMaxTokens,
-      system: fullSystemPrompt, messages, thinking: thinkingParam,
-      tools: toolsParam,
+    const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+      settings, modelName, maxTokens: firstMaxTokens,
+      systemPrompt: fullSystemPrompt, messages, thinkingParam, toolsParam, gemini,
     });
-
-    let result = firstResult;
-    let totalInputTokens = firstResult.usage?.input_tokens || 0;
-    let totalOutputTokens = firstResult.usage?.output_tokens || 0;
-    let actionsPerformed = [];
-
-    if (!gemini && firstResult.stop_reason === 'tool_use') {
-      const toolUseBlocks = (firstResult.content || []).filter(b => b.type === 'tool_use');
-      const toolResultBlocks = [];
-      for (const tu of toolUseBlocks) {
-        const actionResult = await executeActionTool(tu.name, tu.input || {});
-        actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
-        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
-      }
-
-      const followUpMessages = [
-        ...messages,
-        { role: 'assistant', content: firstResult.content },
-        { role: 'user', content: toolResultBlocks },
-      ];
-
-      result = await callClaude({
-        settings, model: modelName,
-        maxTokens: firstMaxTokens,
-        system: fullSystemPrompt, messages: followUpMessages, thinking: thinkingParam,
-      });
-      totalInputTokens += result.usage?.input_tokens || 0;
-      totalOutputTokens += result.usage?.output_tokens || 0;
-    }
 
     const thinkingText = extractThinking(result);
     const replyText = extractText(result);
