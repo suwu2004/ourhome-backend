@@ -594,6 +594,33 @@ app.get('/settings/models', async (req, res) => {
 
 // ============ memories ============
 
+// 给所有没有向量的记忆批量生成embedding（一次性用，老记忆补全用）
+app.get('/memories/reindex', async (req, res) => {
+  try {
+    const jinaKey = process.env.JINA_API_KEY;
+    if (!jinaKey) return res.status(400).json({ error: '没有配置JINA_API_KEY' });
+
+    const { data: memories } = await supabase.from('memories').select('id, summary').is('embedding', null);
+    if (!memories || memories.length === 0) return res.json({ done: true, updated: 0, message: '所有记忆都已经有向量了' });
+
+    let updated = 0;
+    for (const m of memories) {
+      const embedding = await getEmbedding(m.summary);
+      if (embedding) {
+        await supabase.from('memories').update({ embedding }).eq('id', m.id);
+        updated++;
+      }
+      // 每条之间等一下，避免触发Jina的限速
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    res.json({ done: true, updated, total: memories.length });
+  } catch (err) {
+    console.error('reindex错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/memories', async (req, res) => {
   const { data, error } = await supabase.from('memories').select('*').order('timestamp', { ascending: false }).limit(500);
   if (error) return res.status(500).json({ error: error.message });
