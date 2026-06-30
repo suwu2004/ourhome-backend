@@ -36,6 +36,10 @@ function todayStartUTC() {
 
 const DEFAULT_API_BASE = process.env.ANTHROPIC_API_BASE_URL || 'https://api.dzzi.ai/v1';
 
+// 判断模型类型
+function isThinkingModel(model) { return (model || '').toLowerCase().includes('thinking'); }
+function isGeminiModel(model) { return (model || '').toLowerCase().includes('gemini'); }
+
 // 把网址和路径拼干净，避免"/messages"被重复拼接
 function buildEndpoint(base, path) {
   const clean = (base || DEFAULT_API_BASE).replace(/\/+$/, '');
@@ -469,8 +473,16 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   // 普通记忆：按关键词相关性召回
   const memories = await getRelevantMemories(userMessage || '');
 
+  // 最近信件（悄悄话+心情这些）
   const { data: recentLetters } = await supabase
     .from('letters').select('category, author, title, content, created_at')
+    .not('category', 'eq', '幸福日记')
+    .order('created_at', { ascending: false }).limit(3);
+
+  // 幸福日记单独拉，保证他随时能看到最近写过什么
+  const { data: recentDiaries } = await supabase
+    .from('letters').select('title, content, created_at')
+    .eq('category', '幸福日记').is('parent_id', null)
     .order('created_at', { ascending: false }).limit(5);
 
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
@@ -478,10 +490,14 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   const lettersSummary = (recentLetters || [])
     .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${l.content}`)
     .join('\n') || '';
+  const diariesSummary = (recentDiaries || [])
+    .map(d => `【${d.title || '无标题'}】${d.content?.slice(0, 300)}`)
+    .join('\n\n') || '';
 
   let prompt = basePrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
   if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
+  if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
   if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
   prompt += THINKING_RULES;
@@ -845,15 +861,30 @@ app.post('/chat', async (req, res) => {
     const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, message);
 
     const thinkingBudget = 3000;
-    const shouldThink = await decideShouldThink(settings, message);
-    const thinkingParam = shouldThink ? { type: 'enabled', budget_tokens: thinkingBudget } : undefined;
-    const firstMaxTokens = shouldThink ? Math.max(maxReplyTokens + thinkingBudget, 2000) : Math.max(maxReplyTokens, 500);
+    const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    const gemini = isGeminiModel(modelName);
+    const thinkingBuiltIn = isThinkingModel(modelName); // relay侧已内置thinking，不需要我们传参数
+
+    // 普通Claude模型才需要主动判断要不要开思考
+    const shouldThink = thinkingBuiltIn ? true : (!gemini && await decideShouldThink(settings, message));
+
+    // 只有普通Claude模型（非relay内置thinking、非Gemini）才发thinking参数
+    const thinkingParam = (!gemini && !thinkingBuiltIn && shouldThink)
+      ? { type: 'enabled', budget_tokens: thinkingBudget }
+      : undefined;
+
+    const firstMaxTokens = shouldThink
+      ? Math.max(maxReplyTokens + thinkingBudget, 2000)
+      : Math.max(maxReplyTokens, 500);
+
+    // Gemini不支持Claude格式的工具，跳过ACTION_TOOLS
+    const toolsParam = gemini ? undefined : ACTION_TOOLS;
 
     const firstResult = await callClaude({
-      settings, model: model || 'claude-sonnet-4-6',
+      settings, model: modelName,
       maxTokens: firstMaxTokens,
       system: fullSystemPrompt, messages, thinking: thinkingParam,
-      tools: ACTION_TOOLS,
+      tools: toolsParam,
     });
 
     let result = firstResult;
@@ -861,7 +892,7 @@ app.post('/chat', async (req, res) => {
     let totalOutputTokens = firstResult.usage?.output_tokens || 0;
     let actionsPerformed = [];
 
-    if (firstResult.stop_reason === 'tool_use') {
+    if (!gemini && firstResult.stop_reason === 'tool_use') {
       const toolUseBlocks = (firstResult.content || []).filter(b => b.type === 'tool_use');
       const toolResultBlocks = [];
       for (const tu of toolUseBlocks) {
@@ -877,7 +908,7 @@ app.post('/chat', async (req, res) => {
       ];
 
       result = await callClaude({
-        settings, model: model || 'claude-sonnet-4-6',
+        settings, model: modelName,
         maxTokens: firstMaxTokens,
         system: fullSystemPrompt, messages: followUpMessages, thinking: thinkingParam,
       });
@@ -931,10 +962,15 @@ app.post('/chat/regenerate', async (req, res) => {
       '（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）'
     );
 
-    const shouldThink = await decideShouldThink(settings, lastUserMsg?.content || '');
-    const thinkingParam = shouldThink ? { type: 'enabled', budget_tokens: 3000 } : undefined;
+    const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    const geminiRegen = isGeminiModel(modelNameRegen);
+    const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
+    const shouldThink = thinkingBuiltInRegen ? true : (!geminiRegen && await decideShouldThink(settings, lastUserMsg?.content || ''));
+    const thinkingParam = (!geminiRegen && !thinkingBuiltInRegen && shouldThink)
+      ? { type: 'enabled', budget_tokens: 3000 }
+      : undefined;
     const result = await callClaude({
-      settings, model: model || 'claude-sonnet-4-6',
+      settings, model: modelNameRegen,
       maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
       system: fullSystemPrompt, messages, thinking: thinkingParam,
     });
