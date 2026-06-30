@@ -58,7 +58,12 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
 
   const response = await fetch(apiBaseUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'interleaved-thinking-2025-05-14',
+    },
     body: JSON.stringify(body),
   });
   if (!response.ok) {
@@ -504,6 +509,66 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   return prompt;
 }
 
+// 根据"到某条消息为止"的历史，让陆泽生成一句新的回复——编辑重发、回溯重发都靠这个
+async function generateReplyForHistory({ settings, model, historyMessages, latestUserMessage }) {
+  const fullSystemPrompt = await buildFullSystemPrompt(
+    settings?.system_prompt || '你是陆泽，叶檀的伴侣。',
+    latestUserMessage || '',
+  );
+  const messages = await buildApiMessages(historyMessages);
+
+  const maxReplyTokens = settings?.max_reply_tokens || 1000;
+  const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+  const gemini = isGeminiModel(modelName);
+  const thinkingBuiltIn = isThinkingModel(modelName);
+  const shouldThink = thinkingBuiltIn ? true : (!gemini && await decideShouldThink(settings, latestUserMessage));
+  const thinkingBudget = 3000;
+  const thinkingParam = (!gemini && !thinkingBuiltIn && shouldThink)
+    ? { type: 'enabled', budget_tokens: thinkingBudget }
+    : undefined;
+  const firstMaxTokens = shouldThink
+    ? Math.max(maxReplyTokens + thinkingBudget, 2000)
+    : Math.max(maxReplyTokens, 500);
+  const toolsParam = gemini ? undefined : ACTION_TOOLS;
+
+  const firstResult = await callClaude({
+    settings, model: modelName, maxTokens: firstMaxTokens,
+    system: fullSystemPrompt, messages, thinking: thinkingParam, tools: toolsParam,
+  });
+
+  let result = firstResult;
+  let totalInputTokens = firstResult.usage?.input_tokens || 0;
+  let totalOutputTokens = firstResult.usage?.output_tokens || 0;
+  let actionsPerformed = [];
+
+  if (!gemini && firstResult.stop_reason === 'tool_use') {
+    const toolUseBlocks = (firstResult.content || []).filter(b => b.type === 'tool_use');
+    const toolResultBlocks = [];
+    for (const tu of toolUseBlocks) {
+      const actionResult = await executeActionTool(tu.name, tu.input || {});
+      actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
+      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
+    }
+    const followUpMessages = [
+      ...messages,
+      { role: 'assistant', content: firstResult.content },
+      { role: 'user', content: toolResultBlocks },
+    ];
+    result = await callClaude({
+      settings, model: modelName, maxTokens: firstMaxTokens,
+      system: fullSystemPrompt, messages: followUpMessages, thinking: thinkingParam,
+    });
+    totalInputTokens += result.usage?.input_tokens || 0;
+    totalOutputTokens += result.usage?.output_tokens || 0;
+  }
+
+  return {
+    replyText: extractText(result),
+    thinkingText: extractThinking(result),
+    totalInputTokens, totalOutputTokens, actionsPerformed,
+  };
+}
+
 // ============ 认证 ============
 
 const TOKEN_SECRET = process.env.APP_TOKEN_SECRET || 'ourhome_secret';
@@ -610,6 +675,65 @@ app.get('/messages/search', async (req, res) => {
     .ilike('content', `%${q.trim()}%`).order('created_at', { ascending: false }).limit(50);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+// 编辑一条叶檀发的消息，让陆泽根据新内容重新回复——后面原来的内容会先被藏起来
+app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
+  const { id } = req.params;
+  const { content, model } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: '内容不能为空' });
+
+  try {
+    const { data: target, error: targetErr } = await supabase.from('messages').select('*').eq('id', id).single();
+    if (targetErr || !target) return res.status(404).json({ error: '找不到这条消息' });
+    if (target.role !== 'user') return res.status(400).json({ error: '只能编辑叶檀发的消息' });
+
+    await supabase.from('messages').update({ content: content.trim() }).eq('id', id);
+    await supabase.from('messages').update({ visible: false })
+      .eq('session_id', target.session_id).gt('created_at', target.created_at);
+
+    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const { data: history } = await supabase.from('messages')
+      .select('role, content, attachment_url, attachment_type, attachment_name, created_at')
+      .eq('session_id', target.session_id).eq('visible', true).order('created_at', { ascending: true });
+
+    const maxContextRounds = settings?.max_context_rounds || 20;
+    const recentHistory = (history || []).slice(-maxContextRounds * 2);
+
+    const { replyText, thinkingText, totalInputTokens, totalOutputTokens, actionsPerformed } =
+      await generateReplyForHistory({ settings, model, historyMessages: recentHistory, latestUserMessage: content.trim() });
+
+    const { data: newMsg, error: insertErr } = await supabase.from('messages').insert({
+      session_id: target.session_id, role: 'assistant', content: replyText,
+      reasoning_content: thinkingText || null,
+      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+    }).select().single();
+    if (insertErr) return res.status(500).json({ error: insertErr.message });
+
+    await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', target.session_id);
+
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+  } catch (err) {
+    console.error('编辑重发错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 回溯：回到某条消息这里，把它之后的内容先藏起来（不是真的删，数据库里还在）
+app.post('/messages/:id/rollback', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { data: target, error: targetErr } = await supabase.from('messages').select('*').eq('id', id).single();
+    if (targetErr || !target) return res.status(404).json({ error: '找不到这条消息' });
+
+    await supabase.from('messages').update({ visible: false })
+      .eq('session_id', target.session_id).gt('created_at', target.created_at);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('回溯错误:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============ settings ============
