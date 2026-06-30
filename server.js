@@ -56,19 +56,22 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   if (thinking) body.thinking = thinking;
   if (tools) body.tools = tools;
 
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+  };
+  // 这个头只在真的开了思考的时候才需要，平时带着反而可能被某些线路当成格式错误
+  if (thinking) headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
+
   const response = await fetch(apiBaseUrl, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'interleaved-thinking-2025-05-14',
-    },
+    headers,
     body: JSON.stringify(body),
   });
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(err);
+    throw new Error(`[${response.status}] model=${body.model} ${err}`);
   }
   return response.json();
 }
@@ -306,12 +309,25 @@ async function fetchAsBase64(url) {
   return Buffer.from(buffer).toString('base64');
 }
 
-// 把消息历史转成API格式，图片/PDF统一转base64，普通文件保留文字提示
+// 把消息历史转成API格式。只有"最新这一条"的图片/PDF才会真的下载转base64发给模型——
+// 更早的带附件消息只留一句文字提示，不会每次发消息都把历史里的老图片重新下载一遍，省带宽也省时间
 async function buildApiMessages(history) {
+  const list = history || [];
+  const lastIndex = list.length - 1;
   const result = [];
-  for (const m of (history || [])) {
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    const isLatest = i === lastIndex;
     const role = m.role === 'user' ? 'user' : 'assistant';
     if (m.attachment_url) {
+      if (!isLatest) {
+        // 不是最新一条，不重新下载原文件，只留个文字提示让陆泽知道这里曾经有个附件
+        const label = m.attachment_type?.startsWith('image/')
+          ? '[之前发过一张图片]'
+          : `[之前发过一个文件：${m.attachment_name || '文件'}]`;
+        result.push({ role, content: m.content ? `${m.content}\n${label}` : label });
+        continue;
+      }
       if (m.attachment_type?.startsWith('image/')) {
         try {
           const base64 = await fetchAsBase64(m.attachment_url);
