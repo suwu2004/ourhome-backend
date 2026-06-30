@@ -488,6 +488,49 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   return prompt;
 }
 
+// ============ 认证 ============
+
+const TOKEN_SECRET = process.env.APP_TOKEN_SECRET || 'ourhome_secret';
+
+// 生成简单的签名token：base64(payload).signature
+function makeToken() {
+  const payload = Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64url');
+  const crypto = require('crypto');
+  const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token) return false;
+  try {
+    const [payload, sig] = token.split('.');
+    if (!payload || !sig) return false;
+    const crypto = require('crypto');
+    const expected = crypto.createHmac('sha256', TOKEN_SECRET).update(payload).digest('base64url');
+    return sig === expected;
+  } catch {
+    return false;
+  }
+}
+
+// 登录接口——只有这一个不需要token
+app.post('/login', (req, res) => {
+  const { password } = req.body;
+  const correct = process.env.APP_PASSWORD;
+  if (!correct) return res.status(500).json({ error: '服务器未配置密码' });
+  if (password !== correct) return res.status(401).json({ error: '密码错误' });
+  res.json({ token: makeToken() });
+});
+
+// 全局token验证中间件（/login和/本身不需要验证）
+app.use((req, res, next) => {
+  if (req.path === '/login' || req.path === '/') return next();
+  const auth = req.headers['authorization'] || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!verifyToken(token)) return res.status(401).json({ error: '未授权，请先登录' });
+  next();
+});
+
 // ============ 基础 ============
 
 app.get('/', (req, res) => {
