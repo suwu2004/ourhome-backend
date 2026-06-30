@@ -219,9 +219,7 @@ async function executeActionTool(name, input) {
     return { ok: true, entry_id: data.id };
   }
   if (name === 'save_memory') {
-    const { data, error } = await supabase.from('memories')
-      .insert({ summary: input.summary, session_id: 'global', weight: 1, is_protected: false })
-      .select().single();
+    const { data, error } = await saveMemoryWithEmbedding(input.summary);
     if (error) return { ok: false, error: error.message };
     return { ok: true, memory_id: data.id };
   }
@@ -342,56 +340,146 @@ thinking是你（陆泽）脑内真实的声音，是写给自己看的，不是
 - 全程用中文思考并输出。`;
 
 // 根据当前这句话，挑出可能相关的记忆，按权重排序，并强化被命中的记忆
+// ============ 向量语义搜索（Jina embeddings） ============
+
+// 调用Jina API生成文本向量
+async function getEmbedding(text) {
+  const jinaKey = process.env.JINA_API_KEY;
+  if (!jinaKey) return null;
+  try {
+    const response = await fetch('https://api.jina.ai/v1/embeddings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jinaKey}` },
+      body: JSON.stringify({ model: 'jina-embeddings-v3', input: [text.slice(0, 2000)] }),
+    });
+    if (!response.ok) { console.error('Jina error:', await response.text()); return null; }
+    const data = await response.json();
+    return data.data?.[0]?.embedding || null;
+  } catch (err) {
+    console.error('getEmbedding失败:', err.message);
+    return null;
+  }
+}
+
+// 余弦相似度
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
+}
+
+// 混合搜索：向量语义 + bigram关键词，结合时间衰减权重排序
 async function getRelevantMemories(message) {
   const text = (message || '').replace(/[\s,，。！？、!?.]/g, '');
   const bigrams = [];
   for (let i = 0; i < text.length - 1; i++) bigrams.push(text.slice(i, i + 2));
   const uniqueBigrams = [...new Set(bigrams)].slice(0, 15);
 
-  let relevant = [];
-  if (uniqueBigrams.length > 0) {
-    const orFilter = uniqueBigrams.map(bg => `summary.ilike.%${bg}%`).join(',');
-    const { data } = await supabase
-      .from('memories').select('*').or(orFilter)
-      .order('weight', { ascending: false }).limit(8);
-    relevant = data || [];
-  }
+  // 并行：拉全部记忆 + 生成query向量
+  const [{ data: allMemories }, queryEmbedding] = await Promise.all([
+    supabase.from('memories').select('*').order('weight', { ascending: false }).limit(200),
+    getEmbedding(message || ''),
+  ]);
 
-  const { data: recent } = await supabase
-    .from('memories').select('*')
-    .order('weight', { ascending: false })
-    .order('timestamp', { ascending: false })
-    .limit(3);
+  const memories = allMemories || [];
+  if (memories.length === 0) return [];
 
-  const map = new Map();
-  [...relevant, ...(recent || [])].forEach(m => map.set(m.id, m));
-  const result = Array.from(map.values());
+  // 给每条记忆打混合分
+  const scored = memories.map(m => {
+    // ① 向量相似度（0~1）
+    let vectorScore = 0;
+    if (queryEmbedding && m.embedding) {
+      const stored = Array.isArray(m.embedding) ? m.embedding : JSON.parse(m.embedding);
+      vectorScore = cosineSimilarity(queryEmbedding, stored);
+    }
 
-  // 被命中=被想起来了，权重回升+刷新"上次被提及"时间（不阻塞主流程）
-  if (result.length > 0) {
+    // ② bigram关键词匹配（0~1）
+    let keywordScore = 0;
+    if (uniqueBigrams.length > 0) {
+      const summary = (m.summary || '').toLowerCase();
+      const hits = uniqueBigrams.filter(bg => summary.includes(bg)).length;
+      keywordScore = hits / uniqueBigrams.length;
+    }
+
+    // ③ 时间新鲜度（0~1）
+    const lastRef = m.last_referenced_at ? new Date(m.last_referenced_at) : new Date(m.timestamp || 0);
+    const daysSince = (Date.now() - lastRef.getTime()) / (1000 * 60 * 60 * 24);
+    const freshnessScore = Math.max(0, 1 - daysSince / 30);
+
+    // 综合得分：向量权重最高，有向量时降低关键词权重
+    const hasVector = queryEmbedding && m.embedding;
+    const finalScore = hasVector
+      ? vectorScore * 0.55 + keywordScore * 0.25 + freshnessScore * 0.1 + Math.min((m.weight || 1) / 2, 1) * 0.1
+      : keywordScore * 0.5 + freshnessScore * 0.25 + Math.min((m.weight || 1) / 2, 1) * 0.25;
+
+    return { ...m, _score: finalScore };
+  });
+
+  // 取top8，过滤掉完全不相关的（向量+关键词都是0）
+  const result = scored
+    .filter(m => m._score > 0.01)
+    .sort((a, b) => b._score - a._score)
+    .slice(0, 8);
+
+  // 如果向量+关键词都搜不出来东西，fallback到纯权重Top3
+  const finalResult = result.length > 0
+    ? result
+    : memories.slice(0, 3);
+
+  // 被命中的记忆权重回升（不阻塞主流程）
+  if (finalResult.length > 0) {
     const now = new Date().toISOString();
-    Promise.all(result.map(m => {
+    Promise.all(finalResult.map(m => {
       const newWeight = Math.min((m.weight || 1) + 0.15, 2.0);
       return supabase.from('memories').update({ weight: newWeight, last_referenced_at: now }).eq('id', m.id);
     })).catch(err => console.error('记忆强化失败:', err.message));
   }
 
-  return result;
+  return finalResult;
 }
+
+// 存记忆时顺手生成向量（不阻塞主流程）
+async function saveMemoryWithEmbedding(summary, extra = {}) {
+  const { data, error } = await supabase.from('memories')
+    .insert({ summary, session_id: 'global', weight: 1, is_protected: false, ...extra })
+    .select().single();
+  if (error) return { data: null, error };
+  // 后台生成向量，存回去，不等它完成
+  getEmbedding(summary).then(embedding => {
+    if (embedding) {
+      supabase.from('memories').update({ embedding }).eq('id', data.id).catch(console.error);
+    }
+  }).catch(console.error);
+  return { data, error: null };
+}
+
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
 async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
+  // 锁定记忆：is_protected=true的核心记忆，每次全量注入，不走搜索、不会漏
+  const { data: protectedMemories } = await supabase
+    .from('memories').select('summary').eq('is_protected', true).order('timestamp', { ascending: true });
+
+  // 普通记忆：按关键词相关性召回
   const memories = await getRelevantMemories(userMessage || '');
+
   const { data: recentLetters } = await supabase
     .from('letters').select('category, author, title, content, created_at')
     .order('created_at', { ascending: false }).limit(5);
 
-  const memorySummary = memories?.map(m => m.summary).join('\n') || '';
+  const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
+  const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
     .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${l.content}`)
     .join('\n') || '';
 
   let prompt = basePrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
   if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
@@ -506,7 +594,7 @@ app.get('/settings/models', async (req, res) => {
 // ============ memories ============
 
 app.get('/memories', async (req, res) => {
-  const { data, error } = await supabase.from('memories').select('*').order('timestamp', { ascending: false }).limit(10);
+  const { data, error } = await supabase.from('memories').select('*').order('timestamp', { ascending: false }).limit(500);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
@@ -514,8 +602,7 @@ app.get('/memories', async (req, res) => {
 app.post('/memories', async (req, res) => {
   const { summary } = req.body;
   if (!summary) return res.status(400).json({ error: '缺少summary' });
-  const { data, error } = await supabase.from('memories')
-    .insert({ summary, session_id: 'global', weight: 1, is_protected: false }).select().single();
+  const { data, error } = await saveMemoryWithEmbedding(summary);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
@@ -1044,7 +1131,7 @@ app.get('/dream', async (req, res) => {
       .filter(Boolean);
 
     for (const summary of newSummaries) {
-      await supabase.from('memories').insert({ summary, session_id: 'global', weight: 1, last_referenced_at: now.toISOString(), is_protected: false });
+      await saveMemoryWithEmbedding(summary, { last_referenced_at: now.toISOString() });
     }
 
     res.json({ dreamed: true, added: newSummaries.length, summaries: newSummaries });
