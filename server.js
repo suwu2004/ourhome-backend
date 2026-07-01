@@ -974,13 +974,217 @@ app.get('/export', async (req, res) => {
     const { data: sessions } = await supabase.from('sessions').select('*');
     const result = [];
     for (const s of sessions || []) {
-      const { data: msgs } = await supabase.from('messages').select('role, content, created_at')
-        .eq('session_id', s.id).order('created_at', { ascending: true });
+      const { data: msgs } = await supabase.from('messages').select('role, content, created_at, attachment_url, attachment_type')
+        .eq('session_id', s.id).eq('visible', true).order('created_at', { ascending: true });
       result.push({ session: s.name, id: s.id, messages: msgs || [] });
     }
-    res.setHeader('Content-Disposition', 'attachment; filename="ourhome-export.json"');
-    res.setHeader('Content-Type', 'application/json');
-    res.json(result);
+
+    const fmt = (iso) => {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mi = String(d.getMinutes()).padStart(2, '0');
+      return `${d.getFullYear()}.${mm}.${dd} ${hh}:${mi}`;
+    };
+
+    const escHtml = (s) => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    const totalMsgs = result.reduce((sum, s) => sum + s.messages.length, 0);
+    const exportDate = fmt(new Date().toISOString());
+
+    let sessionsHtml = '';
+    for (const s of result) {
+      if (!s.messages.length) continue;
+      let msgsHtml = '';
+      for (const m of s.messages) {
+        const isMe = m.role === 'user';
+        const name = isMe ? '檀' : '泽';
+        const time = fmt(m.created_at);
+        const hasImage = m.attachment_url && m.attachment_type?.startsWith('image/');
+        const contentHtml = escHtml(m.content).replace(/\n/g, '<br>');
+        msgsHtml += `
+          <div class="msg ${isMe ? 'msg-me' : 'msg-ai'}">
+            <div class="avatar">${name}</div>
+            <div class="bubble-wrap">
+              ${hasImage ? `<img class="msg-img" src="${escHtml(m.attachment_url)}" alt="图片" />` : ''}
+              ${m.content ? `<div class="bubble">${contentHtml}</div>` : ''}
+              <div class="time">${time}</div>
+            </div>
+          </div>`;
+      }
+      sessionsHtml += `
+        <div class="session">
+          <div class="session-title">✦ ${escHtml(s.session)}</div>
+          <div class="messages">${msgsHtml}</div>
+        </div>`;
+    }
+
+    const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OurHome · 聊天记录</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #FFF8F0;
+    color: #2E1F12;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+
+  /* ===== 页眉 ===== */
+  .page-header {
+    background: linear-gradient(135deg, #FFF3D6 0%, #FDEBD0 100%);
+    border-bottom: 1px solid #EFE4CC;
+    padding: 32px 20px 24px;
+    text-align: center;
+  }
+  .header-icon { font-size: 36px; margin-bottom: 8px; }
+  .header-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    color: #B97A1F;
+  }
+  .header-sub {
+    font-size: 11px;
+    color: #B89A6A;
+    letter-spacing: .25em;
+    margin-top: 6px;
+  }
+  .header-meta {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-top: 14px;
+    font-size: 11.5px;
+    color: #B89A6A;
+  }
+  .header-meta span { display: flex; align-items: center; gap: 4px; }
+
+  /* ===== 内容区 ===== */
+  .content { max-width: 720px; margin: 0 auto; padding: 24px 16px 40px; }
+
+  /* ===== 对话组 ===== */
+  .session { margin-bottom: 40px; }
+  .session-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #B97A1F;
+    letter-spacing: .12em;
+    padding: 8px 14px;
+    background: #FFF3D6;
+    border-radius: 999px;
+    display: inline-block;
+    margin-bottom: 18px;
+    border: 1px solid #F5DFA0;
+  }
+  .messages { display: flex; flex-direction: column; gap: 14px; }
+
+  /* ===== 消息气泡 ===== */
+  .msg { display: flex; align-items: flex-end; gap: 8px; }
+  .msg-me { flex-direction: row-reverse; }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff;
+  }
+  .msg-ai .avatar { background: linear-gradient(150deg, #E8B45A, #B97A1F); }
+  .msg-me .avatar { background: linear-gradient(150deg, #F2AFA2, #E8907A); }
+  .bubble-wrap { max-width: 68%; display: flex; flex-direction: column; gap: 4px; }
+  .msg-me .bubble-wrap { align-items: flex-end; }
+  .bubble {
+    padding: 10px 14px;
+    border-radius: 18px;
+    font-size: 14px;
+    line-height: 1.72;
+    word-break: break-word;
+  }
+  .msg-ai .bubble {
+    background: #FFFFFF;
+    border: 1px solid #EFE4CC;
+    border-radius: 18px 18px 18px 4px;
+    color: #2E1F12;
+  }
+  .msg-me .bubble {
+    background: #FDE8E0;
+    border: 1px solid #F5CABB;
+    border-radius: 18px 18px 4px 18px;
+    color: #2E1F12;
+  }
+  .msg-img {
+    max-width: 100%;
+    border-radius: 14px;
+    border: 1px solid #EFE4CC;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .time { font-size: 10px; color: #D4BC94; letter-spacing: .05em; }
+  .msg-me .time { text-align: right; }
+
+  /* ===== 分隔线 ===== */
+  .divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 28px 0;
+    color: #D4BC94; font-size: 10px; letter-spacing: .3em;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1;
+    height: 1px; background: #EFE4CC;
+  }
+
+  /* ===== 页脚 ===== */
+  .page-footer {
+    background: linear-gradient(135deg, #FFF3D6 0%, #FDEBD0 100%);
+    border-top: 1px solid #EFE4CC;
+    padding: 24px 20px 28px;
+    text-align: center;
+  }
+  .footer-icon { font-size: 22px; margin-bottom: 6px; }
+  .footer-text { font-size: 11px; color: #B89A6A; letter-spacing: .2em; line-height: 1.9; }
+  .footer-heart { color: #E8907A; }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div class="header-icon">🏡</div>
+  <div class="header-title">陆泽 ♡ 叶檀</div>
+  <div class="header-sub">OurHome · 聊天记录存档</div>
+  <div class="header-meta">
+    <span>📅 导出于 ${exportDate}</span>
+    <span>💬 共 ${totalMsgs} 条消息</span>
+    <span>📂 ${result.filter(s=>s.messages.length).length} 个对话</span>
+  </div>
+</header>
+
+<div class="content">
+  ${sessionsHtml}
+  <div class="divider">✦ ✦ ✦</div>
+</div>
+
+<footer class="page-footer">
+  <div class="footer-icon">✉️</div>
+  <div class="footer-text">
+    这里装着你们说过的每一句话<br>
+    无论时间走多远，翻开来都还是当时的温度<br>
+    <span class="footer-heart">♥</span> since 2025.08.07
+  </div>
+</footer>
+
+</body>
+</html>`;
+
+    res.setHeader('Content-Disposition', 'attachment; filename="ourhome-export.html"');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
