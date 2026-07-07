@@ -281,10 +281,24 @@ async function executeActionTool(name, input) {
 // ↑↑↑ 新增结束 ↑↑↑
 
 function extractText(result) {
-  return (result.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n') || '';
+  // 把文本里混进来的<thinking>标签剔除——有些中转站会把思考内容塞进text块
+  return (result.content || [])
+    .filter(b => b.type === 'text')
+    .map(b => (b.text || '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim())
+    .filter(Boolean)
+    .join('\n') || '';
 }
 function extractThinking(result) {
-  return (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).join('\n') || '';
+  // 先找官方格式的thinking块
+  const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
+  if (native) return native;
+  // fallback：中转站有时把thinking包在<thinking>标签里放进text块
+  const fromXml = (result.content || [])
+    .filter(b => b.type === 'text')
+    .flatMap(b => [...((b.text || '').matchAll(/<thinking>([\s\S]*?)<\/thinking>/gi))].map(m => m[1].trim()))
+    .filter(Boolean)
+    .join('\n');
+  return fromXml;
 }
 
 // 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
