@@ -57,8 +57,13 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   const apiBaseUrl = buildEndpoint(settings?.api_base_url, '/messages');
   const body = { model: model || 'claude-sonnet-4-6', max_tokens: maxTokens, messages };
   if (system) body.system = system;
-  if (temperature !== undefined) body.temperature = temperature;
-  if (thinking) body.thinking = thinking;
+  // Claude API规定：开了thinking时temperature必须是1（或不传），否则中转站会静默丢弃thinking参数
+  if (thinking) {
+    body.thinking = thinking;
+    body.temperature = 1;
+  } else if (temperature !== undefined) {
+    body.temperature = temperature;
+  }
   if (tools) body.tools = tools;
 
   const headers = {
@@ -294,9 +299,6 @@ function extractText(result) {
     .join('\n') || '';
 }
 function extractThinking(result) {
-  console.log('[DEBUG thinking] result top-level keys:', JSON.stringify(Object.keys(result)));
-  console.log('[DEBUG thinking] content block keys:', JSON.stringify((result.content || []).map(b => Object.keys(b))));
-  console.log('[DEBUG thinking] content types detail:', JSON.stringify((result.content || []).map(b => ({ type: b.type, keys: Object.keys(b), textPreview: b.text?.slice(0,80), thinkingPreview: b.thinking?.slice(0,80) }))));
   // 先找官方格式的thinking块
   const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
   if (native) return native;
