@@ -320,6 +320,17 @@ async function decideShouldThink(settings, message) {
   }
 }
 
+// 计算thinking参数——名字里带thinking的模型直接开，不额外问要不要想
+async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
+  if (gemini) return { shouldThink: false, thinkingParam: undefined };
+  if (thinkingBuiltIn) return { shouldThink: true, thinkingParam: undefined };
+  // 名字里有thinking就直接开，不再调decideShouldThink（那个经常判断"不想"或调用失败）
+  const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
+  const shouldThink = hasThinkingName || await decideShouldThink(settings, userMessage);
+  const thinkingParam = shouldThink ? { type: 'enabled', budget_tokens: budget } : undefined;
+  return { shouldThink, thinkingParam };
+}
+
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
 async function fetchAsBase64(url) {
   const resp = await fetch(url);
@@ -595,11 +606,8 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
   const gemini = isGeminiModel(modelName);
   const thinkingBuiltIn = isThinkingModel(modelName);
-  const shouldThink = thinkingBuiltIn ? true : (!gemini && await decideShouldThink(settings, latestUserMessage));
+  const { shouldThink, thinkingParam } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
   const thinkingBudget = 3000;
-  const thinkingParam = (!gemini && !thinkingBuiltIn && shouldThink)
-    ? { type: 'enabled', budget_tokens: thinkingBudget }
-    : undefined;
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
     : Math.max(maxReplyTokens, 500);
@@ -1239,15 +1247,8 @@ app.post('/chat', async (req, res) => {
     const thinkingBudget = 3000;
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const gemini = isGeminiModel(modelName);
-    const thinkingBuiltIn = isThinkingModel(modelName); // relay侧已内置thinking，不需要我们传参数
-
-    // 普通Claude模型才需要主动判断要不要开思考
-    const shouldThink = thinkingBuiltIn ? true : (!gemini && await decideShouldThink(settings, message));
-
-    // 只有普通Claude模型（非relay内置thinking、非Gemini）才发thinking参数
-    const thinkingParam = (!gemini && !thinkingBuiltIn && shouldThink)
-      ? { type: 'enabled', budget_tokens: thinkingBudget }
-      : undefined;
+    const thinkingBuiltIn = isThinkingModel(modelName);
+    const { shouldThink, thinkingParam } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: message });
 
     const firstMaxTokens = shouldThink
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -1310,10 +1311,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const geminiRegen = isGeminiModel(modelNameRegen);
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
-    const shouldThink = thinkingBuiltInRegen ? true : (!geminiRegen && await decideShouldThink(settings, lastUserMsg?.content || ''));
-    const thinkingParam = (!geminiRegen && !thinkingBuiltInRegen && shouldThink)
-      ? { type: 'enabled', budget_tokens: 3000 }
-      : undefined;
+    const { shouldThink, thinkingParam } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
     const result = await callClaude({
       settings, model: modelNameRegen,
       maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
