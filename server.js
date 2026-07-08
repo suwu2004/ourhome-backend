@@ -294,6 +294,7 @@ function extractText(result) {
     .join('\n') || '';
 }
 function extractThinking(result) {
+  console.log('[DEBUG thinking] content types:', JSON.stringify((result.content || []).map(b => ({ type: b.type, hasThinking: !!b.thinking, textLen: b.text?.length }))));
   // 先找官方格式的thinking块
   const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
   if (native) return native;
