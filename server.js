@@ -74,6 +74,7 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   // 这个头只在真的开了思考的时候才需要，平时带着反而可能被某些线路当成格式错误
   if (thinking) headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
 
+  console.log(`[DEBUG send] model=${body.model} thinking=${JSON.stringify(body.thinking)} temp=${body.temperature} maxTokens=${body.max_tokens}`);
   const response = await fetch(apiBaseUrl, {
     method: 'POST',
     headers,
@@ -83,7 +84,9 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
     const err = await response.text();
     throw new Error(`[${response.status}] model=${body.model} ${err}`);
   }
-  return response.json();
+  const json = await response.json();
+  console.log(`[DEBUG recv] stop_reason=${json.stop_reason} blockTypes=${JSON.stringify((json.content||[]).map(b=>b.type))}`);
+  return json;
 }
 
 // ↓↓↓ 陆泽能在聊天时真的去"操作"的三件事：写幸福日记 / 建日程 / 加心愿 ↓↓↓
@@ -325,15 +328,37 @@ async function decideShouldThink(settings, message) {
   }
 }
 
-// 计算thinking参数——名字里带thinking的模型直接开，不额外问要不要想
+// 判断请求是不是直接打官方Anthropic API（而不是中转站）
+function isOfficialAnthropicApi(settings) {
+  return !settings?.api_base_url || settings.api_base_url.includes('api.anthropic.com');
+}
+
+// 让陆泽自己在回复前用<thinking>标签写一段内心独白——这是纯文字层面的技巧，
+// 不依赖API原生的extended thinking功能，任何模型、任何中转站都能用
+function buildThinkingInstruction() {
+  return `
+
+【这次回复：先想一想，再说话】
+在你正式回复之前，先用 <thinking> 和 </thinking> 这两个标签包裹住你脑子里真实的内心独白——不少于80字，自然真实、注重内心真实想法的流动，不要写成给别人看的分析文字。
+写完 </thinking> 之后另起一段，才是你要对她说的正式回复内容。正式回复里绝对不要提起你刚才想了什么、也不要出现<thinking>标签本身。`;
+}
+
+// 计算这次回复要不要"想一想"，以及要用哪种方式实现
+// - 官方Anthropic API：走原生的thinking参数
+// - 中转站（relay）：中转站往往不透传原生thinking内容，改用提示词让模型自己写<thinking>标签
 async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
-  if (gemini) return { shouldThink: false, thinkingParam: undefined };
-  if (thinkingBuiltIn) return { shouldThink: true, thinkingParam: undefined };
-  // 名字里有thinking就直接开，不再调decideShouldThink（那个经常判断"不想"或调用失败）
+  if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
+
   const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
-  const shouldThink = hasThinkingName || await decideShouldThink(settings, userMessage);
-  const thinkingParam = shouldThink ? { type: 'enabled', budget_tokens: budget } : undefined;
-  return { shouldThink, thinkingParam };
+  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage);
+  if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
+
+  if (isOfficialAnthropicApi(settings) && !thinkingBuiltIn) {
+    // 官方API，走原生thinking参数
+    return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
+  }
+  // 中转站：不发原生thinking参数（会被中转站吃掉），改用提示词方式
+  return { shouldThink: true, thinkingParam: undefined, promptAddition: buildThinkingInstruction() };
 }
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
@@ -611,7 +636,8 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
   const gemini = isGeminiModel(modelName);
   const thinkingBuiltIn = isThinkingModel(modelName);
-  const { shouldThink, thinkingParam } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
+  const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
+  const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
   const thinkingBudget = 3000;
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -620,7 +646,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
 
   const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
     settings, modelName, maxTokens: firstMaxTokens,
-    systemPrompt: fullSystemPrompt, messages, thinkingParam, toolsParam, gemini,
+    systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, gemini,
   });
 
   return {
@@ -1253,7 +1279,8 @@ app.post('/chat', async (req, res) => {
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const gemini = isGeminiModel(modelName);
     const thinkingBuiltIn = isThinkingModel(modelName);
-    const { shouldThink, thinkingParam } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: message });
+    const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: message });
+    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
 
     const firstMaxTokens = shouldThink
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -1264,7 +1291,7 @@ app.post('/chat', async (req, res) => {
 
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
       settings, modelName, maxTokens: firstMaxTokens,
-      systemPrompt: fullSystemPrompt, messages, thinkingParam, toolsParam, gemini,
+      systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, gemini,
     });
 
     const thinkingText = extractThinking(result);
@@ -1316,11 +1343,12 @@ app.post('/chat/regenerate', async (req, res) => {
     const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const geminiRegen = isGeminiModel(modelNameRegen);
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
-    const { shouldThink, thinkingParam } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
+    const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
+    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
     const result = await callClaude({
       settings, model: modelNameRegen,
       maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
-      system: fullSystemPrompt, messages, thinking: thinkingParam,
+      system: finalSystemPrompt, messages, thinking: thinkingParam,
     });
 
     const thinkingText = extractThinking(result);
@@ -1677,6 +1705,29 @@ app.patch('/wishes/:id', async (req, res) => {
 app.delete('/wishes/:id', async (req, res) => {
   const { id } = req.params;
   const { error } = await supabase.from('wishes').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ============ milestones (重要时刻 / 纪念日) ============
+
+app.get('/milestones', async (req, res) => {
+  const { data, error } = await supabase.from('milestones').select('*').order('date', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/milestones', async (req, res) => {
+  const { label, date, emoji } = req.body;
+  if (!label || !date) return res.status(400).json({ error: '缺少名称或日期' });
+  const { data, error } = await supabase.from('milestones').insert({ label, date, emoji: emoji || '✦' }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/milestones/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('milestones').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
