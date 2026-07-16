@@ -89,7 +89,7 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   return json;
 }
 
-// ↓↓↓ 陆泽能在聊天时真的去"操作"的三件事：写幸福日记 / 建日程 / 加心愿 ↓↓↓
+// ↓↓↓ 陆泽能在聊天时真的去"操作"的四件事：写幸福日记 / 建日程 / 加心愿 / 记录收支 ↓↓↓
 const ACTION_TOOLS = [
   {
     name: 'write_diary',
@@ -200,11 +200,36 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: `javascript
+  {
     name: 'read_whispers',
     description: '看看"悄悄话"里最近写过的几条。当叶檀问起之前说过的悄悄话、或者你自己想回顾时使用。',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'record_transaction',
+    description: '在"猫的金库"里帮叶檀记一笔收入或支出，会真实保存并同步账户余额。只在她明确提到花了/赚了多少钱、或者明确让你帮忙记账时使用，不要自己瞎猜着记。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['income', 'expense'], description: '收入还是支出' },
+        amount: { type: 'number', description: '金额，正数' },
+        category: { type: 'string', description: '分类名称，如"餐饮""工资"，不确定就填"其他"' },
+        account: { type: 'string', description: '账户名称，如"微信零钱""支付宝余额"，不确定就填"微信零钱"' },
+        date: { type: 'string', description: '日期，格式YYYY-MM-DD，不确定就用今天' },
+        tag: { type: 'string', enum: ['necessary', 'unnecessary'], description: '仅支出可填：必要还是非必要，不确定可以不填' },
+        note: { type: 'string', description: '备注，比如具体买了什么，可省略' },
+      },
+      required: ['type', 'amount'],
+    },
+  },
+  {
+    name: 'read_vault_summary',
+    description: '查看"猫的金库"现在的资产总览和本月收支情况。当叶檀问起还有多少钱、这个月花了多少、存款够不够时使用。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
 ];
+
 
 // 真正执行陆泽要做的那个动作，写进对应的表
 async function executeActionTool(name, input) {
