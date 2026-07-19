@@ -10,7 +10,7 @@ cp .env.example .env
 npm start
 ```
 
-Node.js 需要 20 或更高版本。把 `.env` 中的必填项补全后，访问 `http://localhost:3000/` 应返回健康状态。
+建议使用 Node.js 22。把 `.env` 中的必填项补全后，访问 `http://localhost:3000/` 应返回健康状态。
 
 ## 必填环境变量
 
@@ -21,13 +21,13 @@ Node.js 需要 20 或更高版本。把 `.env` 中的必填项补全后，访问
 
 API 密钥不再需要放入部署平台：登录 OurHome 后，在“设置 → API 站点档案”里保存即可。密钥正文存于 Supabase Vault，浏览器只能看到“已保存”状态。
 
-推送通知还需要一对新的 `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`。生成方式：
+推送通知默认会在首次启动时生成一对新的 VAPID 密钥，并加密保存到 Supabase Vault，后续部署会继续使用同一对密钥。也可以用环境变量 `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY` 显式覆盖。手动生成方式：
 
 ```bash
 npx web-push generate-vapid-keys
 ```
 
-旧代码中曾出现过的私钥应视为已泄露，部署时务必换新。
+旧代码中曾出现过的私钥应视为已泄露，不能再使用。前端检测到公钥变化时会自动取消旧订阅并重新订阅。
 
 ## 数据库
 
@@ -35,8 +35,9 @@ npx web-push generate-vapid-keys
 
 1. `database/ourhome_connections.sql`
 2. `database/ourhome_search_and_security.sql`
+3. `supabase/migrations/20260719084259_ourhome_runtime_secrets.sql`
 
-现有 OurHome 数据库已经应用过这两份迁移。第一份会把旧单槽 API 配置迁入档案并清理明文；第二份给跨对话搜索增加索引，并收紧数据库函数权限。
+现有 OurHome 数据库已经应用过这三份迁移。第一份会把旧单槽 API 配置迁入档案并清理明文；第二份给跨对话搜索增加索引并收紧数据库函数权限；第三份让后端安全地创建或读取 Vault 中的推送密钥。
 
 ## Render 部署
 

@@ -9,14 +9,9 @@ const webpush = require('web-push');
 const { createRuntimeConfig } = require('./runtimeConfig');
 const { createIntegrationManager, validateRemoteUrl } = require('./integrations');
 
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
-const PUSH_CONFIGURED = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
-if (PUSH_CONFIGURED) {
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:ourhome@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-} else {
-  console.warn('推送未启用：请配置 VAPID_PUBLIC_KEY 和 VAPID_PRIVATE_KEY');
-}
+let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+let PUSH_CONFIGURED = false;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,6 +22,32 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const runtimeConfig = createRuntimeConfig(supabase);
 const integrationManager = createIntegrationManager(runtimeConfig);
+
+function activatePushKeys(publicKey, privateKey) {
+  if (!publicKey || !privateKey) throw new Error('推送密钥不完整');
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:ourhome@example.com', publicKey, privateKey);
+  VAPID_PUBLIC_KEY = publicKey;
+  VAPID_PRIVATE_KEY = privateKey;
+  PUSH_CONFIGURED = true;
+}
+
+async function initializePush() {
+  try {
+    if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+      activatePushKeys(VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+      return;
+    }
+
+    const generated = webpush.generateVAPIDKeys();
+    const stored = await runtimeConfig.getOrCreateVapidKeys(JSON.stringify(generated));
+    const keys = JSON.parse(stored || '{}');
+    activatePushKeys(keys.publicKey, keys.privateKey);
+    console.log('推送密钥已从 Supabase Vault 安全载入');
+  } catch (error) {
+    PUSH_CONFIGURED = false;
+    console.error('推送未启用：无法载入安全的 VAPID 密钥：', error.message);
+  }
+}
 
 // ============ 通用小工具 ============
 
@@ -759,7 +780,17 @@ app.use((req, res, next) => {
 // ============ 基础 ============
 
 app.get('/', (req, res) => {
-  res.json({ message: '在云端漫步', status: 'ok' });
+  res.json({
+    message: '在云端漫步',
+    status: 'ok',
+    version: '2026.07.19',
+    capabilities: {
+      apiProfiles: true,
+      webSearch: true,
+      mcp: true,
+      vaultVapid: true,
+    },
+  });
 });
 
 // ============ sessions ============
@@ -2027,6 +2058,8 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: '服务器开小差了' });
 });
 
-app.listen(PORT, () => {
-  console.log(`OurHome后端运行中，端口：${PORT}`);
+initializePush().finally(() => {
+  app.listen(PORT, () => {
+    console.log(`OurHome后端运行中，端口：${PORT}`);
+  });
 });

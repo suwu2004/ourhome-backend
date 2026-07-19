@@ -190,6 +190,12 @@ function createRuntimeConfig(supabase) {
     if (error) throw error;
   }
 
+  async function getOrCreateVapidKeys(candidate) {
+    const { data, error } = await supabase.rpc('ourhome_get_or_create_vapid_keys', { p_secret: candidate });
+    if (error) throw error;
+    return unwrap(data) || null;
+  }
+
   return {
     getBaseSettings,
     loadSettings,
@@ -204,6 +210,7 @@ function createRuntimeConfig(supabase) {
     listEnabledConnectionRuntimes,
     saveConnection,
     deleteConnection,
+    getOrCreateVapidKeys,
   };
 }
 
