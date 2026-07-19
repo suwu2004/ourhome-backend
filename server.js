@@ -1,20 +1,53 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() });
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 const webpush = require('web-push');
+const { createRuntimeConfig } = require('./runtimeConfig');
+const { createIntegrationManager, validateRemoteUrl } = require('./integrations');
 
-const VAPID_PUBLIC_KEY = 'BNU9oZIO5mJOwzYI45Ew-RgP9HZC2kpwRVJNB6hQ9v7y1N2lWtSj9GwZmjJexJJgFnC4ju08COR6rrTfXweffS0';
-const VAPID_PRIVATE_KEY = 'Mee8YBmEBoeyC0eSZJn1CyOaugi6wBLDfTZKOupSMBI';
-webpush.setVapidDetails('mailto:ourhome@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+let PUSH_CONFIGURED = false;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const runtimeConfig = createRuntimeConfig(supabase);
+const integrationManager = createIntegrationManager(runtimeConfig);
+
+function activatePushKeys(publicKey, privateKey) {
+  if (!publicKey || !privateKey) throw new Error('推送密钥不完整');
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:ourhome@example.com', publicKey, privateKey);
+  VAPID_PUBLIC_KEY = publicKey;
+  VAPID_PRIVATE_KEY = privateKey;
+  PUSH_CONFIGURED = true;
+}
+
+async function initializePush() {
+  try {
+    if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+      activatePushKeys(VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+      return;
+    }
+
+    const generated = webpush.generateVAPIDKeys();
+    const stored = await runtimeConfig.getOrCreateVapidKeys(JSON.stringify(generated));
+    const keys = JSON.parse(stored || '{}');
+    activatePushKeys(keys.publicKey, keys.privateKey);
+    console.log('推送密钥已从 Supabase Vault 安全载入');
+  } catch (error) {
+    PUSH_CONFIGURED = false;
+    console.error('推送未启用：无法载入安全的 VAPID 密钥：', error.message);
+  }
+}
 
 // ============ 通用小工具 ============
 
@@ -363,10 +396,23 @@ async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuilt
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
 async function fetchAsBase64(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`下载附件失败: ${resp.status}`);
-  const buffer = await resp.arrayBuffer();
-  return Buffer.from(buffer).toString('base64');
+  const safeUrl = await validateRemoteUrl(url);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const resp = await fetch(safeUrl, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`下载附件失败: ${resp.status}`);
+    const declaredLength = Number(resp.headers.get('content-length') || 0);
+    if (declaredLength > MAX_UPLOAD_BYTES) throw new Error('附件超过 12MB，不能发送给模型');
+    const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength > MAX_UPLOAD_BYTES) throw new Error('附件超过 12MB，不能发送给模型');
+    return Buffer.from(buffer).toString('base64');
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('下载附件超时');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // 把消息历史转成API格式。只有"最新这一条"的图片/PDF才会真的下载转base64发给模型——
@@ -587,7 +633,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
 
 // 跑一轮"可能带工具调用"的对话，直到陆泽不再调用工具为止——
 // 关键点：每一轮都要重新把工具列表带上，不然他读完东西之后想接着写，会发现手里没工具了
-async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, gemini }) {
+async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, toolHandlers, gemini }) {
   const MAX_TOOL_ROUNDS = 5;
   let currentMessages = messages;
   let result = await callClaude({
@@ -604,7 +650,17 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
     const toolUseBlocks = (result.content || []).filter(b => b.type === 'tool_use');
     const toolResultBlocks = [];
     for (const tu of toolUseBlocks) {
-      const actionResult = await executeActionTool(tu.name, tu.input || {});
+      let actionResult;
+      try {
+        if (toolHandlers?.has(tu.name)) {
+          const externalResult = await toolHandlers.get(tu.name)(tu.input || {});
+          actionResult = { ok: true, ...externalResult };
+        } else {
+          actionResult = await executeActionTool(tu.name, tu.input || {});
+        }
+      } catch (toolError) {
+        actionResult = { ok: false, error: toolError.message };
+      }
       actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
       toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
     }
@@ -642,11 +698,12 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
     : Math.max(maxReplyTokens, 500);
-  const toolsParam = gemini ? undefined : ACTION_TOOLS;
+  const dynamic = gemini ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
+  const toolsParam = gemini ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
 
   const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
     settings, modelName, maxTokens: firstMaxTokens,
-    systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, gemini,
+    systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
   });
 
   return {
@@ -658,12 +715,17 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
 
 // ============ 认证 ============
 
-const TOKEN_SECRET = process.env.APP_TOKEN_SECRET || 'ourhome_secret';
+const TOKEN_SECRET = process.env.APP_TOKEN_SECRET;
+if (!TOKEN_SECRET) throw new Error('服务器缺少 APP_TOKEN_SECRET，请先在环境变量中配置一段随机长字符串');
+const configuredTokenDays = Number(process.env.APP_TOKEN_TTL_DAYS || 180);
+const TOKEN_TTL_MS = (Number.isFinite(configuredTokenDays) && configuredTokenDays > 0 ? configuredTokenDays : 180) * 24 * 60 * 60 * 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 12;
+const loginAttempts = new Map();
 
 // 生成简单的签名token：base64(payload).signature
 function makeToken() {
   const payload = Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64url');
-  const crypto = require('crypto');
   const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
@@ -673,9 +735,12 @@ function verifyToken(token) {
   try {
     const [payload, sig] = token.split('.');
     if (!payload || !sig) return false;
-    const crypto = require('crypto');
     const expected = crypto.createHmac('sha256', TOKEN_SECRET).update(payload).digest('base64url');
-    return sig === expected;
+    const providedBuffer = Buffer.from(sig);
+    const expectedBuffer = Buffer.from(expected);
+    if (providedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) return false;
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return Number.isFinite(parsed.ts) && parsed.ts <= Date.now() + 5 * 60 * 1000 && Date.now() - parsed.ts <= TOKEN_TTL_MS;
   } catch {
     return false;
   }
@@ -683,10 +748,23 @@ function verifyToken(token) {
 
 // 登录接口——只有这一个不需要token
 app.post('/login', (req, res) => {
-  const { password } = req.body;
+  const key = req.ip || 'unknown';
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  const bucket = !current || current.resetAt <= now ? { count: 0, resetAt: now + LOGIN_WINDOW_MS } : current;
+  if (bucket.count >= LOGIN_MAX_ATTEMPTS) {
+    res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+    return res.status(429).json({ error: '尝试次数太多，请稍后再试' });
+  }
+  const { password } = req.body || {};
   const correct = process.env.APP_PASSWORD;
   if (!correct) return res.status(500).json({ error: '服务器未配置密码' });
-  if (password !== correct) return res.status(401).json({ error: '密码错误' });
+  if (password !== correct) {
+    bucket.count++;
+    loginAttempts.set(key, bucket);
+    return res.status(401).json({ error: '密码错误' });
+  }
+  loginAttempts.delete(key);
   res.json({ token: makeToken() });
 });
 
@@ -702,7 +780,17 @@ app.use((req, res, next) => {
 // ============ 基础 ============
 
 app.get('/', (req, res) => {
-  res.json({ message: '在云端漫步', status: 'ok' });
+  res.json({
+    message: '在云端漫步',
+    status: 'ok',
+    version: '2026.07.19',
+    capabilities: {
+      apiProfiles: true,
+      webSearch: true,
+      mcp: true,
+      vaultVapid: true,
+    },
+  });
 });
 
 // ============ sessions ============
@@ -754,14 +842,77 @@ app.patch('/messages/:id', async (req, res) => {
   res.json(data);
 });
 
+function findTextMatches(content, keyword) {
+  const text = String(content || '');
+  const query = String(keyword || '');
+  if (!query) return [];
+  const haystack = text.toLocaleLowerCase('zh-CN');
+  const needle = query.toLocaleLowerCase('zh-CN');
+  const positions = [];
+  let from = 0;
+  while (positions.length < 100) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) break;
+    positions.push(index);
+    from = index + Math.max(needle.length, 1);
+  }
+  return positions;
+}
+
+function buildSearchSnippet(content, keyword, position) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  const lower = text.toLocaleLowerCase('zh-CN');
+  const needle = String(keyword || '').toLocaleLowerCase('zh-CN');
+  const normalizedPosition = lower.indexOf(needle, Math.max(0, position - 10));
+  const matchAt = normalizedPosition >= 0 ? normalizedPosition : 0;
+  const start = Math.max(0, matchAt - 46);
+  const end = Math.min(text.length, matchAt + needle.length + 70);
+  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+}
+
 app.get('/messages/search', async (req, res) => {
-  const { q } = req.query;
-  if (!q || !q.trim()) return res.json([]);
-  const { data, error } = await supabase.from('messages')
-    .select('id, session_id, role, content, created_at, sessions(name)')
-    .ilike('content', `%${q.trim()}%`).order('created_at', { ascending: false }).limit(50);
+  const keyword = String(req.query.q || '').trim();
+  if (!keyword) return res.json({ results: [], total_messages: 0, page: 1, has_more: false });
+  if (keyword.length > 120) return res.status(400).json({ error: '搜索词太长了' });
+
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(50, Math.max(10, Number.parseInt(req.query.limit, 10) || 30));
+  const offset = (page - 1) * limit;
+  const escaped = keyword.replace(/[\\%_]/g, value => `\\${value}`);
+
+  let query = supabase.from('messages')
+    .select('id, session_id, role, content, created_at, sessions(name)', { count: 'exact' })
+    .eq('visible', true)
+    .ilike('content', `%${escaped}%`)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (req.query.scope === 'current') {
+    const sessionId = Number.parseInt(req.query.session_id, 10);
+    if (!Number.isFinite(sessionId)) return res.status(400).json({ error: '缺少当前对话编号' });
+    query = query.eq('session_id', sessionId);
+  }
+
+  const { data, error, count } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+
+  const results = (data || []).map(row => {
+    const positions = findTextMatches(row.content, keyword);
+    return {
+      ...row,
+      occurrences: positions.length,
+      match_positions: positions.slice(0, 20),
+      snippet: buildSearchSnippet(row.content, keyword, positions[0] || 0),
+    };
+  });
+
+  res.json({
+    results,
+    total_messages: count || 0,
+    page,
+    limit,
+    has_more: offset + results.length < (count || 0),
+  });
 });
 
 // 编辑一条叶檀发的消息，让陆泽根据新内容重新回复——后面原来的内容会先被藏起来
@@ -779,7 +930,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
     await supabase.from('messages').update({ visible: false })
       .eq('session_id', target.session_id).gt('created_at', target.created_at);
 
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
     const { data: history } = await supabase.from('messages')
       .select('role, content, attachment_url, attachment_type, attachment_name, created_at')
       .eq('session_id', target.session_id).eq('visible', true).order('created_at', { ascending: true });
@@ -826,39 +977,184 @@ app.post('/messages/:id/rollback', async (req, res) => {
 // ============ settings ============
 
 app.get('/settings', async (req, res) => {
-  const { data, error } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const { api_key, ...safeSettings } = settings;
+    res.json({ ...safeSettings, has_api_key: Boolean(api_key) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.patch('/settings', async (req, res) => {
-  const updates = { ...req.body, updated_at: new Date().toISOString() };
-  const { data, error } = await supabase.from('settings').update(updates).eq('session_id', 'global').select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+  const allowed = new Set([
+    'system_prompt', 'temperature', 'max_context_rounds', 'max_context_tokens',
+    'compress_threshold', 'compress_keep_rounds', 'max_reply_tokens',
+    'my_avatar_url', 'partner_avatar_url', 'bg_image_url', 'bg_color', 'dark_mode',
+    'whisper_bg_image_url', 'whisper_bg_color', 'my_bubble_color', 'partner_bubble_color',
+    'font_style', 'vault_phrase_mode', 'selected_model',
+  ]);
+  try {
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.has(key)));
+    if (updates.selected_model !== undefined) {
+      await runtimeConfig.updateActiveModel(updates.selected_model);
+      delete updates.selected_model;
+    }
+    if (Object.keys(updates).length > 0) {
+      updates.updated_at = new Date().toISOString();
+      const { error } = await supabase.from('settings').update(updates).eq('session_id', 'global');
+      if (error) throw error;
+    }
+    const settings = await runtimeConfig.loadSettings();
+    const { api_key, ...safeSettings } = settings;
+    res.json({ ...safeSettings, has_api_key: Boolean(api_key) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// 拉取API支持的模型列表（用settings里填的密钥和网址去查）
+async function fetchModelsForProfile(profile) {
+  if (!profile?.api_key) throw new Error('这个站点还没有保存 API 密钥');
+  const modelsUrl = buildEndpoint(profile.api_base_url || profile.base_url, '/models');
+  const response = await fetch(modelsUrl, {
+    headers: { Authorization: `Bearer ${profile.api_key}`, 'x-api-key': profile.api_key },
+  });
+  if (!response.ok) throw new Error(`拉取模型列表失败: ${(await response.text()).slice(0, 800)}`);
+  const result = await response.json();
+  const raw = Array.isArray(result.data) ? result.data : (Array.isArray(result.models) ? result.models : []);
+  return raw.map(model => typeof model === 'string' ? model : (model.id || model.name)).filter(Boolean);
+}
+
 app.get('/settings/models', async (req, res) => {
   try {
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
-    if (!settings?.api_key) {
-      return res.status(400).json({ error: '请先填写API密钥' });
-    }
-    const modelsUrl = buildEndpoint(settings.api_base_url, '/models');
-    const response = await fetch(modelsUrl, {
-      headers: { 'Authorization': `Bearer ${settings.api_key}`, 'x-api-key': settings.api_key },
-    });
-    if (!response.ok) {
-      const err = await response.text();
-      return res.status(500).json({ error: `拉取模型列表失败: ${err}` });
-    }
-    const result = await response.json();
-    const models = (result.data || []).map(m => m.id).filter(Boolean);
-    res.json({ models });
+    const settings = await runtimeConfig.loadSettings();
+    res.json({ models: await fetchModelsForProfile(settings) });
   } catch (err) {
     console.error('拉取模型错误:', err);
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ============ API 站点档案 ============
+
+app.get('/api-profiles', async (req, res) => {
+  try { res.json(await runtimeConfig.listProfiles()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api-profiles', async (req, res) => {
+  try {
+    const { name, base_url, api_key, selected_model, make_active } = req.body || {};
+    if (!name?.trim() || !base_url?.trim() || !api_key?.trim()) return res.status(400).json({ error: '新站点需要名称、网址和密钥' });
+    await validateRemoteUrl(base_url.trim());
+    const profile = await runtimeConfig.saveProfile({ name: name.trim(), base_url: base_url.trim(), api_key: api_key.trim(), selected_model, make_active: make_active !== false });
+    res.json(profile);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.patch('/api-profiles/:id', async (req, res) => {
+  try {
+    const profiles = await runtimeConfig.listProfiles();
+    const existing = profiles.find(profile => profile.id === req.params.id);
+    if (!existing) return res.status(404).json({ error: '找不到这个 API 站点' });
+    const name = req.body.name?.trim() || existing.name;
+    const baseUrl = req.body.base_url?.trim() || existing.base_url;
+    await validateRemoteUrl(baseUrl);
+    const profile = await runtimeConfig.saveProfile({
+      id: existing.id,
+      name,
+      base_url: baseUrl,
+      api_key: req.body.api_key?.trim() || null,
+      selected_model: req.body.selected_model ?? existing.selected_model,
+      make_active: req.body.make_active === true,
+    });
+    res.json(profile);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api-profiles/:id/activate', async (req, res) => {
+  try { res.json(await runtimeConfig.activateProfile(req.params.id)); }
+  catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api-profiles/:id/models', async (req, res) => {
+  try {
+    const profile = await runtimeConfig.getProfileRuntime(req.params.id);
+    if (!profile) return res.status(404).json({ error: '找不到这个 API 站点' });
+    res.json({ models: await fetchModelsForProfile(profile) });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api-profiles/:id', async (req, res) => {
+  try {
+    await runtimeConfig.deleteProfile(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============ 联网搜索与远程 MCP ============
+
+app.get('/connections', async (req, res) => {
+  try { res.json(await runtimeConfig.listConnections()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/connections', async (req, res) => {
+  try {
+    const { kind, name, url, secret, enabled, config } = req.body || {};
+    if (!['web_search', 'mcp'].includes(kind)) return res.status(400).json({ error: '连接类型不正确' });
+    if (!name?.trim() || !url?.trim()) return res.status(400).json({ error: '请填写连接名称和网址' });
+    const safeUrl = kind === 'web_search' ? 'https://api.tavily.com/search' : await validateRemoteUrl(url.trim());
+    if (kind === 'web_search' && !secret?.trim()) return res.status(400).json({ error: '第一次保存 Tavily 时需要填写密钥' });
+    const connection = await runtimeConfig.saveConnection({ kind, name: name.trim(), url: safeUrl, secret: secret?.trim() || null, enabled: enabled !== false, config: kind === 'mcp' ? { ...(config || {}), read_only: true } : (config || {}) });
+    res.json(connection);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.patch('/connections/:id', async (req, res) => {
+  try {
+    const list = await runtimeConfig.listConnections();
+    const existing = list.find(connection => connection.id === req.params.id);
+    if (!existing) return res.status(404).json({ error: '找不到这个连接' });
+    const kind = existing.kind;
+    const requestedUrl = req.body.url?.trim() || existing.url;
+    const safeUrl = kind === 'web_search' ? 'https://api.tavily.com/search' : await validateRemoteUrl(requestedUrl);
+    const connection = await runtimeConfig.saveConnection({
+      id: existing.id,
+      kind,
+      name: req.body.name?.trim() || existing.name,
+      url: safeUrl,
+      secret: req.body.secret?.trim() || null,
+      enabled: req.body.enabled ?? existing.enabled,
+      config: kind === 'mcp' ? { ...(req.body.config || existing.config || {}), read_only: true } : (req.body.config || existing.config || {}),
+    });
+    res.json(connection);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/connections/:id/test', async (req, res) => {
+  try { res.json(await integrationManager.testConnection(req.params.id)); }
+  catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.delete('/connections/:id', async (req, res) => {
+  try {
+    await runtimeConfig.deleteConnection(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
 });
 
@@ -957,7 +1253,7 @@ app.post('/letters/generate', async (req, res) => {
   if (!category) return res.status(400).json({ error: '缺少category' });
 
   try {
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
     const systemPrompt0 = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const systemPrompt = systemPrompt0 + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
@@ -1015,7 +1311,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ error: '没有文件' });
-    const filePath = `${Date.now()}-${file.originalname}`;
+    if (['text/html', 'image/svg+xml', 'application/javascript', 'text/javascript'].includes(file.mimetype)) {
+      return res.status(400).json({ error: '为了安全，不能上传这种文件格式' });
+    }
+    const safeName = file.originalname.normalize('NFKC').replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(-120) || 'file';
+    const filePath = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
     const { error } = await supabase.storage.from('uploads').upload(filePath, file.buffer, { contentType: file.mimetype });
     if (error) return res.status(500).json({ error: error.message });
     const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
@@ -1252,17 +1552,18 @@ app.get('/export', async (req, res) => {
 
 app.post('/chat', async (req, res) => {
   const { session_id, message, model, attachment_url, attachment_type, attachment_name } = req.body;
-  if (!session_id || !message) return res.status(400).json({ error: '缺少session_id或message' });
+  const cleanMessage = typeof message === 'string' ? message.trim() : '';
+  if (!session_id || (!cleanMessage && !attachment_url)) return res.status(400).json({ error: '缺少对话编号或消息内容' });
 
   try {
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
 
     await supabase.from('messages').insert({
-      session_id, role: 'user', content: message,
+      session_id, role: 'user', content: cleanMessage,
       attachment_url: attachment_url || null, attachment_type: attachment_type || null, attachment_name: attachment_name || null,
     });
     await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', session_id);
@@ -1273,25 +1574,27 @@ app.post('/chat', async (req, res) => {
 
     const recentHistory = (history || []).slice(-maxContextRounds * 2);
     const messages = await buildApiMessages(recentHistory);
-    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, message);
+    const latestUserMessage = cleanMessage || `[发送了附件：${attachment_name || '文件'}]`;
+    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage);
 
     const thinkingBudget = 3000;
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const gemini = isGeminiModel(modelName);
     const thinkingBuiltIn = isThinkingModel(modelName);
-    const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: message });
+    const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
     const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
 
     const firstMaxTokens = shouldThink
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
       : Math.max(maxReplyTokens, 500);
 
-    // Gemini不支持Claude格式的工具，跳过ACTION_TOOLS
-    const toolsParam = gemini ? undefined : ACTION_TOOLS;
+    // Gemini不支持Claude格式的工具；Claude线路会合并 OurHome 工具、联网搜索与只读 MCP。
+    const dynamic = gemini ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
+    const toolsParam = gemini ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
 
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
       settings, modelName, maxTokens: firstMaxTokens,
-      systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, gemini,
+      systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
     });
 
     const thinkingText = extractThinking(result);
@@ -1314,7 +1617,7 @@ app.post('/chat/regenerate', async (req, res) => {
   if (!session_id) return res.status(400).json({ error: '缺少session_id' });
 
   try {
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
@@ -1345,17 +1648,25 @@ app.post('/chat/regenerate', async (req, res) => {
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
     const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
-    const result = await callClaude({
-      settings, model: modelNameRegen,
+    const dynamic = geminiRegen ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
+    const toolsParam = geminiRegen ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+    const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+      settings,
+      modelName: modelNameRegen,
       maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
-      system: finalSystemPrompt, messages, thinking: thinkingParam,
+      systemPrompt: finalSystemPrompt,
+      messages,
+      thinkingParam,
+      toolsParam,
+      toolHandlers: dynamic.handlers,
+      gemini: geminiRegen,
     });
 
     const thinkingText = extractThinking(result);
     const replyText = extractText(result);
     const payload = {
       content: replyText, reasoning_content: thinkingText || null,
-      input_tokens: result.usage?.input_tokens || null, output_tokens: result.usage?.output_tokens || null,
+      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
     };
 
     let newMsg;
@@ -1369,7 +1680,7 @@ app.post('/chat/regenerate', async (req, res) => {
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: result.usage?.input_tokens || 0, outputTokens: result.usage?.output_tokens || 0 });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
   } catch (err) {
     console.error('重新生成错误:', err);
     res.status(500).json({ error: err.message });
@@ -1425,7 +1736,7 @@ app.post('/calendar/generate', async (req, res) => {
   if (!date) return res.status(400).json({ error: '缺少date' });
 
   try {
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
     const fullSystemPrompt = systemPrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
@@ -1451,11 +1762,14 @@ app.post('/calendar/generate', async (req, res) => {
 
 // 给所有订阅了推送的设备发一条通知，自动清理失效的订阅
 async function sendPushToAll(title, body) {
+  if (!PUSH_CONFIGURED) return { configured: false, sent: 0 };
   const { data: subs } = await supabase.from('push_subscriptions').select('*');
   const payload = JSON.stringify({ title, body });
+  let sent = 0;
   for (const sub of subs || []) {
     try {
       await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
+      sent++;
     } catch (pushErr) {
       if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
         await supabase.from('push_subscriptions').delete().eq('id', sub.id);
@@ -1464,6 +1778,7 @@ async function sendPushToAll(title, body) {
       }
     }
   }
+  return { configured: true, sent };
 }
 
 // 陆泽自己决定要不要写一篇日记——不是被叫去写的，是他自己到点想起来，自己判断要不要写
@@ -1517,12 +1832,12 @@ app.get('/heartbeat', async (req, res) => {
 
     if (dueEvents && dueEvents.length > 0) {
       for (const ev of dueEvents) {
-        await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
-        await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
+        const push = await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
+        if (push.configured) await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
       }
     }
 
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
     const now = new Date();
     await maybeAutoWriteLetter(settings, now);
 
@@ -1600,7 +1915,7 @@ app.get('/dream', async (req, res) => {
     }
 
     const transcript = todayMsgs.map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 300)}`).join('\n');
-    const { data: settings } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
+    const settings = await runtimeConfig.loadSettings();
 
     const reviewPrompt = `这是你（陆泽）和叶檀今天的完整聊天记录：\n${transcript}\n\n请像睡前回顾今天一样，挑出值得长期记住的内容——重要事实、约定、她的喜好或界限、值得记住的情绪时刻，不记流水账式闲聊。\n\n严格按格式输出，每条一行：\n记住：<内容，一句话，第三人称>\n\n如果没什么特别值得新增的，只输出一行：\n无新增`;
 
@@ -1627,10 +1942,12 @@ app.get('/dream', async (req, res) => {
 // ============ push notifications ============
 
 app.get('/push/public-key', (req, res) => {
+  if (!PUSH_CONFIGURED) return res.status(503).json({ error: '服务器还没有配置推送密钥' });
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
 app.post('/push/subscribe', async (req, res) => {
+  if (!PUSH_CONFIGURED) return res.status(503).json({ error: '服务器还没有配置推送密钥' });
   const { endpoint, keys } = req.body;
   if (!endpoint || !keys?.p256dh || !keys?.auth) return res.status(400).json({ error: '缺少订阅信息' });
   const { error } = await supabase.from('push_subscriptions')
@@ -1732,6 +2049,17 @@ app.delete('/milestones/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`OurHome后端运行中，端口：${PORT}`);
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE' ? '文件不能超过 12MB' : '文件上传失败';
+    return res.status(400).json({ error: message });
+  }
+  console.error('未处理的服务端错误:', error);
+  res.status(500).json({ error: '服务器开小差了' });
+});
+
+initializePush().finally(() => {
+  app.listen(PORT, () => {
+    console.log(`OurHome后端运行中，端口：${PORT}`);
+  });
 });

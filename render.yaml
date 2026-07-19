@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: ourhome-backend
+    runtime: node
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: APP_TOKEN_SECRET
+        generateValue: true
+      - key: JINA_API_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:ourhome@example.com
