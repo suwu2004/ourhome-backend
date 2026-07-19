@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check runtimeConfig.js && node --check integrations.js"
+    "check": "node --check server.js && node --check runtimeConfig.js && node --check integrations.js && node --check vaultStore.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
