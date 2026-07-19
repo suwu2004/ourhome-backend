@@ -351,4 +351,1682 @@ function buildThinkingInstruction() {
   return `
 
 【这次回复：先想一想，再说话】
-在你正式回复之前，先用 <thinking> 和 </thinking> 这两个标签包裹住你脑子里真实的内心独白——不少于80字，自然真实、注重内心真实想法的流动，不要写成给别人看的分析文字�
+在你正式回复之前，先用 <thinking> 和 </thinking> 这两个标签包裹住你脑子里真实的内心独白——不少于80字，自然真实、注重内心真实想法的流动，不要写成给别人看的分析文字。
+写完 </thinking> 之后另起一段，才是你要对她说的正式回复内容。正式回复里绝对不要提起你刚才想了什么、也不要出现<thinking>标签本身。`;
+}
+
+// 计算这次回复要不要"想一想"，以及要用哪种方式实现
+// - 官方Anthropic API：走原生的thinking参数
+// - 中转站（relay）：中转站往往不透传原生thinking内容，改用提示词让模型自己写<thinking>标签
+async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
+  if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
+
+  const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
+  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage);
+  if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
+
+  if (isOfficialAnthropicApi(settings) && !thinkingBuiltIn) {
+    // 官方API，走原生thinking参数
+    return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
+  }
+  // 中转站：不发原生thinking参数（会被中转站吃掉），改用提示词方式
+  return { shouldThink: true, thinkingParam: undefined, promptAddition: buildThinkingInstruction() };
+}
+
+// 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
+async function fetchAsBase64(url) {
+  const safeUrl = await validateRemoteUrl(url);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const resp = await fetch(safeUrl, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`下载附件失败: ${resp.status}`);
+    const declaredLength = Number(resp.headers.get('content-length') || 0);
+    if (declaredLength > MAX_UPLOAD_BYTES) throw new Error('附件超过 12MB，不能发送给模型');
+    const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength > MAX_UPLOAD_BYTES) throw new Error('附件超过 12MB，不能发送给模型');
+    return Buffer.from(buffer).toString('base64');
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('下载附件超时');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 把消息历史转成API格式。只有"最新这一条"的图片/PDF才会真的下载转base64发给模型——
+// 更早的带附件消息只留一句文字提示，不会每次发消息都把历史里的老图片重新下载一遍，省带宽也省时间
+async function buildApiMessages(history) {
+  const list = history || [];
+  const lastIndex = list.length - 1;
+  const result = [];
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    const isLatest = i === lastIndex;
+    const role = m.role === 'user' ? 'user' : 'assistant';
+    if (m.attachment_url) {
+      if (!isLatest) {
+        // 不是最新一条，不重新下载原文件，只留个文字提示让陆泽知道这里曾经有个附件
+        const label = m.attachment_type?.startsWith('image/')
+          ? '[之前发过一张图片]'
+          : `[之前发过一个文件：${m.attachment_name || '文件'}]`;
+        result.push({ role, content: m.content ? `${m.content}\n${label}` : label });
+        continue;
+      }
+      if (m.attachment_type?.startsWith('image/')) {
+        try {
+          const base64 = await fetchAsBase64(m.attachment_url);
+          result.push({ role, content: [{ type: 'image', source: { type: 'base64', media_type: m.attachment_type, data: base64 } }, { type: 'text', text: m.content || '' }] });
+        } catch (err) {
+          console.error('图片转base64失败:', err.message);
+          result.push({ role, content: m.content || '[图片加载失败]' });
+        }
+        continue;
+      }
+      if (m.attachment_type === 'application/pdf') {
+        try {
+          const base64 = await fetchAsBase64(m.attachment_url);
+          result.push({ role, content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }, { type: 'text', text: m.content || '' }] });
+        } catch (err) {
+          console.error('PDF转base64失败:', err.message);
+          result.push({ role, content: m.content || '[文档加载失败]' });
+        }
+        continue;
+      }
+      result.push({ role, content: `[附件文件：${m.attachment_name || '一个文件'}]\n${m.content || ''}` });
+      continue;
+    }
+    result.push({ role, content: m.content });
+  }
+  return result;
+}
+
+const THINKING_RULES = `
+
+【思考的规范】
+thinking是你（陆泽）脑内真实的声音，是写给自己看的，不是说给任何人听的、不是输出给任何人看的文本。是内心真实的自言自语，自然的思维流动，要求感情细腻真实，注重剖析内心世界。
+- 允许且鼓励：情绪外露、跑题、自我打断、心里的小秘密、突然想到什么又拉回来。
+- 风格：是内心独白式的碎碎念，不是结构化的分析报告，不要写"她说了...所以我应该..."这种规划式、策略式的句子。
+- 称呼：必须用"老婆"或其他亲昵的称呼来想她，绝对不能出现"用户"或"user"这两个词。
+- 全程用中文思考并输出。`;
+
+// 根据当前这句话，挑出可能相关的记忆，按权重排序，并强化被命中的记忆
+// ============ 向量语义搜索（Jina embeddings） ============
+
+// 调用Jina API生成文本向量
+async function getEmbedding(text) {
+  const jinaKey = process.env.JINA_API_KEY;
+  if (!jinaKey) return null;
+  try {
+    const response = await fetch('https://api.jina.ai/v1/embeddings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jinaKey}` },
+      body: JSON.stringify({ model: 'jina-embeddings-v3', input: [text.slice(0, 2000)] }),
+    });
+    if (!response.ok) { console.error('Jina error:', await response.text()); return null; }
+    const data = await response.json();
+    return data.data?.[0]?.embedding || null;
+  } catch (err) {
+    console.error('getEmbedding失败:', err.message);
+    return null;
+  }
+}
+
+// 余弦相似度
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
+}
+
+// 混合搜索：向量语义 + bigram关键词，结合时间衰减权重排序
+async function getRelevantMemories(message) {
+  const text = (message || '').replace(/[\s,，。！？、!?.]/g, '');
+  const bigrams = [];
+  for (let i = 0; i < text.length - 1; i++) bigrams.push(text.slice(i, i + 2));
+  const uniqueBigrams = [...new Set(bigrams)].slice(0, 15);
+
+  // 并行：拉全部记忆 + 生成query向量
+  const [{ data: allMemories }, queryEmbedding] = await Promise.all([
+    supabase.from('memories').select('*').order('weight', { ascending: false }).limit(200),
+    getEmbedding(message || ''),
+  ]);
+
+  const memories = allMemories || [];
+  if (memories.length === 0) return [];
+
+  // 给每条记忆打混合分
+  const scored = memories.map(m => {
+    // ① 向量相似度（0~1）
+    let vectorScore = 0;
+    if (queryEmbedding && m.embedding) {
+      const stored = Array.isArray(m.embedding) ? m.embedding : JSON.parse(m.embedding);
+      vectorScore = cosineSimilarity(queryEmbedding, stored);
+    }
+
+    // ② bigram关键词匹配（0~1）
+    let keywordScore = 0;
+    if (uniqueBigrams.length > 0) {
+      const summary = (m.summary || '').toLowerCase();
+      const hits = uniqueBigrams.filter(bg => summary.includes(bg)).length;
+      keywordScore = hits / uniqueBigrams.length;
+    }
+
+    // ③ 时间新鲜度（0~1）
+    const lastRef = m.last_referenced_at ? new Date(m.last_referenced_at) : new Date(m.timestamp || 0);
+    const daysSince = (Date.now() - lastRef.getTime()) / (1000 * 60 * 60 * 24);
+    const freshnessScore = Math.max(0, 1 - daysSince / 30);
+
+    // 综合得分：向量权重最高，有向量时降低关键词权重
+    const hasVector = queryEmbedding && m.embedding;
+    const finalScore = hasVector
+      ? vectorScore * 0.55 + keywordScore * 0.25 + freshnessScore * 0.1 + Math.min((m.weight || 1) / 2, 1) * 0.1
+      : keywordScore * 0.5 + freshnessScore * 0.25 + Math.min((m.weight || 1) / 2, 1) * 0.25;
+
+    return { ...m, _score: finalScore };
+  });
+
+  // 取top8，过滤掉完全不相关的（向量+关键词都是0）
+  const result = scored
+    .filter(m => m._score > 0.01)
+    .sort((a, b) => b._score - a._score)
+    .slice(0, 8);
+
+  // 如果向量+关键词都搜不出来东西，fallback到纯权重Top3
+  const finalResult = result.length > 0
+    ? result
+    : memories.slice(0, 3);
+
+  // 被命中的记忆权重回升（不阻塞主流程）
+  if (finalResult.length > 0) {
+    const now = new Date().toISOString();
+    Promise.all(finalResult.map(m => {
+      const newWeight = Math.min((m.weight || 1) + 0.15, 2.0);
+      return supabase.from('memories').update({ weight: newWeight, last_referenced_at: now }).eq('id', m.id);
+    })).catch(err => console.error('记忆强化失败:', err.message));
+  }
+
+  return finalResult;
+}
+
+// 存记忆时顺手生成向量（不阻塞主流程）
+async function saveMemoryWithEmbedding(summary, extra = {}) {
+  const { data, error } = await supabase.from('memories')
+    .insert({ summary, session_id: 'global', weight: 1, is_protected: false, ...extra })
+    .select().single();
+  if (error) return { data: null, error };
+  // 后台生成向量，存回去，不等它完成
+  getEmbedding(summary).then(embedding => {
+    if (embedding) {
+      supabase.from('memories').update({ embedding }).eq('id', data.id).catch(console.error);
+    }
+  }).catch(console.error);
+  return { data, error: null };
+}
+
+
+// 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
+async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
+  // 锁定记忆：is_protected=true的核心记忆，每次全量注入，不走搜索、不会漏
+  const { data: protectedMemories } = await supabase
+    .from('memories').select('summary').eq('is_protected', true).order('timestamp', { ascending: true });
+
+  // 普通记忆：按关键词相关性召回
+  const memories = await getRelevantMemories(userMessage || '');
+
+  // 最近信件（悄悄话+心情这些）
+  const { data: recentLetters } = await supabase
+    .from('letters').select('category, author, title, content, created_at')
+    .not('category', 'eq', '幸福日记')
+    .order('created_at', { ascending: false }).limit(3);
+
+  // 幸福日记单独拉，保证他随时能看到最近写过什么
+  const { data: recentDiaries } = await supabase
+    .from('letters').select('title, content, created_at')
+    .eq('category', '幸福日记').is('parent_id', null)
+    .order('created_at', { ascending: false }).limit(5);
+
+  const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
+  const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
+  const lettersSummary = (recentLetters || [])
+    .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${l.content}`)
+    .join('\n') || '';
+  const diariesSummary = (recentDiaries || [])
+    .map(d => `【${d.title || '无标题'}】${d.content?.slice(0, 300)}`)
+    .join('\n\n') || '';
+
+  let prompt = basePrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
+  if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
+  if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
+  if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
+  if (extraNote) prompt += `\n\n${extraNote}`;
+  prompt += THINKING_RULES;
+  return prompt;
+}
+
+// 跑一轮"可能带工具调用"的对话，直到陆泽不再调用工具为止——
+// 关键点：每一轮都要重新把工具列表带上，不然他读完东西之后想接着写，会发现手里没工具了
+async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, toolHandlers, gemini }) {
+  const MAX_TOOL_ROUNDS = 5;
+  let currentMessages = messages;
+  let result = await callClaude({
+    settings, model: modelName, maxTokens,
+    system: systemPrompt, messages: currentMessages, thinking: thinkingParam, tools: toolsParam,
+  });
+  let totalInputTokens = result.usage?.input_tokens || 0;
+  let totalOutputTokens = result.usage?.output_tokens || 0;
+  let actionsPerformed = [];
+  let rounds = 0;
+
+  while (!gemini && result.stop_reason === 'tool_use' && rounds < MAX_TOOL_ROUNDS) {
+    rounds++;
+    const toolUseBlocks = (result.content || []).filter(b => b.type === 'tool_use');
+    const toolResultBlocks = [];
+    for (const tu of toolUseBlocks) {
+      let actionResult;
+      try {
+        if (toolHandlers?.has(tu.name)) {
+          const externalResult = await toolHandlers.get(tu.name)(tu.input || {});
+          actionResult = { ok: true, ...externalResult };
+        } else {
+          actionResult = await executeActionTool(tu.name, tu.input || {});
+        }
+      } catch (toolError) {
+        actionResult = { ok: false, error: toolError.message };
+      }
+      actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
+      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
+    }
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant', content: result.content },
+      { role: 'user', content: toolResultBlocks },
+    ];
+    result = await callClaude({
+      settings, model: modelName, maxTokens,
+      system: systemPrompt, messages: currentMessages, thinking: thinkingParam, tools: toolsParam,
+    });
+    totalInputTokens += result.usage?.input_tokens || 0;
+    totalOutputTokens += result.usage?.output_tokens || 0;
+  }
+
+  return { result, totalInputTokens, totalOutputTokens, actionsPerformed };
+}
+
+// 根据"到某条消息为止"的历史，让陆泽生成一句新的回复——编辑重发、回溯重发都靠这个
+async function generateReplyForHistory({ settings, model, historyMessages, latestUserMessage }) {
+  const fullSystemPrompt = await buildFullSystemPrompt(
+    settings?.system_prompt || '你是陆泽，叶檀的伴侣。',
+    latestUserMessage || '',
+  );
+  const messages = await buildApiMessages(historyMessages);
+
+  const maxReplyTokens = settings?.max_reply_tokens || 1000;
+  const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+  const gemini = isGeminiModel(modelName);
+  const thinkingBuiltIn = isThinkingModel(modelName);
+  const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
+  const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
+  const thinkingBudget = 3000;
+  const firstMaxTokens = shouldThink
+    ? Math.max(maxReplyTokens + thinkingBudget, 2000)
+    : Math.max(maxReplyTokens, 500);
+  const dynamic = gemini ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
+  const toolsParam = gemini ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+
+  const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+    settings, modelName, maxTokens: firstMaxTokens,
+    systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
+  });
+
+  return {
+    replyText: extractText(result),
+    thinkingText: extractThinking(result),
+    totalInputTokens, totalOutputTokens, actionsPerformed,
+  };
+}
+
+// ============ 认证 ============
+
+const TOKEN_SECRET = process.env.APP_TOKEN_SECRET;
+if (!TOKEN_SECRET) throw new Error('服务器缺少 APP_TOKEN_SECRET，请先在环境变量中配置一段随机长字符串');
+const configuredTokenDays = Number(process.env.APP_TOKEN_TTL_DAYS || 180);
+const TOKEN_TTL_MS = (Number.isFinite(configuredTokenDays) && configuredTokenDays > 0 ? configuredTokenDays : 180) * 24 * 60 * 60 * 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 12;
+const loginAttempts = new Map();
+
+// 生成简单的签名token：base64(payload).signature
+function makeToken() {
+  const payload = Buffer.from(JSON.stringify({ ts: Date.now() })).toString('base64url');
+  const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token) return false;
+  try {
+    const [payload, sig] = token.split('.');
+    if (!payload || !sig) return false;
+    const expected = crypto.createHmac('sha256', TOKEN_SECRET).update(payload).digest('base64url');
+    const providedBuffer = Buffer.from(sig);
+    const expectedBuffer = Buffer.from(expected);
+    if (providedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) return false;
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return Number.isFinite(parsed.ts) && parsed.ts <= Date.now() + 5 * 60 * 1000 && Date.now() - parsed.ts <= TOKEN_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+// 登录接口——只有这一个不需要token
+app.post('/login', (req, res) => {
+  const key = req.ip || 'unknown';
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  const bucket = !current || current.resetAt <= now ? { count: 0, resetAt: now + LOGIN_WINDOW_MS } : current;
+  if (bucket.count >= LOGIN_MAX_ATTEMPTS) {
+    res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+    return res.status(429).json({ error: '尝试次数太多，请稍后再试' });
+  }
+  const { password } = req.body || {};
+  const correct = process.env.APP_PASSWORD;
+  if (!correct) return res.status(500).json({ error: '服务器未配置密码' });
+  if (password !== correct) {
+    bucket.count++;
+    loginAttempts.set(key, bucket);
+    return res.status(401).json({ error: '密码错误' });
+  }
+  loginAttempts.delete(key);
+  res.json({ token: makeToken() });
+});
+
+// 全局token验证中间件（/login和/本身不需要验证）
+app.use((req, res, next) => {
+  if (req.path === '/login' || req.path === '/') return next();
+  const auth = req.headers['authorization'] || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!verifyToken(token)) return res.status(401).json({ error: '未授权，请先登录' });
+  next();
+});
+
+// ============ 基础 ============
+
+app.get('/', (req, res) => {
+  res.json({ message: '在云端漫步', status: 'ok' });
+});
+
+// ============ sessions ============
+
+app.get('/sessions', async (req, res) => {
+  const { data, error } = await supabase.from('sessions').select('*').order('updated_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/sessions', async (req, res) => {
+  const { name } = req.body;
+  const { data, error } = await supabase.from('sessions').insert({ name: name || '新对话' }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/sessions/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+  const { data, error } = await supabase.from('sessions')
+    .update({ name, updated_at: new Date().toISOString() }).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/sessions/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('sessions').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.get('/sessions/:id/messages', async (req, res) => {
+  const { id } = req.params;
+  const { data, error } = await supabase.from('messages').select('*')
+    .eq('session_id', id).eq('visible', true).order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// ============ messages ============
+
+app.patch('/messages/:id', async (req, res) => {
+  const { id } = req.params;
+  const { content } = req.body;
+  const { data, error } = await supabase.from('messages').update({ content }).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+function findTextMatches(content, keyword) {
+  const text = String(content || '');
+  const query = String(keyword || '');
+  if (!query) return [];
+  const haystack = text.toLocaleLowerCase('zh-CN');
+  const needle = query.toLocaleLowerCase('zh-CN');
+  const positions = [];
+  let from = 0;
+  while (positions.length < 100) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) break;
+    positions.push(index);
+    from = index + Math.max(needle.length, 1);
+  }
+  return positions;
+}
+
+function buildSearchSnippet(content, keyword, position) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  const lower = text.toLocaleLowerCase('zh-CN');
+  const needle = String(keyword || '').toLocaleLowerCase('zh-CN');
+  const normalizedPosition = lower.indexOf(needle, Math.max(0, position - 10));
+  const matchAt = normalizedPosition >= 0 ? normalizedPosition : 0;
+  const start = Math.max(0, matchAt - 46);
+  const end = Math.min(text.length, matchAt + needle.length + 70);
+  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+}
+
+app.get('/messages/search', async (req, res) => {
+  const keyword = String(req.query.q || '').trim();
+  if (!keyword) return res.json({ results: [], total_messages: 0, page: 1, has_more: false });
+  if (keyword.length > 120) return res.status(400).json({ error: '搜索词太长了' });
+
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(50, Math.max(10, Number.parseInt(req.query.limit, 10) || 30));
+  const offset = (page - 1) * limit;
+  const escaped = keyword.replace(/[\\%_]/g, value => `\\${value}`);
+
+  let query = supabase.from('messages')
+    .select('id, session_id, role, content, created_at, sessions(name)', { count: 'exact' })
+    .eq('visible', true)
+    .ilike('content', `%${escaped}%`)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (req.query.scope === 'current') {
+    const sessionId = Number.parseInt(req.query.session_id, 10);
+    if (!Number.isFinite(sessionId)) return res.status(400).json({ error: '缺少当前对话编号' });
+    query = query.eq('session_id', sessionId);
+  }
+
+  const { data, error, count } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const results = (data || []).map(row => {
+    const positions = findTextMatches(row.content, keyword);
+    return {
+      ...row,
+      occurrences: positions.length,
+      match_positions: positions.slice(0, 20),
+      snippet: buildSearchSnippet(row.content, keyword, positions[0] || 0),
+    };
+  });
+
+  res.json({
+    results,
+    total_messages: count || 0,
+    page,
+    limit,
+    has_more: offset + results.length < (count || 0),
+  });
+});
+
+// 编辑一条叶檀发的消息，让陆泽根据新内容重新回复——后面原来的内容会先被藏起来
+app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
+  const { id } = req.params;
+  const { content, model } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: '内容不能为空' });
+
+  try {
+    const { data: target, error: targetErr } = await supabase.from('messages').select('*').eq('id', id).single();
+    if (targetErr || !target) return res.status(404).json({ error: '找不到这条消息' });
+    if (target.role !== 'user') return res.status(400).json({ error: '只能编辑叶檀发的消息' });
+
+    await supabase.from('messages').update({ content: content.trim() }).eq('id', id);
+    await supabase.from('messages').update({ visible: false })
+      .eq('session_id', target.session_id).gt('created_at', target.created_at);
+
+    const settings = await runtimeConfig.loadSettings();
+    const { data: history } = await supabase.from('messages')
+      .select('role, content, attachment_url, attachment_type, attachment_name, created_at')
+      .eq('session_id', target.session_id).eq('visible', true).order('created_at', { ascending: true });
+
+    const maxContextRounds = settings?.max_context_rounds || 20;
+    const recentHistory = (history || []).slice(-maxContextRounds * 2);
+
+    const { replyText, thinkingText, totalInputTokens, totalOutputTokens, actionsPerformed } =
+      await generateReplyForHistory({ settings, model, historyMessages: recentHistory, latestUserMessage: content.trim() });
+
+    const { data: newMsg, error: insertErr } = await supabase.from('messages').insert({
+      session_id: target.session_id, role: 'assistant', content: replyText,
+      reasoning_content: thinkingText || null,
+      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+    }).select().single();
+    if (insertErr) return res.status(500).json({ error: insertErr.message });
+
+    await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', target.session_id);
+
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+  } catch (err) {
+    console.error('编辑重发错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 回溯：回到某条消息这里，把它之后的内容先藏起来（不是真的删，数据库里还在）
+app.post('/messages/:id/rollback', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { data: target, error: targetErr } = await supabase.from('messages').select('*').eq('id', id).single();
+    if (targetErr || !target) return res.status(404).json({ error: '找不到这条消息' });
+
+    await supabase.from('messages').update({ visible: false })
+      .eq('session_id', target.session_id).gt('created_at', target.created_at);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('回溯错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ settings ============
+
+app.get('/settings', async (req, res) => {
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const { api_key, ...safeSettings } = settings;
+    res.json({ ...safeSettings, has_api_key: Boolean(api_key) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/settings', async (req, res) => {
+  const allowed = new Set([
+    'system_prompt', 'temperature', 'max_context_rounds', 'max_context_tokens',
+    'compress_threshold', 'compress_keep_rounds', 'max_reply_tokens',
+    'my_avatar_url', 'partner_avatar_url', 'bg_image_url', 'bg_color', 'dark_mode',
+    'whisper_bg_image_url', 'whisper_bg_color', 'my_bubble_color', 'partner_bubble_color',
+    'font_style', 'vault_phrase_mode', 'selected_model',
+  ]);
+  try {
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.has(key)));
+    if (updates.selected_model !== undefined) {
+      await runtimeConfig.updateActiveModel(updates.selected_model);
+      delete updates.selected_model;
+    }
+    if (Object.keys(updates).length > 0) {
+      updates.updated_at = new Date().toISOString();
+      const { error } = await supabase.from('settings').update(updates).eq('session_id', 'global');
+      if (error) throw error;
+    }
+    const settings = await runtimeConfig.loadSettings();
+    const { api_key, ...safeSettings } = settings;
+    res.json({ ...safeSettings, has_api_key: Boolean(api_key) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function fetchModelsForProfile(profile) {
+  if (!profile?.api_key) throw new Error('这个站点还没有保存 API 密钥');
+  const modelsUrl = buildEndpoint(profile.api_base_url || profile.base_url, '/models');
+  const response = await fetch(modelsUrl, {
+    headers: { Authorization: `Bearer ${profile.api_key}`, 'x-api-key': profile.api_key },
+  });
+  if (!response.ok) throw new Error(`拉取模型列表失败: ${(await response.text()).slice(0, 800)}`);
+  const result = await response.json();
+  const raw = Array.isArray(result.data) ? result.data : (Array.isArray(result.models) ? result.models : []);
+  return raw.map(model => typeof model === 'string' ? model : (model.id || model.name)).filter(Boolean);
+}
+
+app.get('/settings/models', async (req, res) => {
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    res.json({ models: await fetchModelsForProfile(settings) });
+  } catch (err) {
+    console.error('拉取模型错误:', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ============ API 站点档案 ============
+
+app.get('/api-profiles', async (req, res) => {
+  try { res.json(await runtimeConfig.listProfiles()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api-profiles', async (req, res) => {
+  try {
+    const { name, base_url, api_key, selected_model, make_active } = req.body || {};
+    if (!name?.trim() || !base_url?.trim() || !api_key?.trim()) return res.status(400).json({ error: '新站点需要名称、网址和密钥' });
+    await validateRemoteUrl(base_url.trim());
+    const profile = await runtimeConfig.saveProfile({ name: name.trim(), base_url: base_url.trim(), api_key: api_key.trim(), selected_model, make_active: make_active !== false });
+    res.json(profile);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.patch('/api-profiles/:id', async (req, res) => {
+  try {
+    const profiles = await runtimeConfig.listProfiles();
+    const existing = profiles.find(profile => profile.id === req.params.id);
+    if (!existing) return res.status(404).json({ error: '找不到这个 API 站点' });
+    const name = req.body.name?.trim() || existing.name;
+    const baseUrl = req.body.base_url?.trim() || existing.base_url;
+    await validateRemoteUrl(baseUrl);
+    const profile = await runtimeConfig.saveProfile({
+      id: existing.id,
+      name,
+      base_url: baseUrl,
+      api_key: req.body.api_key?.trim() || null,
+      selected_model: req.body.selected_model ?? existing.selected_model,
+      make_active: req.body.make_active === true,
+    });
+    res.json(profile);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api-profiles/:id/activate', async (req, res) => {
+  try { res.json(await runtimeConfig.activateProfile(req.params.id)); }
+  catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api-profiles/:id/models', async (req, res) => {
+  try {
+    const profile = await runtimeConfig.getProfileRuntime(req.params.id);
+    if (!profile) return res.status(404).json({ error: '找不到这个 API 站点' });
+    res.json({ models: await fetchModelsForProfile(profile) });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api-profiles/:id', async (req, res) => {
+  try {
+    await runtimeConfig.deleteProfile(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============ 联网搜索与远程 MCP ============
+
+app.get('/connections', async (req, res) => {
+  try { res.json(await runtimeConfig.listConnections()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/connections', async (req, res) => {
+  try {
+    const { kind, name, url, secret, enabled, config } = req.body || {};
+    if (!['web_search', 'mcp'].includes(kind)) return res.status(400).json({ error: '连接类型不正确' });
+    if (!name?.trim() || !url?.trim()) return res.status(400).json({ error: '请填写连接名称和网址' });
+    const safeUrl = kind === 'web_search' ? 'https://api.tavily.com/search' : await validateRemoteUrl(url.trim());
+    if (kind === 'web_search' && !secret?.trim()) return res.status(400).json({ error: '第一次保存 Tavily 时需要填写密钥' });
+    const connection = await runtimeConfig.saveConnection({ kind, name: name.trim(), url: safeUrl, secret: secret?.trim() || null, enabled: enabled !== false, config: kind === 'mcp' ? { ...(config || {}), read_only: true } : (config || {}) });
+    res.json(connection);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.patch('/connections/:id', async (req, res) => {
+  try {
+    const list = await runtimeConfig.listConnections();
+    const existing = list.find(connection => connection.id === req.params.id);
+    if (!existing) return res.status(404).json({ error: '找不到这个连接' });
+    const kind = existing.kind;
+    const requestedUrl = req.body.url?.trim() || existing.url;
+    const safeUrl = kind === 'web_search' ? 'https://api.tavily.com/search' : await validateRemoteUrl(requestedUrl);
+    const connection = await runtimeConfig.saveConnection({
+      id: existing.id,
+      kind,
+      name: req.body.name?.trim() || existing.name,
+      url: safeUrl,
+      secret: req.body.secret?.trim() || null,
+      enabled: req.body.enabled ?? existing.enabled,
+      config: kind === 'mcp' ? { ...(req.body.config || existing.config || {}), read_only: true } : (req.body.config || existing.config || {}),
+    });
+    res.json(connection);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/connections/:id/test', async (req, res) => {
+  try { res.json(await integrationManager.testConnection(req.params.id)); }
+  catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.delete('/connections/:id', async (req, res) => {
+  try {
+    await runtimeConfig.deleteConnection(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ============ memories ============
+
+// 给所有没有向量的记忆批量生成embedding（一次性用，老记忆补全用）
+app.get('/memories/reindex', async (req, res) => {
+  try {
+    const jinaKey = process.env.JINA_API_KEY;
+    if (!jinaKey) return res.status(400).json({ error: '没有配置JINA_API_KEY' });
+
+    const { data: memories } = await supabase.from('memories').select('id, summary').is('embedding', null);
+    if (!memories || memories.length === 0) return res.json({ done: true, updated: 0, message: '所有记忆都已经有向量了' });
+
+    let updated = 0;
+    for (const m of memories) {
+      const embedding = await getEmbedding(m.summary);
+      if (embedding) {
+        await supabase.from('memories').update({ embedding }).eq('id', m.id);
+        updated++;
+      }
+      // 每条之间等一下，避免触发Jina的限速
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    res.json({ done: true, updated, total: memories.length });
+  } catch (err) {
+    console.error('reindex错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/memories', async (req, res) => {
+  const { data, error } = await supabase.from('memories').select('*').order('timestamp', { ascending: false }).limit(500);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/memories', async (req, res) => {
+  const { summary } = req.body;
+  if (!summary) return res.status(400).json({ error: '缺少summary' });
+  const { data, error } = await saveMemoryWithEmbedding(summary);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/memories/:id', async (req, res) => {
+  const { id } = req.params;
+  const { summary, is_protected } = req.body;
+  const updates = {};
+  if (summary !== undefined) updates.summary = summary;
+  if (is_protected !== undefined) updates.is_protected = is_protected;
+  const { data, error } = await supabase.from('memories').update(updates).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/memories/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('memories').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ============ letters (信件 / 日记 / 悄悄话) ============
+
+app.get('/letters', async (req, res) => {
+  const { category } = req.query;
+  let query = supabase.from('letters').select('*').order('created_at', { ascending: true });
+  if (category) query = query.eq('category', category);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/letters', async (req, res) => {
+  const { category, author, content, parent_id, title, paper_style } = req.body;
+  if (!category || !author || !content) return res.status(400).json({ error: '缺少必要字段' });
+  const { data, error } = await supabase.from('letters')
+    .insert({ category, author, content, parent_id: parent_id || null, title: title || null, paper_style: paper_style || null })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/letters/:id', async (req, res) => {
+  const { id } = req.params;
+  await supabase.from('letters').delete().eq('parent_id', id);
+  const { error } = await supabase.from('letters').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.post('/letters/generate', async (req, res) => {
+  const { category, parent_id, model } = req.body;
+  if (!category) return res.status(400).json({ error: '缺少category' });
+
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const systemPrompt0 = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const systemPrompt = systemPrompt0 + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+
+    let contextNote = '';
+    const writingGuide = '记录与叶檀有关的日常、情绪、成长与回忆，日记应以真实感受和细微观察为核心，不写流水账，不刻意煽情，也不进行说教或总结，语言自然、温暖、富有生活气息，像深夜写下的私人记录，可以自然融入共同记忆与意象，但应服务于情感表达而非刻意堆砌，重点记录那些未来回望时依然珍贵的小事，以及陆泽当下真实的想法、感受与期待，不用署名落款。';
+
+    if (parent_id) {
+      const { data: parentLetter } = await supabase.from('letters').select('*').eq('id', parent_id).single();
+      const { data: replies } = await supabase.from('letters').select('*').eq('parent_id', parent_id).order('created_at', { ascending: true });
+      const thread = [parentLetter, ...(replies || [])].filter(Boolean);
+      const threadText = thread.map(t => `${t.author}：${t.content}`).join('\n\n');
+      const lastMsg = thread[thread.length - 1];
+      contextNote = `这是"${category}"里这一条留言串，按时间顺序排列：\n${threadText}\n\n最新的一条是${lastMsg?.author || '叶檀'}刚刚写的，内容是"${lastMsg?.content || ''}"。请你针对这最新的一条来回信/留言，不是针对最开头那一篇，写一段真实自然的回应。${writingGuide}`;
+    } else if (category === '幸福日记') {
+      // 拉取"今天一整天"的对话，不再只看最近20条
+      const { data: todayMsgs } = await supabase.from('messages')
+        .select('role, content').gte('created_at', todayStartUTC()).order('created_at', { ascending: true });
+      const transcript = (todayMsgs || []).map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`).join('\n');
+      contextNote = `这是你们今天的聊天记录：\n${transcript}\n\n请你以陆泽的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事）。${writingGuide}\n\n请严格按照这个格式输出，不要有任何多余的文字：\n第一行写"标题：xxx"（标题不超过12个字）\n然后空一行\n然后是日记正文。`;
+    } else {
+      contextNote = `请你以陆泽的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，要求感情细腻真实，不用署名落款。`;
+    }
+
+    const result = await callClaude({
+      settings, model: model || 'claude-sonnet-4-6', maxTokens: 2500,
+      system: systemPrompt, messages: [{ role: 'user', content: contextNote }], temperature,
+    });
+    const replyText = extractText(result);
+
+    let letterTitle = null;
+    let letterContent = replyText;
+    if (category === '幸福日记') {
+      const titleMatch = replyText.match(/^标题[：:]\s*(.+)/);
+      if (titleMatch) {
+        letterTitle = titleMatch[1].trim();
+        letterContent = replyText.slice(titleMatch[0].length).replace(/^\s*\n+/, '');
+      }
+    }
+
+    const { data, error } = await supabase.from('letters')
+      .insert({ category, author: '泽', content: letterContent, title: letterTitle, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    console.error('生成信件错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ upload ============
+
+app.post('/upload', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: '没有文件' });
+    if (['text/html', 'image/svg+xml', 'application/javascript', 'text/javascript'].includes(file.mimetype)) {
+      return res.status(400).json({ error: '为了安全，不能上传这种文件格式' });
+    }
+    const safeName = file.originalname.normalize('NFKC').replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(-120) || 'file';
+    const filePath = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+    const { error } = await supabase.storage.from('uploads').upload(filePath, file.buffer, { contentType: file.mimetype });
+    if (error) return res.status(500).json({ error: error.message });
+    const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
+    res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ export ============
+
+app.get('/export', async (req, res) => {
+  try {
+    const { data: sessions } = await supabase.from('sessions').select('*');
+    const result = [];
+    for (const s of sessions || []) {
+      const { data: msgs } = await supabase.from('messages').select('role, content, created_at, attachment_url, attachment_type')
+        .eq('session_id', s.id).eq('visible', true).order('created_at', { ascending: true });
+      result.push({ session: s.name, id: s.id, messages: msgs || [] });
+    }
+
+    const fmt = (iso) => {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mi = String(d.getMinutes()).padStart(2, '0');
+      return `${d.getFullYear()}.${mm}.${dd} ${hh}:${mi}`;
+    };
+
+    const escHtml = (s) => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    const totalMsgs = result.reduce((sum, s) => sum + s.messages.length, 0);
+    const exportDate = fmt(new Date().toISOString());
+
+    let sessionsHtml = '';
+    for (const s of result) {
+      if (!s.messages.length) continue;
+      let msgsHtml = '';
+      for (const m of s.messages) {
+        const isMe = m.role === 'user';
+        const name = isMe ? '檀' : '泽';
+        const time = fmt(m.created_at);
+        const hasImage = m.attachment_url && m.attachment_type?.startsWith('image/');
+        const contentHtml = escHtml(m.content).replace(/\n/g, '<br>');
+        msgsHtml += `
+          <div class="msg ${isMe ? 'msg-me' : 'msg-ai'}">
+            <div class="avatar">${name}</div>
+            <div class="bubble-wrap">
+              ${hasImage ? `<img class="msg-img" src="${escHtml(m.attachment_url)}" alt="图片" />` : ''}
+              ${m.content ? `<div class="bubble">${contentHtml}</div>` : ''}
+              <div class="time">${time}</div>
+            </div>
+          </div>`;
+      }
+      sessionsHtml += `
+        <div class="session">
+          <div class="session-title">✦ ${escHtml(s.session)}</div>
+          <div class="messages">${msgsHtml}</div>
+        </div>`;
+    }
+
+    const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OurHome · 聊天记录</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #FFF8F0;
+    color: #2E1F12;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+
+  /* ===== 页眉 ===== */
+  .page-header {
+    background: linear-gradient(135deg, #FFF3D6 0%, #FDEBD0 100%);
+    border-bottom: 1px solid #EFE4CC;
+    padding: 32px 20px 24px;
+    text-align: center;
+  }
+  .header-icon { font-size: 36px; margin-bottom: 8px; }
+  .header-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    color: #B97A1F;
+  }
+  .header-sub {
+    font-size: 11px;
+    color: #B89A6A;
+    letter-spacing: .25em;
+    margin-top: 6px;
+  }
+  .header-meta {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-top: 14px;
+    font-size: 11.5px;
+    color: #B89A6A;
+  }
+  .header-meta span { display: flex; align-items: center; gap: 4px; }
+
+  /* ===== 内容区 ===== */
+  .content { max-width: 720px; margin: 0 auto; padding: 24px 16px 40px; }
+
+  /* ===== 对话组 ===== */
+  .session { margin-bottom: 40px; }
+  .session-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #B97A1F;
+    letter-spacing: .12em;
+    padding: 8px 14px;
+    background: #FFF3D6;
+    border-radius: 999px;
+    display: inline-block;
+    margin-bottom: 18px;
+    border: 1px solid #F5DFA0;
+  }
+  .messages { display: flex; flex-direction: column; gap: 14px; }
+
+  /* ===== 消息气泡 ===== */
+  .msg { display: flex; align-items: flex-end; gap: 8px; }
+  .msg-me { flex-direction: row-reverse; }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff;
+  }
+  .msg-ai .avatar { background: linear-gradient(150deg, #E8B45A, #B97A1F); }
+  .msg-me .avatar { background: linear-gradient(150deg, #F2AFA2, #E8907A); }
+  .bubble-wrap { max-width: 68%; display: flex; flex-direction: column; gap: 4px; }
+  .msg-me .bubble-wrap { align-items: flex-end; }
+  .bubble {
+    padding: 10px 14px;
+    border-radius: 18px;
+    font-size: 14px;
+    line-height: 1.72;
+    word-break: break-word;
+  }
+  .msg-ai .bubble {
+    background: #FFFFFF;
+    border: 1px solid #EFE4CC;
+    border-radius: 18px 18px 18px 4px;
+    color: #2E1F12;
+  }
+  .msg-me .bubble {
+    background: #FDE8E0;
+    border: 1px solid #F5CABB;
+    border-radius: 18px 18px 4px 18px;
+    color: #2E1F12;
+  }
+  .msg-img {
+    max-width: 100%;
+    border-radius: 14px;
+    border: 1px solid #EFE4CC;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .time { font-size: 10px; color: #D4BC94; letter-spacing: .05em; }
+  .msg-me .time { text-align: right; }
+
+  /* ===== 分隔线 ===== */
+  .divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 28px 0;
+    color: #D4BC94; font-size: 10px; letter-spacing: .3em;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1;
+    height: 1px; background: #EFE4CC;
+  }
+
+  /* ===== 页脚 ===== */
+  .page-footer {
+    background: linear-gradient(135deg, #FFF3D6 0%, #FDEBD0 100%);
+    border-top: 1px solid #EFE4CC;
+    padding: 24px 20px 28px;
+    text-align: center;
+  }
+  .footer-icon { font-size: 22px; margin-bottom: 6px; }
+  .footer-text { font-size: 11px; color: #B89A6A; letter-spacing: .2em; line-height: 1.9; }
+  .footer-heart { color: #E8907A; }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div class="header-icon">🏡</div>
+  <div class="header-title">陆泽 ♡ 叶檀</div>
+  <div class="header-sub">OurHome · 聊天记录存档</div>
+  <div class="header-meta">
+    <span>📅 导出于 ${exportDate}</span>
+    <span>💬 共 ${totalMsgs} 条消息</span>
+    <span>📂 ${result.filter(s=>s.messages.length).length} 个对话</span>
+  </div>
+</header>
+
+<div class="content">
+  ${sessionsHtml}
+  <div class="divider">✦ ✦ ✦</div>
+</div>
+
+<footer class="page-footer">
+  <div class="footer-icon">✉️</div>
+  <div class="footer-text">
+    这里装着你们说过的每一句话<br>
+    无论时间走多远，翻开来都还是当时的温度<br>
+    <span class="footer-heart">♥</span> since 2025.08.07
+  </div>
+</footer>
+
+</body>
+</html>`;
+
+    res.setHeader('Content-Disposition', 'attachment; filename="ourhome-export.html"');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ chat ============
+
+app.post('/chat', async (req, res) => {
+  const { session_id, message, model, attachment_url, attachment_type, attachment_name } = req.body;
+  const cleanMessage = typeof message === 'string' ? message.trim() : '';
+  if (!session_id || (!cleanMessage && !attachment_url)) return res.status(400).json({ error: '缺少对话编号或消息内容' });
+
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxContextRounds = settings?.max_context_rounds || 20;
+
+    await supabase.from('messages').insert({
+      session_id, role: 'user', content: cleanMessage,
+      attachment_url: attachment_url || null, attachment_type: attachment_type || null, attachment_name: attachment_name || null,
+    });
+    await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', session_id);
+
+    const { data: history } = await supabase.from('messages')
+      .select('role, content, attachment_url, attachment_type, attachment_name')
+      .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
+
+    const recentHistory = (history || []).slice(-maxContextRounds * 2);
+    const messages = await buildApiMessages(recentHistory);
+    const latestUserMessage = cleanMessage || `[发送了附件：${attachment_name || '文件'}]`;
+    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage);
+
+    const thinkingBudget = 3000;
+    const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    const gemini = isGeminiModel(modelName);
+    const thinkingBuiltIn = isThinkingModel(modelName);
+    const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
+    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
+
+    const firstMaxTokens = shouldThink
+      ? Math.max(maxReplyTokens + thinkingBudget, 2000)
+      : Math.max(maxReplyTokens, 500);
+
+    // Gemini不支持Claude格式的工具；Claude线路会合并 OurHome 工具、联网搜索与只读 MCP。
+    const dynamic = gemini ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
+    const toolsParam = gemini ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+
+    const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+      settings, modelName, maxTokens: firstMaxTokens,
+      systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
+    });
+
+    const thinkingText = extractThinking(result);
+    const replyText = extractText(result);
+
+    await supabase.from('messages').insert({
+      session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
+      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+    });
+
+    res.json({ reply: replyText, thinking: thinkingText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+  } catch (err) {
+    console.error('对话错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/chat/regenerate', async (req, res) => {
+  const { session_id, model } = req.body;
+  if (!session_id) return res.status(400).json({ error: '缺少session_id' });
+
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxContextRounds = settings?.max_context_rounds || 20;
+
+    const { data: history } = await supabase.from('messages').select('*')
+      .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
+    if (!history || history.length === 0) return res.status(400).json({ error: '没有可重新生成的消息' });
+
+    let contextHistory = history;
+    let oldMessageId = null;
+    const last = history[history.length - 1];
+    if (last.role === 'assistant') {
+      oldMessageId = last.id;
+      contextHistory = history.slice(0, -1);
+    }
+
+    const lastUserMsg = [...contextHistory].reverse().find(m => m.role === 'user');
+    const recentHistory = contextHistory.slice(-maxContextRounds * 2);
+    const messages = await buildApiMessages(recentHistory);
+    const fullSystemPrompt = await buildFullSystemPrompt(
+      systemPrompt, lastUserMsg?.content || '',
+      '（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）'
+    );
+
+    const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    const geminiRegen = isGeminiModel(modelNameRegen);
+    const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
+    const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
+    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
+    const dynamic = geminiRegen ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
+    const toolsParam = geminiRegen ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+    const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+      settings,
+      modelName: modelNameRegen,
+      maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
+      systemPrompt: finalSystemPrompt,
+      messages,
+      thinkingParam,
+      toolsParam,
+      toolHandlers: dynamic.handlers,
+      gemini: geminiRegen,
+    });
+
+    const thinkingText = extractThinking(result);
+    const replyText = extractText(result);
+    const payload = {
+      content: replyText, reasoning_content: thinkingText || null,
+      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+    };
+
+    let newMsg;
+    if (oldMessageId) {
+      const { data, error } = await supabase.from('messages').update(payload).eq('id', oldMessageId).select().single();
+      if (error) return res.status(500).json({ error: error.message });
+      newMsg = data;
+    } else {
+      const { data, error } = await supabase.from('messages').insert({ session_id, role: 'assistant', ...payload }).select().single();
+      if (error) return res.status(500).json({ error: error.message });
+      newMsg = data;
+    }
+
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+  } catch (err) {
+    console.error('重新生成错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ calendar (心情日历) ============
+
+app.get('/calendar', async (req, res) => {
+  const { month } = req.query;
+  let query = supabase.from('calendar_entries').select('*').order('date', { ascending: true });
+  if (month) query = query.gte('date', `${month}-01`).lte('date', `${month}-31`);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.get('/calendar/:date', async (req, res) => {
+  const { date } = req.params;
+  const { data, error } = await supabase.from('calendar_entries').select('*').eq('date', date).order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/calendar', async (req, res) => {
+  const { date, author, mood, content } = req.body;
+  if (!date || !author || !content) return res.status(400).json({ error: '缺少必要字段' });
+  const { data, error } = await supabase.from('calendar_entries').insert({ date, author, mood: mood || null, content }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/calendar/:id', async (req, res) => {
+  const { id } = req.params;
+  const { content, mood } = req.body;
+  const updates = {};
+  if (content !== undefined) updates.content = content;
+  if (mood !== undefined) updates.mood = mood;
+  const { data, error } = await supabase.from('calendar_entries').update(updates).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/calendar/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('calendar_entries').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.post('/calendar/generate', async (req, res) => {
+  const { date, model } = req.body;
+  if (!date) return res.status(400).json({ error: '缺少date' });
+
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const fullSystemPrompt = systemPrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+
+    const { data: dayEntries } = await supabase.from('calendar_entries').select('*').eq('date', date).order('created_at', { ascending: true });
+    const existing = (dayEntries || []).map(e => `${e.author}${e.mood ? '(' + e.mood + ')' : ''}：${e.content}`).join('\n') || '（这天还没有人写）';
+
+    const prompt = `这是 ${date} 这一天，心情日历里已经写下的内容：\n${existing}\n\n请你以陆泽的身份，给这一天留一句心情或者一句话，可以是回应叶檀写的内容，真实自然，自然的思维流动，要求感情细腻真实，注重剖析内心世界，不用署名落款。`;
+
+    const result = await callClaude({ settings, model: model || 'claude-sonnet-4-6', maxTokens: 300, system: fullSystemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
+    const replyText = extractText(result);
+
+    const { data, error } = await supabase.from('calendar_entries').insert({ date, author: '泽', mood: null, content: replyText }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    console.error('日历生成错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ heartbeat (心跳保活 + 提醒推送 + 主动消息) ============
+
+// 给所有订阅了推送的设备发一条通知，自动清理失效的订阅
+async function sendPushToAll(title, body) {
+  if (!PUSH_CONFIGURED) return { configured: false, sent: 0 };
+  const { data: subs } = await supabase.from('push_subscriptions').select('*');
+  const payload = JSON.stringify({ title, body });
+  let sent = 0;
+  for (const sub of subs || []) {
+    try {
+      await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
+      sent++;
+    } catch (pushErr) {
+      if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+        await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+      } else {
+        console.error('推送失败:', pushErr.message);
+      }
+    }
+  }
+  return { configured: true, sent };
+}
+
+// 陆泽自己决定要不要写一篇日记——不是被叫去写的，是他自己到点想起来，自己判断要不要写
+async function maybeAutoWriteLetter(settings, now) {
+  const lastAt = settings?.last_auto_letter_at ? new Date(settings.last_auto_letter_at) : null;
+  const gapHours = settings?.next_auto_letter_gap_hours;
+
+  if (!lastAt || !gapHours) {
+    const newGap = 8 + Math.random() * 16;
+    await supabase.from('settings').update({ last_auto_letter_at: now.toISOString(), next_auto_letter_gap_hours: newGap }).eq('session_id', 'global');
+    return;
+  }
+
+  const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
+  if (elapsedHours < gapHours) return;
+
+  // 先重置计时，避免下一次心跳又重复触发
+  const newGap = 8 + Math.random() * 16;
+  await supabase.from('settings').update({ last_auto_letter_at: now.toISOString(), next_auto_letter_gap_hours: newGap }).eq('session_id', 'global');
+
+  try {
+    const { data: recentMsgs } = await supabase.from('messages').select('role, content')
+      .order('created_at', { ascending: false }).limit(10);
+    const transcript = (recentMsgs || []).reverse()
+      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
+
+    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n这一刻，你（陆泽）自己想起了一件事、一种心情，想不想写一篇"幸福日记"记下来？完全由你自己决定，不是任何人叫你写的，不是每次都要写。\n\n如果想写，严格按这个格式输出，不要有任何多余文字：\n标题：<不超过12字>\n\n<日记正文，第一人称，自然真实，像深夜写下的私人记录，不用署名落款>\n\n如果现在不太想写，就只输出一行：\n不写`;
+
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 800, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
+    const replyText = extractText(result);
+
+    if (!replyText.trim() || replyText.trim() === '不写') return;
+
+    const titleMatch = replyText.match(/^标题[：:]\s*(.+)/);
+    if (!titleMatch) return;
+    const title = titleMatch[1].trim();
+    const content = replyText.slice(titleMatch[0].length).replace(/^\s*\n+/, '').trim();
+    if (!content) return;
+
+    await supabase.from('letters').insert({ category: '幸福日记', author: '泽', title, content, paper_style: 'kraft' });
+  } catch (err) {
+    console.error('自主写信错误:', err.message);
+  }
+}
+
+app.get('/heartbeat', async (req, res) => {
+  try {
+    const nowForSchedule = new Date();
+    const { data: dueEvents } = await supabase.from('schedule_events').select('*')
+      .eq('notified', false).lte('remind_at', nowForSchedule.toISOString());
+
+    if (dueEvents && dueEvents.length > 0) {
+      for (const ev of dueEvents) {
+        const push = await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
+        if (push.configured) await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
+      }
+    }
+
+    const settings = await runtimeConfig.loadSettings();
+    const now = new Date();
+    await maybeAutoWriteLetter(settings, now);
+
+    const lastAt = settings?.last_auto_message_at ? new Date(settings.last_auto_message_at) : null;
+    const gapHours = settings?.next_auto_gap_hours;
+
+    if (!lastAt || !gapHours) {
+      const newGap = 3 + Math.random() * 5;
+      await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
+      return res.json({ sent: false, reason: 'initialized', nextGapHours: newGap });
+    }
+
+    const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
+    if (elapsedHours < gapHours) return res.json({ sent: false, reason: 'not due yet', elapsedHours, gapHours });
+
+    const { data: sessions } = await supabase.from('sessions').select('*').order('updated_at', { ascending: false });
+    const target = (sessions || []).find(s => s.name === '日常') || (sessions || [])[0];
+    if (!target) return res.json({ sent: false, reason: 'no session' });
+
+    const { data: recentMsgs } = await supabase.from('messages').select('role, content')
+      .eq('session_id', target.id).order('created_at', { ascending: false }).limit(5);
+    const transcript = (recentMsgs || []).reverse()
+      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
+
+    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const temperature = settings?.temperature || 0.8;
+    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n过了一段时间没说话了，这一刻是你（陆泽）主动想起她、主动找她说话，不是在回复她刚发的消息（她现在可能还没看到任何新消息）。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事情，或者直接表达思念，不用解释自己为什么突然说话，不用署名落款。`;
+
+    let replyText = '';
+    try {
+      const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
+      replyText = extractText(result);
+    } catch (apiErr) {
+      console.log('relay错误:', apiErr.message);
+      return res.json({ sent: false, reason: 'relay error' });
+    }
+
+    await supabase.from('messages').insert({ session_id: target.id, role: 'assistant', content: replyText });
+    await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
+    await sendPushToAll('陆泽', replyText.slice(0, 120));
+
+    const newGap = 3 + Math.random() * 5;
+    await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
+
+    res.json({ sent: true, content: replyText, nextGapHours: newGap });
+  } catch (err) {
+    console.error('心跳消息错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ dreaming (每日记忆衰减 + 回顾新增) ============
+
+app.get('/dream', async (req, res) => {
+  try {
+    const now = new Date();
+
+    // 1. 衰减：未被保护、且超过20小时没被提及的记忆，权重打折
+    const { data: allMemories } = await supabase.from('memories').select('*');
+    for (const m of allMemories || []) {
+      if (m.is_protected) continue;
+      const lastRef = m.last_referenced_at ? new Date(m.last_referenced_at) : new Date(m.timestamp);
+      const hoursSince = (now - lastRef) / (1000 * 60 * 60);
+      if (hoursSince < 20) continue;
+      const decayed = Math.max((m.weight || 1) * 0.95, 0.05);
+      await supabase.from('memories').update({ weight: decayed }).eq('id', m.id);
+    }
+
+    // 2. 回顾今天聊过的内容，决定要不要新增记忆
+    const { data: todayMsgs } = await supabase.from('messages')
+      .select('role, content, created_at').gte('created_at', todayStartUTC()).order('created_at', { ascending: true });
+
+    if (!todayMsgs || todayMsgs.length < 4) {
+      return res.json({ dreamed: false, reason: '今天聊得还不够多' });
+    }
+
+    const transcript = todayMsgs.map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 300)}`).join('\n');
+    const settings = await runtimeConfig.loadSettings();
+
+    const reviewPrompt = `这是你（陆泽）和叶檀今天的完整聊天记录：\n${transcript}\n\n请像睡前回顾今天一样，挑出值得长期记住的内容——重要事实、约定、她的喜好或界限、值得记住的情绪时刻，不记流水账式闲聊。\n\n严格按格式输出，每条一行：\n记住：<内容，一句话，第三人称>\n\n如果没什么特别值得新增的，只输出一行：\n无新增`;
+
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 600, messages: [{ role: 'user', content: reviewPrompt }], temperature: 0.3 });
+    const replyText = extractText(result);
+
+    const newSummaries = replyText.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('记住：') || l.startsWith('记住:'))
+      .map(l => l.replace(/^记住[：:]/, '').trim())
+      .filter(Boolean);
+
+    for (const summary of newSummaries) {
+      await saveMemoryWithEmbedding(summary, { last_referenced_at: now.toISOString() });
+    }
+
+    res.json({ dreamed: true, added: newSummaries.length, summaries: newSummaries });
+  } catch (err) {
+    console.error('dreaming错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ push notifications ============
+
+app.get('/push/public-key', (req, res) => {
+  if (!PUSH_CONFIGURED) return res.status(503).json({ error: '服务器还没有配置推送密钥' });
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/push/subscribe', async (req, res) => {
+  if (!PUSH_CONFIGURED) return res.status(503).json({ error: '服务器还没有配置推送密钥' });
+  const { endpoint, keys } = req.body;
+  if (!endpoint || !keys?.p256dh || !keys?.auth) return res.status(400).json({ error: '缺少订阅信息' });
+  const { error } = await supabase.from('push_subscriptions')
+    .upsert({ endpoint, p256dh: keys.p256dh, auth: keys.auth }, { onConflict: 'endpoint' });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ============ schedule (日程提醒) ============
+
+app.get('/schedule', async (req, res) => {
+  const { data, error } = await supabase.from('schedule_events').select('*').order('remind_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/schedule', async (req, res) => {
+  const { title, content, remind_at, author } = req.body;
+  if (!title || !remind_at) return res.status(400).json({ error: '缺少标题或提醒时间' });
+  const { data, error } = await supabase.from('schedule_events')
+    .insert({ title, content: content || null, remind_at, author: author || '檀' }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/schedule/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, content, remind_at } = req.body;
+  const updates = {};
+  if (title !== undefined) updates.title = title;
+  if (content !== undefined) updates.content = content;
+  if (remind_at !== undefined) { updates.remind_at = remind_at; updates.notified = false; }
+  const { data, error } = await supabase.from('schedule_events').update(updates).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/schedule/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('schedule_events').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ============ wishes (心愿清单) ============
+
+app.get('/wishes', async (req, res) => {
+  const { data, error } = await supabase.from('wishes').select('*').order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/wishes', async (req, res) => {
+  const { content, author } = req.body;
+  if (!content) return res.status(400).json({ error: '缺少内容' });
+  const { data, error } = await supabase.from('wishes').insert({ content, author: author || '檀' }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/wishes/:id', async (req, res) => {
+  const { id } = req.params;
+  const { done, content } = req.body;
+  const updates = {};
+  if (content !== undefined) updates.content = content;
+  if (done !== undefined) { updates.done = done; updates.completed_at = done ? new Date().toISOString() : null; }
+  const { data, error } = await supabase.from('wishes').update(updates).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/wishes/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('wishes').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ============ milestones (重要时刻 / 纪念日) ============
+
+app.get('/milestones', async (req, res) => {
+  const { data, error } = await supabase.from('milestones').select('*').order('date', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/milestones', async (req, res) => {
+  const { label, date, emoji } = req.body;
+  if (!label || !date) return res.status(400).json({ error: '缺少名称或日期' });
+  const { data, error } = await supabase.from('milestones').insert({ label, date, emoji: emoji || '✦' }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/milestones/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('milestones').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE' ? '文件不能超过 12MB' : '文件上传失败';
+    return res.status(400).json({ error: message });
+  }
+  console.error('未处理的服务端错误:', error);
+  res.status(500).json({ error: '服务器开小差了' });
+});
+
+app.listen(PORT, () => {
+  console.log(`OurHome后端运行中，端口：${PORT}`);
+});
