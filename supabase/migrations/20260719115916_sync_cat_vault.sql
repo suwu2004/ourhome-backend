@@ -171,13 +171,13 @@ begin
     raise exception '金库数据格式不正确';
   end if;
 
-  delete from public.vault_recurring_items;
-  delete from public.vault_account_history;
-  delete from public.vault_transactions;
-  delete from public.vault_budgets;
-  delete from public.vault_savings_goals;
-  delete from public.vault_accounts;
-  delete from public.vault_account_groups;
+  delete from public.vault_recurring_items where true;
+  delete from public.vault_account_history where true;
+  delete from public.vault_transactions where true;
+  delete from public.vault_budgets where true;
+  delete from public.vault_savings_goals where true;
+  delete from public.vault_accounts where true;
+  delete from public.vault_account_groups where true;
 
   for v_group in select value from jsonb_array_elements(coalesce(p_state -> 'accountGroups', '[]'::jsonb))
   loop
