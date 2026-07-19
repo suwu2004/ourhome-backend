@@ -1303,31 +1303,77 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
     if (targetErr || !target) return res.status(404).json({ error: '找不到这条消息' });
     if (target.role !== 'user') return res.status(400).json({ error: '只能编辑叶檀发的消息' });
 
-    await supabase.from('messages').update({ content: content.trim() }).eq('id', id);
-    await supabase.from('messages').update({ visible: false })
-      .eq('session_id', target.session_id).gt('created_at', target.created_at);
-
     const settings = await runtimeConfig.loadSettings();
-    const { data: history } = await supabase.from('messages')
-      .select('role, content, attachment_url, attachment_type, attachment_name, created_at')
-      .eq('session_id', target.session_id).eq('visible', true).order('created_at', { ascending: true });
+    const { data: history, error: historyError } = await supabase.from('messages')
+      .select('id, role, content, attachment_url, attachment_type, attachment_name, created_at')
+      .eq('session_id', target.session_id)
+      .eq('visible', true)
+      .lte('created_at', target.created_at)
+      .order('created_at', { ascending: true });
+    if (historyError) return res.status(500).json({ error: historyError.message });
 
     const maxContextRounds = settings?.max_context_rounds || 20;
-    const recentHistory = (history || []).slice(-maxContextRounds * 2);
+    const proposedHistory = (history || []).map(message => (
+      message.id === target.id ? { ...message, content: content.trim() } : message
+    ));
+    const recentHistory = proposedHistory.slice(-maxContextRounds * 2);
 
     const { replyText, thinkingText, totalInputTokens, totalOutputTokens, actionsPerformed } =
       await generateReplyForHistory({ settings, model, historyMessages: recentHistory, latestUserMessage: content.trim() });
 
-    const { data: newMsg, error: insertErr } = await supabase.from('messages').insert({
-      session_id: target.session_id, role: 'assistant', content: replyText,
-      reasoning_content: thinkingText || null,
-      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
-    }).select().single();
-    if (insertErr) return res.status(500).json({ error: insertErr.message });
+    let targetUpdated = false;
+    let hiddenIds = [];
+    let newMsg;
+    try {
+      const { error: updateError } = await supabase.from('messages')
+        .update({ content: content.trim() })
+        .eq('id', id)
+        .eq('visible', true)
+        .select('id')
+        .single();
+      if (updateError) throw updateError;
+      targetUpdated = true;
+
+      const { data: hiddenMessages, error: hideError } = await supabase.from('messages')
+        .update({ visible: false })
+        .eq('session_id', target.session_id)
+        .eq('visible', true)
+        .gt('created_at', target.created_at)
+        .select('id');
+      if (hideError) throw hideError;
+      hiddenIds = (hiddenMessages || []).map(message => message.id);
+
+      const { data: insertedMessage, error: insertErr } = await supabase.from('messages').insert({
+        session_id: target.session_id, role: 'assistant', content: replyText,
+        reasoning_content: thinkingText || null,
+        input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+      }).select().single();
+      if (insertErr) throw insertErr;
+      newMsg = insertedMessage;
+    } catch (persistError) {
+      if (targetUpdated) {
+        await supabase.from('messages').update({ content: target.content }).eq('id', id);
+      }
+      if (hiddenIds.length > 0) {
+        await supabase.from('messages').update({ visible: true })
+          .eq('session_id', target.session_id)
+          .in('id', hiddenIds);
+      }
+      throw persistError;
+    }
 
     await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', target.session_id);
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+    res.json({
+      reply: replyText,
+      thinking: thinkingText,
+      id: newMsg.id,
+      createdAt: newMsg.created_at,
+      hiddenCount: hiddenIds.length,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      actions: actionsPerformed,
+    });
   } catch (err) {
     console.error('编辑重发错误:', err);
     res.status(500).json({ error: err.message });
@@ -1338,15 +1384,60 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
 app.post('/messages/:id/rollback', async (req, res) => {
   const { id } = req.params;
   try {
-    const { data: target, error: targetErr } = await supabase.from('messages').select('*').eq('id', id).single();
+    const { data: target, error: targetErr } = await supabase.from('messages')
+      .select('id, session_id, created_at')
+      .eq('id', id)
+      .eq('visible', true)
+      .single();
     if (targetErr || !target) return res.status(404).json({ error: '找不到这条消息' });
 
-    await supabase.from('messages').update({ visible: false })
-      .eq('session_id', target.session_id).gt('created_at', target.created_at);
+    const { data: hiddenMessages, error: hideError } = await supabase.from('messages')
+      .update({ visible: false })
+      .eq('session_id', target.session_id)
+      .eq('visible', true)
+      .gt('created_at', target.created_at)
+      .select('id');
+    if (hideError) return res.status(500).json({ error: hideError.message });
 
-    res.json({ success: true });
+    const hiddenIds = (hiddenMessages || []).map(message => message.id);
+    res.json({ success: true, hiddenIds, hiddenCount: hiddenIds.length });
   } catch (err) {
     console.error('回溯错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 立即撤销刚才的回溯：只恢复本次明确收起的消息，不展开更早的隐藏分支
+app.post('/messages/:id/rollback/undo', async (req, res) => {
+  const { id } = req.params;
+  const messageIds = [...new Set(Array.isArray(req.body?.message_ids) ? req.body.message_ids.filter(Boolean) : [])];
+  if (messageIds.length === 0) return res.status(400).json({ error: '没有可以恢复的消息' });
+
+  try {
+    const { data: target, error: targetErr } = await supabase.from('messages')
+      .select('id, session_id, created_at')
+      .eq('id', id)
+      .eq('visible', true)
+      .single();
+    if (targetErr || !target) return res.status(404).json({ error: '找不到回溯位置' });
+
+    const restoredIds = [];
+    for (let offset = 0; offset < messageIds.length; offset += 100) {
+      const chunk = messageIds.slice(offset, offset + 100);
+      const { data: restoredMessages, error: restoreError } = await supabase.from('messages')
+        .update({ visible: true })
+        .eq('session_id', target.session_id)
+        .eq('visible', false)
+        .gt('created_at', target.created_at)
+        .in('id', chunk)
+        .select('id');
+      if (restoreError) return res.status(500).json({ error: restoreError.message });
+      restoredIds.push(...(restoredMessages || []).map(message => message.id));
+    }
+
+    res.json({ success: true, restoredIds, restoredCount: restoredIds.length });
+  } catch (err) {
+    console.error('撤销回溯错误:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1932,6 +2023,7 @@ app.post('/chat', async (req, res) => {
   const cleanMessage = typeof message === 'string' ? message.trim() : '';
   if (!session_id || (!cleanMessage && !attachment_url)) return res.status(400).json({ error: '缺少对话编号或消息内容' });
 
+  let persistedUserMessage = null;
   try {
     const settings = await runtimeConfig.loadSettings();
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
@@ -1939,10 +2031,12 @@ app.post('/chat', async (req, res) => {
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
 
-    await supabase.from('messages').insert({
+    const { data: userMessage, error: userInsertError } = await supabase.from('messages').insert({
       session_id, role: 'user', content: cleanMessage,
       attachment_url: attachment_url || null, attachment_type: attachment_type || null, attachment_name: attachment_name || null,
-    });
+    }).select('id, created_at').single();
+    if (userInsertError) return res.status(500).json({ error: userInsertError.message });
+    persistedUserMessage = userMessage;
     await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', session_id);
 
     const { data: history } = await supabase.from('messages')
@@ -1977,15 +2071,36 @@ app.post('/chat', async (req, res) => {
     const thinkingText = extractThinking(result);
     const replyText = extractText(result);
 
-    await supabase.from('messages').insert({
+    const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
       input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
-    });
+    }).select('id, created_at').single();
+    if (assistantInsertError) {
+      return res.status(500).json({
+        error: assistantInsertError.message,
+        userMessage: { id: userMessage.id, createdAt: userMessage.created_at },
+      });
+    }
 
-    res.json({ reply: replyText, thinking: thinkingText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+    res.json({
+      reply: replyText,
+      thinking: thinkingText,
+      id: assistantMessage.id,
+      createdAt: assistantMessage.created_at,
+      userMessage: { id: userMessage.id, createdAt: userMessage.created_at },
+      assistantMessage: { id: assistantMessage.id, createdAt: assistantMessage.created_at },
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      actions: actionsPerformed,
+    });
   } catch (err) {
     console.error('对话错误:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: err.message,
+      ...(persistedUserMessage ? {
+        userMessage: { id: persistedUserMessage.id, createdAt: persistedUserMessage.created_at },
+      } : {}),
+    });
   }
 });
 
@@ -2057,7 +2172,7 @@ app.post('/chat/regenerate', async (req, res) => {
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
   } catch (err) {
     console.error('重新生成错误:', err);
     res.status(500).json({ error: err.message });
