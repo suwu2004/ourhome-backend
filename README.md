@@ -1,6 +1,6 @@
 # OurHome 后端
 
-OurHome 的 Express 服务端。聊天、时光信差、记忆、日历、API 站点档案、Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
+OurHome 的 Express 服务端。聊天、时光信差、记忆、日历、猫の金库、API 站点档案、Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
 
 ## 本地运行
 
@@ -36,8 +36,17 @@ npx web-push generate-vapid-keys
 1. `database/ourhome_connections.sql`
 2. `database/ourhome_search_and_security.sql`
 3. `supabase/migrations/20260719084259_ourhome_runtime_secrets.sql`
+4. `supabase/migrations/20260719115916_sync_cat_vault.sql`
+5. `supabase/migrations/20260719121339_index_vault_account_groups.sql`
 
-现有 OurHome 数据库已经应用过这三份迁移。第一份会把旧单槽 API 配置迁入档案并清理明文；第二份给跨对话搜索增加索引并收紧数据库函数权限；第三份让后端安全地创建或读取 Vault 中的推送密钥。
+现有 OurHome 数据库已经应用过这些迁移。金库迁移会复用旧的 `vault_*` 表，补齐账户分组、流水快照、手机旧账本导入标记和原子记账函数；所有金库表都只允许服务端角色访问。
+
+## OurHome 操作权限
+
+- 页面和聊天助手通过同一个后端金库服务读写数据，新增/修改/删除后都会反映到 Supabase。
+- 第一次打开猫の金库时，前端会把原有 `localStorage` 账本迁入云端，并继续保留一份本机副本。
+- 聊天助手可以管理金库、记忆、信件、心情记录、日程、心愿和重要时刻。
+- “设置”不会暴露为聊天工具；API 密钥、站点、模型、联网、MCP、人物设定和视觉设置只能由用户在设置页操作。
 
 ## Render 部署
 

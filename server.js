@@ -8,6 +8,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX
 const webpush = require('web-push');
 const { createRuntimeConfig } = require('./runtimeConfig');
 const { createIntegrationManager, validateRemoteUrl } = require('./integrations');
+const { createVaultStore } = require('./vaultStore');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -22,6 +23,7 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const runtimeConfig = createRuntimeConfig(supabase);
 const integrationManager = createIntegrationManager(runtimeConfig);
+const vaultStore = createVaultStore(supabase);
 
 function activatePushKeys(publicKey, privateKey) {
   if (!publicKey || !privateKey) throw new Error('推送密钥不完整');
@@ -237,6 +239,172 @@ const ACTION_TOOLS = [
     description: '看看"悄悄话"里最近写过的几条。当叶檀问起之前说过的悄悄话、或者你自己想回顾时使用。',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'read_cat_vault',
+    description: '查看“猫の金库”的账户、余额、本月预算和收支、存钱目标以及最近流水。想记账、改账户、改预算或改目标之前，如果名称不够明确，先调用这个工具取得准确编号。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'record_cat_vault_transaction',
+    description: '在“猫の金库”真实记下一笔收入、支出或还款，并同步更新对应账户余额。叶檀明确说到一笔实际发生的收支、并希望记账时使用；信息缺失时先询问，不要猜金额或账户。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['income', 'expense'], description: '收入/还款用 income，支出用 expense' },
+        amount: { type: 'number', description: '正数金额' },
+        date: { type: 'string', description: '日期 YYYY-MM-DD，省略时使用今天' },
+        category: { type: 'string', description: '分类，例如餐饮、交通、工资、红包、其他' },
+        account_id: { type: 'string', description: 'read_cat_vault 返回的账户编号，优先使用' },
+        account_name: { type: 'string', description: '账户名称；没有编号时使用' },
+        group_name: { type: 'string', description: '账户分组名称，用来消除同名账户歧义' },
+        tag: { type: 'string', enum: ['必要', '非必要'], description: '支出标签，可省略' },
+        note: { type: 'string', description: '这笔钱的备注' },
+      },
+      required: ['type', 'amount'],
+    },
+  },
+  {
+    name: 'delete_cat_vault_transaction',
+    description: '删除“猫の金库”里一笔指定流水，并自动还原账户余额。只有叶檀明确要求删除这笔流水时才能使用；必须先读取金库取得准确流水编号，不能凭猜测删除。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        transaction_id: { type: 'string', description: 'read_cat_vault 返回的流水编号' },
+      },
+      required: ['transaction_id'],
+    },
+  },
+  {
+    name: 'manage_cat_vault_accounts',
+    description: '新增、修改、移动或删除猫の金库的账户分组和子账户。删除操作只有在叶檀明确说“删除”并明确目标时才能执行；目标有歧义时先 read_cat_vault。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['create_group', 'update_group', 'delete_group', 'create_account', 'update_account', 'delete_account'] },
+        group_id: { type: 'string', description: '现有分组编号' },
+        group_name: { type: 'string', description: '现有分组名称，或创建子账户时的所属分组名称' },
+        account_id: { type: 'string', description: '现有子账户编号' },
+        account_name: { type: 'string', description: '现有子账户名称' },
+        name: { type: 'string', description: '新建或修改后的名称' },
+        emoji: { type: 'string', description: '图标表情' },
+        type: { type: 'string', enum: ['asset', 'debt'], description: '子账户类型：资产或负债' },
+        balance: { type: 'number', description: '子账户当前余额' },
+        target_group_id: { type: 'string', description: '移动子账户后的新分组编号' },
+        target_group_name: { type: 'string', description: '移动子账户后的新分组名称' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'set_cat_vault_budget',
+    description: '修改猫の金库某个月的预算。叶檀说“本月预算”时直接使用当前月份；金额不明确时先问清楚。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        amount: { type: 'number', description: '预算金额，可以为 0' },
+        month: { type: 'string', description: '月份 YYYY-MM，省略时为当前月' },
+      },
+      required: ['amount'],
+    },
+  },
+  {
+    name: 'manage_cat_vault_goal',
+    description: '新增、修改或删除猫の金库里的存钱目标。删除只有在叶檀明确要求时执行；同名或不明确时先 read_cat_vault。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['create', 'update', 'delete'] },
+        goal_id: { type: 'string', description: '现有目标编号' },
+        goal_name: { type: 'string', description: '现有目标名称' },
+        name: { type: 'string', description: '新建或修改后的目标名称' },
+        emoji: { type: 'string', description: '目标图标表情' },
+        target: { type: 'number', description: '目标总金额' },
+        current: { type: 'number', description: '已经存下的金额' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'manage_memory',
+    description: '修改、锁定/解锁或删除“记忆”房间里的一条记忆。先用 search_memories 取得准确编号；删除仅在叶檀明确要求时执行。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['update', 'delete'] },
+        memory_id: { type: 'number', description: 'search_memories 返回的记忆编号' },
+        summary: { type: 'string', description: '修改后的记忆内容' },
+        is_protected: { type: 'boolean', description: '是否锁定为核心记忆' },
+      },
+      required: ['action', 'memory_id'],
+    },
+  },
+  {
+    name: 'manage_schedule',
+    description: '修改或删除“日程”中的提醒。先用 read_schedule 取得准确编号；删除仅在叶檀明确要求时执行。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['update', 'delete'] },
+        schedule_id: { type: 'string' },
+        title: { type: 'string' },
+        content: { type: 'string' },
+        remind_at: { type: 'string', description: 'ISO 8601 时间，带时区' },
+      },
+      required: ['action', 'schedule_id'],
+    },
+  },
+  {
+    name: 'manage_wish',
+    description: '修改、标记完成/未完成或删除心愿。先用 read_wishes 取得准确编号；删除仅在叶檀明确要求时执行。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['update', 'delete'] },
+        wish_id: { type: 'number' },
+        content: { type: 'string' },
+        done: { type: 'boolean' },
+      },
+      required: ['action', 'wish_id'],
+    },
+  },
+  {
+    name: 'manage_mood_note',
+    description: '修改或删除心情日历里的一条留言。先用 read_mood_calendar 取得准确编号；删除仅在叶檀明确要求时执行。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['update', 'delete'] },
+        entry_id: { type: 'string' },
+        content: { type: 'string' },
+        mood: { type: 'string' },
+      },
+      required: ['action', 'entry_id'],
+    },
+  },
+  {
+    name: 'delete_time_letter',
+    description: '删除时光信差里一封指定信件、幸福日记或悄悄话，以及它下面的回复。只有叶檀明确要求删除时使用，必须先读取取得准确编号。',
+    input_schema: {
+      type: 'object',
+      properties: { letter_id: { type: 'string' } },
+      required: ['letter_id'],
+    },
+  },
+  {
+    name: 'manage_milestone',
+    description: '读取、新增或删除心情日历“重要时刻”里的纪念日。删除仅在叶檀明确要求且目标清楚时执行。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['read', 'create', 'delete'] },
+        milestone_id: { type: 'number' },
+        label: { type: 'string' },
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        emoji: { type: 'string' },
+      },
+      required: ['action'],
+    },
+  },
 ];
 
 // 真正执行陆泽要做的那个动作，写进对应的表
@@ -283,33 +451,33 @@ async function executeActionTool(name, input) {
   }
   if (name === 'read_wishes') {
     const { data, error } = await supabase.from('wishes')
-      .select('content, author, done').order('created_at', { ascending: true });
+      .select('id, content, author, done, completed_at').order('created_at', { ascending: true });
     if (error) return { ok: false, error: error.message };
     return { ok: true, wishes: data };
   }
   if (name === 'read_schedule') {
     const { data, error } = await supabase.from('schedule_events')
-      .select('title, content, remind_at, notified').order('remind_at', { ascending: true });
+      .select('id, title, content, remind_at, notified, author').order('remind_at', { ascending: true });
     if (error) return { ok: false, error: error.message };
     return { ok: true, schedule: data };
   }
   if (name === 'search_memories') {
     const keyword = input.keyword || '';
     const { data, error } = await supabase.from('memories')
-      .select('summary, timestamp').ilike('summary', `%${keyword}%`)
+      .select('id, summary, timestamp, is_protected').ilike('summary', `%${keyword}%`)
       .order('weight', { ascending: false }).limit(10);
     if (error) return { ok: false, error: error.message };
     return { ok: true, memories: data };
   }
   if (name === 'read_recent_diary') {
     const { data, error } = await supabase.from('letters')
-      .select('title, content, created_at').eq('category', '幸福日记').is('parent_id', null)
+      .select('id, title, content, created_at').eq('category', '幸福日记').is('parent_id', null)
       .order('created_at', { ascending: false }).limit(5);
     if (error) return { ok: false, error: error.message };
     return { ok: true, diary_entries: data };
   }
   if (name === 'read_mood_calendar') {
-    let query = supabase.from('calendar_entries').select('date, author, mood, content').order('date', { ascending: false });
+    let query = supabase.from('calendar_entries').select('id, date, author, mood, content').order('date', { ascending: false });
     query = input.date ? query.eq('date', input.date) : query.limit(10);
     const { data, error } = await query;
     if (error) return { ok: false, error: error.message };
@@ -317,10 +485,160 @@ async function executeActionTool(name, input) {
   }
   if (name === 'read_whispers') {
     const { data, error } = await supabase.from('letters')
-      .select('author, content, created_at').eq('category', '悄悄话').is('parent_id', null)
+      .select('id, author, content, created_at').eq('category', '悄悄话').is('parent_id', null)
       .order('created_at', { ascending: false }).limit(5);
     if (error) return { ok: false, error: error.message };
     return { ok: true, whispers: data };
+  }
+  if (name === 'read_cat_vault') {
+    return { ok: true, vault: await vaultStore.assistantSnapshot() };
+  }
+  if (name === 'record_cat_vault_transaction') {
+    const transaction = await vaultStore.addTransaction({
+      ...input,
+      accountId: input.account_id,
+      accountName: input.account_name,
+      groupName: input.group_name,
+    }, 'assistant');
+    return { ok: true, transaction };
+  }
+  if (name === 'delete_cat_vault_transaction') {
+    return { ok: true, transaction: await vaultStore.deleteTransaction({ transactionId: input.transaction_id }) };
+  }
+  if (name === 'manage_cat_vault_accounts') {
+    const result = await vaultStore.manageAccounts({
+      ...input,
+      groupId: input.group_id,
+      groupName: input.group_name,
+      accountId: input.account_id,
+      accountName: input.account_name,
+      targetGroupId: input.target_group_id,
+      targetGroupName: input.target_group_name,
+    });
+    return { ok: true, result };
+  }
+  if (name === 'set_cat_vault_budget') {
+    return { ok: true, budget: await vaultStore.setBudget(input) };
+  }
+  if (name === 'manage_cat_vault_goal') {
+    const result = await vaultStore.manageGoal({
+      ...input,
+      goalId: input.goal_id,
+      goalName: input.goal_name,
+    });
+    return { ok: true, result };
+  }
+  if (name === 'manage_memory') {
+    if (input.action === 'delete') {
+      const { data, error } = await supabase.from('memories').delete().eq('id', input.memory_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这条记忆' };
+      return { ok: true, memory_id: data.id, deleted: true };
+    }
+    const updates = {};
+    if (input.summary !== undefined) {
+      const summary = String(input.summary || '').trim();
+      if (!summary) return { ok: false, error: '记忆内容不能为空' };
+      updates.summary = summary;
+    }
+    if (input.is_protected !== undefined) updates.is_protected = Boolean(input.is_protected);
+    if (!Object.keys(updates).length) return { ok: false, error: '没有需要修改的内容' };
+    const { data, error } = await supabase.from('memories').update(updates).eq('id', input.memory_id).select().maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这条记忆' };
+    if (updates.summary) {
+      getEmbedding(updates.summary).then(embedding => {
+        if (embedding) return supabase.from('memories').update({ embedding }).eq('id', data.id);
+        return null;
+      }).catch(error => console.error('记忆向量更新失败:', error.message));
+    }
+    return { ok: true, memory: data };
+  }
+  if (name === 'manage_schedule') {
+    if (input.action === 'delete') {
+      const { data, error } = await supabase.from('schedule_events').delete().eq('id', input.schedule_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这个日程' };
+      return { ok: true, schedule_id: data.id, deleted: true };
+    }
+    const updates = {};
+    if (input.title !== undefined) updates.title = String(input.title || '').trim();
+    if (input.content !== undefined) updates.content = String(input.content || '').trim() || null;
+    if (input.remind_at !== undefined) {
+      updates.remind_at = input.remind_at;
+      updates.notified = false;
+    }
+    if (!Object.keys(updates).length) return { ok: false, error: '没有需要修改的内容' };
+    const { data, error } = await supabase.from('schedule_events').update(updates).eq('id', input.schedule_id).select().maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这个日程' };
+    return { ok: true, schedule: data };
+  }
+  if (name === 'manage_wish') {
+    if (input.action === 'delete') {
+      const { data, error } = await supabase.from('wishes').delete().eq('id', input.wish_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这个心愿' };
+      return { ok: true, wish_id: data.id, deleted: true };
+    }
+    const updates = {};
+    if (input.content !== undefined) updates.content = String(input.content || '').trim();
+    if (input.done !== undefined) {
+      updates.done = Boolean(input.done);
+      updates.completed_at = updates.done ? new Date().toISOString() : null;
+    }
+    if (!Object.keys(updates).length) return { ok: false, error: '没有需要修改的内容' };
+    const { data, error } = await supabase.from('wishes').update(updates).eq('id', input.wish_id).select().maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这个心愿' };
+    return { ok: true, wish: data };
+  }
+  if (name === 'manage_mood_note') {
+    if (input.action === 'delete') {
+      const { data, error } = await supabase.from('calendar_entries').delete().eq('id', input.entry_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这条心情记录' };
+      return { ok: true, entry_id: data.id, deleted: true };
+    }
+    const updates = {};
+    if (input.content !== undefined) updates.content = String(input.content || '').trim();
+    if (input.mood !== undefined) updates.mood = String(input.mood || '').trim() || null;
+    if (!Object.keys(updates).length) return { ok: false, error: '没有需要修改的内容' };
+    const { data, error } = await supabase.from('calendar_entries').update(updates).eq('id', input.entry_id).select().maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这条心情记录' };
+    return { ok: true, entry: data };
+  }
+  if (name === 'delete_time_letter') {
+    await supabase.from('letters').delete().eq('parent_id', input.letter_id);
+    const { data, error } = await supabase.from('letters').delete().eq('id', input.letter_id).select('id').maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这封信' };
+    return { ok: true, letter_id: data.id, deleted: true };
+  }
+  if (name === 'manage_milestone') {
+    if (input.action === 'read') {
+      const { data, error } = await supabase.from('milestones').select('*').order('date', { ascending: true });
+      if (error) return { ok: false, error: error.message };
+      return { ok: true, milestones: data };
+    }
+    if (input.action === 'create') {
+      const label = String(input.label || '').trim();
+      if (!label || !/^\d{4}-\d{2}-\d{2}$/.test(String(input.date || ''))) {
+        return { ok: false, error: '重要时刻需要名称和 YYYY-MM-DD 日期' };
+      }
+      const { data, error } = await supabase.from('milestones')
+        .insert({ label, date: input.date, emoji: String(input.emoji || '✦') }).select().single();
+      if (error) return { ok: false, error: error.message };
+      return { ok: true, milestone: data };
+    }
+    if (input.action === 'delete') {
+      const { data, error } = await supabase.from('milestones').delete().eq('id', input.milestone_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这个重要时刻' };
+      return { ok: true, milestone_id: data.id, deleted: true };
+    }
+    return { ok: false, error: '未知的重要时刻操作' };
   }
   return { ok: false, error: '未知的工具' };
 }
@@ -591,6 +909,13 @@ async function saveMemoryWithEmbedding(summary, extra = {}) {
 }
 
 
+const OURHOME_ACTION_BOUNDARY = `
+
+【OurHome 操作边界】
+你可以使用已提供的工具读取或操作叶檀在 OurHome 各房间里的内容。工具执行成功才可以说“已经完成”，失败时要如实说明。
+“设置”房间永远不在你的操作权限内：不得修改、删除或新增 API 站点、模型、密钥、联网、MCP、人物设定、字体、主题、背景或任何其他设置；即使被要求，也只能说明需要叶檀亲自在设置页操作。
+删除金库数据等不可逆操作，只能在叶檀明确说要删除且目标清楚时执行；目标有歧义要先读取确认。`;
+
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
 async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   // 锁定记忆：is_protected=true的核心记忆，每次全量注入，不走搜索、不会漏
@@ -627,6 +952,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
   if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
+  prompt += OURHOME_ACTION_BOUNDARY;
   prompt += THINKING_RULES;
   return prompt;
 }
@@ -789,9 +1115,60 @@ app.get('/', (req, res) => {
       webSearch: true,
       mcp: true,
       vaultVapid: true,
+      catVaultCloud: true,
+      catVaultAssistantActions: true,
+      settingsAssistantAccess: false,
     },
   });
 });
+
+// ============ 猫の金库（页面与陆泽共用同一份 Supabase 数据） ============
+
+function vaultMutation(handler) {
+  return async (req, res) => {
+    try {
+      const result = await handler(req);
+      res.json({ result, data: await vaultStore.getState() });
+    } catch (error) {
+      const status = /找不到/.test(error.message) ? 404 : 400;
+      res.status(status).json({ error: error.message });
+    }
+  };
+}
+
+app.get('/vault', async (req, res) => {
+  try {
+    res.json({ data: await vaultStore.getState() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/vault/import', async (req, res) => {
+  try {
+    const result = await vaultStore.importState(req.body?.data);
+    res.json({ imported: result.imported, data: result.state });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/vault/transactions', vaultMutation(req => vaultStore.addTransaction(req.body || {}, 'manual')));
+app.delete('/vault/transactions/:id', vaultMutation(req => vaultStore.deleteTransaction({ transactionId: req.params.id })));
+
+app.post('/vault/groups', vaultMutation(req => vaultStore.manageAccounts({ ...(req.body || {}), action: 'create_group' })));
+app.patch('/vault/groups/:id', vaultMutation(req => vaultStore.manageAccounts({ ...(req.body || {}), action: 'update_group', groupId: req.params.id })));
+app.delete('/vault/groups/:id', vaultMutation(req => vaultStore.manageAccounts({ action: 'delete_group', groupId: req.params.id })));
+
+app.post('/vault/accounts', vaultMutation(req => vaultStore.manageAccounts({ ...(req.body || {}), action: 'create_account' })));
+app.patch('/vault/accounts/:id', vaultMutation(req => vaultStore.manageAccounts({ ...(req.body || {}), action: 'update_account', accountId: req.params.id })));
+app.delete('/vault/accounts/:id', vaultMutation(req => vaultStore.manageAccounts({ action: 'delete_account', accountId: req.params.id })));
+
+app.put('/vault/budget', vaultMutation(req => vaultStore.setBudget(req.body || {})));
+
+app.post('/vault/goals', vaultMutation(req => vaultStore.manageGoal({ ...(req.body || {}), action: 'create' })));
+app.patch('/vault/goals/:id', vaultMutation(req => vaultStore.manageGoal({ ...(req.body || {}), action: 'update', goalId: req.params.id })));
+app.delete('/vault/goals/:id', vaultMutation(req => vaultStore.manageGoal({ action: 'delete', goalId: req.params.id })));
 
 // ============ sessions ============
 
