@@ -5,6 +5,23 @@ const MCP_VERSION = '2025-11-25';
 const SUPPORTED_MCP_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26']);
 const MCP_TIMEOUT_MS = 20_000;
 const MAX_TOOL_OUTPUT_CHARS = 30_000;
+const WEB_SEARCH_PROVIDERS = Object.freeze({
+  tavily: {
+    label: 'Tavily',
+    endpoint: 'https://api.tavily.com/search',
+  },
+  linkup: {
+    label: 'Linkup',
+    endpoint: 'https://api.linkup.so/v1/search',
+  },
+});
+
+function webSearchProvider(connection) {
+  const configured = String(connection?.config?.provider || '').trim().toLowerCase();
+  if (WEB_SEARCH_PROVIDERS[configured]) return configured;
+  const hint = `${connection?.name || ''} ${connection?.url || ''}`.toLowerCase();
+  return hint.includes('linkup') ? 'linkup' : 'tavily';
+}
 
 function isPrivateIp(address) {
   if (!address) return true;
@@ -192,6 +209,54 @@ function createIntegrationManager(runtimeConfig) {
     }
   }
 
+  async function linkupSearch(connection, input) {
+    if (!connection.secret) throw new Error('Linkup 密钥还没有配置');
+    const query = String(input.query || '').trim().slice(0, 400);
+    if (!query) throw new Error('搜索关键词不能为空');
+    const maxResults = Math.min(10, Math.max(1, Number(input.max_results || connection.config?.max_results || 5)));
+    const requestedDepth = String(connection.config?.search_depth || 'standard').toLowerCase();
+    const depth = ['fast', 'standard', 'deep'].includes(requestedDepth) ? requestedDepth : 'standard';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const response = await fetch(WEB_SEARCH_PROVIDERS.linkup.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${connection.secret}` },
+        body: JSON.stringify({
+          q: query,
+          depth,
+          outputType: 'searchResults',
+          maxResults,
+        }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`Linkup ${response.status}: ${text.slice(0, 500)}`);
+      const data = JSON.parse(text);
+      return {
+        answer: data.answer || null,
+        results: (data.results || []).map(result => ({
+          title: result.name || result.title || '',
+          url: result.url,
+          content: result.content || result.snippet || '',
+          published_date: result.publishedDate || result.published_date || null,
+          score: result.score ?? null,
+        })),
+      };
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('联网搜索超时');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function webSearch(connection, input) {
+    return webSearchProvider(connection) === 'linkup'
+      ? linkupSearch(connection, input)
+      : tavilySearch(connection, input);
+  }
+
   async function buildDynamicTools() {
     const tools = [];
     const handlers = new Map();
@@ -216,7 +281,7 @@ function createIntegrationManager(runtimeConfig) {
         },
       };
       tools.push(webTool);
-      handlers.set(webTool.name, input => tavilySearch(web, input));
+      handlers.set(webTool.name, input => webSearch(web, input));
     }
 
     for (const connection of connections.filter(item => item.kind === 'mcp')) {
@@ -242,8 +307,9 @@ function createIntegrationManager(runtimeConfig) {
     const connection = await runtimeConfig.getConnectionRuntime(id);
     if (!connection) throw new Error('找不到这个连接');
     if (connection.kind === 'web_search') {
-      const result = await tavilySearch(connection, { query: 'OurHome connection test', max_results: 1 });
-      return { ok: true, result_count: result.results.length };
+      const provider = webSearchProvider(connection);
+      const result = await webSearch(connection, { query: 'OurHome connection test', max_results: 1 });
+      return { ok: true, provider, result_count: result.results.length };
     }
     if (connection.kind === 'mcp') {
       const tools = await listMcpTools(connection, { fresh: true });
@@ -255,4 +321,4 @@ function createIntegrationManager(runtimeConfig) {
   return { buildDynamicTools, testConnection, validateRemoteUrl };
 }
 
-module.exports = { createIntegrationManager, validateRemoteUrl };
+module.exports = { createIntegrationManager, validateRemoteUrl, webSearchProvider, WEB_SEARCH_PROVIDERS };

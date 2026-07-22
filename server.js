@@ -7,7 +7,7 @@ const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 const webpush = require('web-push');
 const { createRuntimeConfig } = require('./runtimeConfig');
-const { createIntegrationManager, validateRemoteUrl } = require('./integrations');
+const { createIntegrationManager, validateRemoteUrl, WEB_SEARCH_PROVIDERS } = require('./integrations');
 const { createVaultStore } = require('./vaultStore');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
@@ -1663,6 +1663,7 @@ app.patch('/settings', async (req, res) => {
     'system_prompt', 'temperature', 'max_context_rounds', 'max_context_tokens',
     'compress_threshold', 'compress_keep_rounds', 'max_reply_tokens',
     'my_avatar_url', 'partner_avatar_url', 'bg_image_url', 'bg_color', 'dark_mode',
+    'home_bg_day_image_url', 'home_bg_night_image_url',
     'whisper_bg_image_url', 'whisper_bg_color', 'my_bubble_color', 'partner_bubble_color',
     'font_style', 'vault_phrase_mode', 'selected_model',
     'daily_journal_enabled', 'daily_journal_time',
@@ -1843,6 +1844,24 @@ app.delete('/api-profiles/:id', async (req, res) => {
 
 // ============ 联网搜索与远程 MCP ============
 
+function normalizeWebSearchProvider({ config, name, url }) {
+  const configured = String(config?.provider || '').trim().toLowerCase();
+  if (configured && !WEB_SEARCH_PROVIDERS[configured]) throw new Error('暂时只支持 Linkup 或 Tavily 联网搜索');
+  if (configured) return configured;
+  const hint = `${name || ''} ${url || ''}`.toLowerCase();
+  return hint.includes('linkup') ? 'linkup' : 'tavily';
+}
+
+function normalizeWebSearchConfig(provider, config = {}) {
+  const defaultDepth = provider === 'linkup' ? 'standard' : 'advanced';
+  return {
+    ...config,
+    provider,
+    max_results: Math.min(10, Math.max(1, Number(config.max_results) || 5)),
+    search_depth: String(config.search_depth || defaultDepth),
+  };
+}
+
 app.get('/connections', async (req, res) => {
   try { res.json(await runtimeConfig.listConnections()); }
   catch (error) { res.status(500).json({ error: error.message }); }
@@ -1853,9 +1872,13 @@ app.post('/connections', async (req, res) => {
     const { kind, name, url, secret, enabled, config } = req.body || {};
     if (!['web_search', 'mcp'].includes(kind)) return res.status(400).json({ error: '连接类型不正确' });
     if (!name?.trim() || !url?.trim()) return res.status(400).json({ error: '请填写连接名称和网址' });
-    const safeUrl = kind === 'web_search' ? 'https://api.tavily.com/search' : await validateRemoteUrl(url.trim());
-    if (kind === 'web_search' && !secret?.trim()) return res.status(400).json({ error: '第一次保存 Tavily 时需要填写密钥' });
-    const connection = await runtimeConfig.saveConnection({ kind, name: name.trim(), url: safeUrl, secret: secret?.trim() || null, enabled: enabled !== false, config: kind === 'mcp' ? { ...(config || {}), read_only: true } : (config || {}) });
+    const provider = kind === 'web_search' ? normalizeWebSearchProvider({ config, name, url }) : null;
+    const safeUrl = kind === 'web_search' ? WEB_SEARCH_PROVIDERS[provider].endpoint : await validateRemoteUrl(url.trim());
+    if (kind === 'web_search' && !secret?.trim()) return res.status(400).json({ error: `第一次保存 ${WEB_SEARCH_PROVIDERS[provider].label} 时需要填写密钥` });
+    const safeConfig = kind === 'mcp'
+      ? { ...(config || {}), read_only: true }
+      : normalizeWebSearchConfig(provider, config);
+    const connection = await runtimeConfig.saveConnection({ kind, name: name.trim(), url: safeUrl, secret: secret?.trim() || null, enabled: enabled !== false, config: safeConfig });
     res.json(connection);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -1869,7 +1892,11 @@ app.patch('/connections/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ error: '找不到这个连接' });
     const kind = existing.kind;
     const requestedUrl = req.body.url?.trim() || existing.url;
-    const safeUrl = kind === 'web_search' ? 'https://api.tavily.com/search' : await validateRemoteUrl(requestedUrl);
+    const requestedConfig = req.body.config || existing.config || {};
+    const provider = kind === 'web_search'
+      ? normalizeWebSearchProvider({ config: requestedConfig, name: req.body.name || existing.name, url: requestedUrl })
+      : null;
+    const safeUrl = kind === 'web_search' ? WEB_SEARCH_PROVIDERS[provider].endpoint : await validateRemoteUrl(requestedUrl);
     const connection = await runtimeConfig.saveConnection({
       id: existing.id,
       kind,
@@ -1877,7 +1904,9 @@ app.patch('/connections/:id', async (req, res) => {
       url: safeUrl,
       secret: req.body.secret?.trim() || null,
       enabled: req.body.enabled ?? existing.enabled,
-      config: kind === 'mcp' ? { ...(req.body.config || existing.config || {}), read_only: true } : (req.body.config || existing.config || {}),
+      config: kind === 'mcp'
+        ? { ...requestedConfig, read_only: true }
+        : normalizeWebSearchConfig(provider, requestedConfig),
     });
     res.json(connection);
   } catch (error) {

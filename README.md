@@ -1,6 +1,6 @@
 # OurHome 后端
 
-OurHome 的 Express 服务端。聊天、时光信差、记忆、日历、猫の金库、API 站点档案、Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
+OurHome 的 Express 服务端。聊天、时光信差、记忆、日历、猫の金库、API 站点档案、Linkup / Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
 
 主页天气由 `/weather?city=城市名` 提供，服务端通过 Open-Meteo 查询并缓存 15 分钟，不需要额外天气 API key。
 
@@ -56,11 +56,11 @@ npx web-push generate-vapid-keys
 
 1. 先部署后端并确认根地址返回 `status: ok`。
 2. 再部署前端，并把前端 `VITE_BACKEND_URL` 指向这个 HTTPS 地址。
-3. 登录设置页，测试当前 API 站点、Tavily 和 MCP。
+3. 登录设置页，测试当前 API 站点、Linkup / Tavily 和 MCP。
 
 ## 联网与 MCP
 
-- 联网搜索：设置页填写 Tavily API key，保存后点“测试搜索”。模型在需要实时资料时会获得 `web_search` 工具。
+- 联网搜索：设置页先选择 Linkup 或 Tavily，再填写对应站点生成的 API key。模型在需要实时资料时会获得统一的 `web_search` 工具。
 - MCP：只支持公网 HTTPS 的 Streamable HTTP endpoint，例如 `https://example.com/mcp`；当前认证方式是可选 Bearer Token。
 - 为了避免模型意外写入外部系统，只会暴露声明了 `annotations.readOnlyHint: true` 的工具。
 - 本机 `stdio` MCP 无法由云端 OurHome 直接连接，需要先部署成远程 HTTP 服务。
