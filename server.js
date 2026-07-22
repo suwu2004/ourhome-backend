@@ -9,6 +9,16 @@ const webpush = require('web-push');
 const { createRuntimeConfig } = require('./runtimeConfig');
 const { createIntegrationManager, validateRemoteUrl, WEB_SEARCH_PROVIDERS } = require('./integrations');
 const { createVaultStore } = require('./vaultStore');
+const {
+  buildTextToolBridge,
+  parseTextToolCalls,
+  stripTextToolMarkup,
+  isToolCompatibilityError,
+  hasImageContent,
+  isLikelyVisionModel,
+  chooseVisionModel,
+  replaceImagesWithDescription,
+} = require('./modelCompatibility');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -159,6 +169,14 @@ function isModelUnavailableError(error) {
 
 function sendGenerationError(res, error, { model, userMessage } = {}) {
   const extra = userMessage ? { userMessage } : {};
+  if (error?.code === 'vision_unavailable') {
+    return res.status(422).json({
+      code: 'vision_unavailable',
+      model: String(model || '').trim().slice(0, 120) || null,
+      error: error.message,
+      ...extra,
+    });
+  }
   if (isModelUnavailableError(error)) {
     const modelName = String(model || '').trim().slice(0, 120);
     return res.status(503).json({
@@ -485,6 +503,7 @@ const ACTION_TOOLS = [
     },
   },
 ];
+const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map(tool => tool.name));
 
 // 真正执行陆泽要做的那个动作，写进对应的表
 async function executeActionTool(name, input) {
@@ -774,7 +793,7 @@ function extractText(result) {
   // 把文本里混进来的<thinking>标签剔除——有些中转站会把思考内容塞进text块
   return (result.content || [])
     .filter(b => b.type === 'text')
-    .map(b => (b.text || '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim())
+    .map(b => stripTextToolMarkup((b.text || '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')))
     .filter(Boolean)
     .join('\n') || '';
 }
@@ -904,6 +923,55 @@ async function buildApiMessages(history) {
     result.push({ role, content: m.content });
   }
   return result;
+}
+
+function visionUnavailableError(message) {
+  const error = new Error(message);
+  error.code = 'vision_unavailable';
+  return error;
+}
+
+// 纯文字模型收到图片时，先让同一站点里真正支持视觉的模型客观代读，
+// 再把描述交回老婆选中的模型。人格和最终回答仍由所选模型完成。
+async function prepareVisualMessages(settings, modelName, messages) {
+  if (!hasImageContent(messages) || isLikelyVisionModel(modelName)) {
+    return { messages, visionFallbackModel: null };
+  }
+
+  let models = [];
+  try {
+    models = await fetchModelsForProfile(settings);
+  } catch (error) {
+    console.warn('拉取视觉代读模型失败:', error.message);
+  }
+  const visionModel = chooseVisionModel(models, modelName);
+  if (!visionModel) {
+    throw visionUnavailableError('这个模型是纯文字模型，当前 API 站点里也没有找到可代读图片的视觉模型。请换成 Claude、Gemini、GPT-4o/5 或名称带 VL/Vision 的模型后重新生成。');
+  }
+
+  const imageMessage = [...messages].reverse().find(message => Array.isArray(message?.content)
+    && message.content.some(block => block?.type === 'image'));
+  if (!imageMessage) return { messages, visionFallbackModel: null };
+
+  try {
+    const result = await callClaude({
+      settings,
+      model: visionModel,
+      maxTokens: 900,
+      system: '你是 OurHome 的图片代读器。只客观、具体地描述图片中能确认的内容、文字、人物动作和重要细节；不扮演角色，不推测看不见的事情，不调用工具。',
+      messages: [imageMessage],
+      temperature: 0.2,
+    });
+    const description = extractText(result);
+    if (!description) throw new Error('视觉模型没有返回图片描述');
+    return {
+      messages: replaceImagesWithDescription(messages, description, visionModel),
+      visionFallbackModel: visionModel,
+    };
+  } catch (error) {
+    console.error(`视觉代读失败 (${visionModel}):`, error.message);
+    throw visionUnavailableError(`图片代读模型“${visionModel}”暂时没有成功识别图片。换一个可看图模型后点“重新生成”就好，图片和消息都已经保存。`);
+  }
 }
 
 const THINKING_RULES = `
@@ -1088,43 +1156,94 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
 async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, toolHandlers, gemini }) {
   const MAX_TOOL_ROUNDS = 5;
   let currentMessages = messages;
-  let result = await callClaude({
-    settings, model: modelName, maxTokens,
-    system: systemPrompt, messages: currentMessages, thinking: thinkingParam, tools: toolsParam,
-  });
+  const textToolBridge = buildTextToolBridge(toolsParam);
+  let textBridgeEnabled = Boolean(gemini || !/claude/i.test(String(modelName || '')));
+  let nativeToolsEnabled = Array.isArray(toolsParam) && toolsParam.length > 0;
+
+  const callRound = async () => {
+    const compatibleSystemPrompt = systemPrompt + (textBridgeEnabled ? textToolBridge : '');
+    try {
+      return await callClaude({
+        settings, model: modelName, maxTokens,
+        system: compatibleSystemPrompt,
+        messages: currentMessages,
+        thinking: thinkingParam,
+        tools: nativeToolsEnabled ? toolsParam : undefined,
+      });
+    } catch (error) {
+      if (!nativeToolsEnabled || !isToolCompatibilityError(error)) throw error;
+      // 有些中转站能正常聊天，却拒绝 Claude 格式的 tools 字段。
+      // 只在明确的格式不兼容错误下关闭原生工具，并改用受控文字协议重试。
+      nativeToolsEnabled = false;
+      textBridgeEnabled = true;
+      return callClaude({
+        settings, model: modelName, maxTokens,
+        system: systemPrompt + textToolBridge,
+        messages: currentMessages,
+        thinking: thinkingParam,
+      });
+    }
+  };
+
+  let result = await callRound();
   let totalInputTokens = result.usage?.input_tokens || 0;
   let totalOutputTokens = result.usage?.output_tokens || 0;
   let actionsPerformed = [];
   let rounds = 0;
 
-  while (!gemini && result.stop_reason === 'tool_use' && rounds < MAX_TOOL_ROUNDS) {
+  while (rounds < MAX_TOOL_ROUNDS) {
+    const nativeToolBlocks = (result.content || []).filter(block => block.type === 'tool_use');
+    const textToolCalls = nativeToolBlocks.length ? [] : parseTextToolCalls(result);
+    if (!nativeToolBlocks.length && !textToolCalls.length) break;
     rounds++;
-    const toolUseBlocks = (result.content || []).filter(b => b.type === 'tool_use');
-    const toolResultBlocks = [];
-    for (const tu of toolUseBlocks) {
+    const requestedTools = nativeToolBlocks.length
+      ? nativeToolBlocks.map(block => ({ name: block.name, input: block.input || {}, id: block.id }))
+      : textToolCalls;
+    const executed = [];
+    for (const request of requestedTools) {
       let actionResult;
       try {
-        if (toolHandlers?.has(tu.name)) {
-          const externalResult = await toolHandlers.get(tu.name)(tu.input || {});
+        if (toolHandlers?.has(request.name)) {
+          const externalResult = await toolHandlers.get(request.name)(request.input || {});
           actionResult = { ok: true, ...externalResult };
+        } else if (ACTION_TOOL_NAMES.has(request.name)) {
+          actionResult = await executeActionTool(request.name, request.input || {});
         } else {
-          actionResult = await executeActionTool(tu.name, tu.input || {});
+          actionResult = { ok: false, error: '这个工具不在 OurHome 的许可列表中。' };
         }
       } catch (toolError) {
         actionResult = { ok: false, error: toolError.message };
       }
-      actionsPerformed.push({ name: tu.name, input: tu.input, result: actionResult });
-      toolResultBlocks.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(actionResult) });
+      actionsPerformed.push({ name: request.name, input: request.input, result: actionResult });
+      executed.push({ ...request, result: actionResult });
     }
-    currentMessages = [
-      ...currentMessages,
-      { role: 'assistant', content: result.content },
-      { role: 'user', content: toolResultBlocks },
-    ];
-    result = await callClaude({
-      settings, model: modelName, maxTokens,
-      system: systemPrompt, messages: currentMessages, thinking: thinkingParam, tools: toolsParam,
-    });
+
+    if (nativeToolBlocks.length) {
+      currentMessages = [
+        ...currentMessages,
+        { role: 'assistant', content: result.content },
+        {
+          role: 'user',
+          content: executed.map(item => ({
+            type: 'tool_result',
+            tool_use_id: item.id,
+            content: JSON.stringify(item.result),
+          })),
+        },
+      ];
+    } else {
+      textBridgeEnabled = true;
+      currentMessages = [
+        ...currentMessages,
+        { role: 'assistant', content: result.content },
+        {
+          role: 'user',
+          content: `<ourhome_tool_result>${JSON.stringify(executed.map(item => ({ name: item.name, result: item.result })))}</ourhome_tool_result>\n请依据真实结果继续回答；需要下一项操作时再请求一个工具。`,
+        },
+      ];
+    }
+
+    result = await callRound();
     totalInputTokens += result.usage?.input_tokens || 0;
     totalOutputTokens += result.usage?.output_tokens || 0;
   }
@@ -1150,18 +1269,20 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
     : Math.max(maxReplyTokens, 500);
-  const dynamic = gemini ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
-  const toolsParam = gemini ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+  const dynamic = await integrationManager.buildDynamicTools();
+  const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
+  const visual = await prepareVisualMessages(settings, modelName, messages);
 
   const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
     settings, modelName, maxTokens: firstMaxTokens,
-    systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
+    systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
   });
 
   return {
     replyText: extractText(result),
     thinkingText: extractThinking(result),
     totalInputTokens, totalOutputTokens, actionsPerformed,
+    visionFallbackModel: visual.visionFallbackModel,
   };
 }
 
@@ -2361,13 +2482,14 @@ app.post('/chat', async (req, res) => {
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
       : Math.max(maxReplyTokens, 500);
 
-    // Gemini不支持Claude格式的工具；Claude线路会合并 OurHome 工具、联网搜索与只读 MCP。
-    const dynamic = gemini ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
-    const toolsParam = gemini ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+    // 所有模型都先尝试原生工具；中转站不兼容时由 runToolLoop 自动切到受控文字协议。
+    const dynamic = await integrationManager.buildDynamicTools();
+    const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
+    const visual = await prepareVisualMessages(settings, modelName, messages);
 
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
       settings, modelName, maxTokens: firstMaxTokens,
-      systemPrompt: finalSystemPrompt, messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
+      systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
     });
 
     const thinkingText = extractThinking(result);
@@ -2394,6 +2516,7 @@ app.post('/chat', async (req, res) => {
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
       actions: actionsPerformed,
+      visionFallbackModel: visual.visionFallbackModel,
     });
   } catch (err) {
     console.error('对话错误:', err);
@@ -2442,14 +2565,15 @@ app.post('/chat/regenerate', async (req, res) => {
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
     const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
-    const dynamic = geminiRegen ? { tools: [], handlers: new Map() } : await integrationManager.buildDynamicTools();
-    const toolsParam = geminiRegen ? undefined : [...ACTION_TOOLS, ...dynamic.tools];
+    const dynamic = await integrationManager.buildDynamicTools();
+    const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
+    const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
       settings,
       modelName: modelNameRegen,
       maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
       systemPrompt: finalSystemPrompt,
-      messages,
+      messages: visual.messages,
       thinkingParam,
       toolsParam,
       toolHandlers: dynamic.handlers,
@@ -2474,7 +2598,7 @@ app.post('/chat/regenerate', async (req, res) => {
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed, visionFallbackModel: visual.visionFallbackModel });
   } catch (err) {
     console.error('重新生成错误:', err);
     sendGenerationError(res, err, { model });
