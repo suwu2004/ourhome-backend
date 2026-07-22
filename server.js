@@ -71,6 +71,32 @@ function todayStartUTC() {
   return new Date(start.getTime() - offset).toISOString();
 }
 
+function shanghaiDayContext(now = new Date()) {
+  const offset = 8 * 60 * 60 * 1000;
+  const local = new Date(now.getTime() + offset);
+  const year = local.getUTCFullYear();
+  const month = local.getUTCMonth();
+  const day = local.getUTCDate();
+  const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const start = new Date(Date.UTC(year, month, day) - offset);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    date,
+    start: start.toISOString(),
+    end: end.toISOString(),
+    minutes: local.getUTCHours() * 60 + local.getUTCMinutes(),
+  };
+}
+
+function scheduledMinutes(value) {
+  const match = String(value || '23:30').match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return 23 * 60 + 30;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return 23 * 60 + 30;
+  return hour * 60 + minute;
+}
+
 const DEFAULT_API_BASE = process.env.ANTHROPIC_API_BASE_URL || 'https://api.dzzi.ai/v1';
 
 // 判断模型类型
@@ -351,6 +377,33 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: 'read_home_memos',
+    description: '查看主页“我们的小便签”，包括叶檀和陆泽留下的温馨提示、明日备忘以及完成状态。想新增、修改或删除前，如果目标不够明确，先读取便签取得准确编号。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        include_completed: { type: 'boolean', description: '是否包含已经完成的便签，默认包含' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'manage_home_memo',
+    description: '在主页“我们的小便签”中新增、修改、完成/恢复或删除便签。可以主动留下温馨提示；删除只有在叶檀明确要求且目标准确时使用。修改和删除前目标不明确就先调用 read_home_memos。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['create', 'update', 'delete'] },
+        memo_id: { type: 'string', description: 'read_home_memos 返回的便签编号' },
+        content: { type: 'string', description: '便签内容，最多300字' },
+        memo_type: { type: 'string', enum: ['note', 'tomorrow'], description: '温馨提示用 note，明日备忘用 tomorrow' },
+        remind_on: { type: 'string', description: '备忘日期 YYYY-MM-DD，可省略' },
+        completed: { type: 'boolean', description: '是否已经完成' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'manage_memory',
     description: '修改、锁定/解锁或删除“记忆”房间里的一条记忆。先用 search_memories 取得准确编号；删除仅在叶檀明确要求时执行。',
     input_schema: {
@@ -553,6 +606,53 @@ async function executeActionTool(name, input) {
       goalName: input.goal_name,
     });
     return { ok: true, result };
+  }
+  if (name === 'read_home_memos') {
+    let query = supabase.from('home_memos')
+      .select('id, author, content, memo_type, remind_on, completed, created_at, updated_at')
+      .order('completed', { ascending: true })
+      .order('updated_at', { ascending: false })
+      .limit(40);
+    if (input.include_completed === false) query = query.eq('completed', false);
+    const { data, error } = await query;
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, memos: data };
+  }
+  if (name === 'manage_home_memo') {
+    if (input.action === 'create') {
+      const content = String(input.content || '').trim();
+      if (!content) return { ok: false, error: '便签内容不能为空' };
+      const { data, error } = await supabase.from('home_memos').insert({
+        author: '泽',
+        content: content.slice(0, 300),
+        memo_type: input.memo_type === 'tomorrow' ? 'tomorrow' : 'note',
+        remind_on: input.remind_on || null,
+        completed: Boolean(input.completed),
+      }).select().single();
+      if (error) return { ok: false, error: error.message };
+      return { ok: true, memo: data };
+    }
+    if (!input.memo_id) return { ok: false, error: '缺少便签编号，请先读取便签' };
+    if (input.action === 'delete') {
+      const { data, error } = await supabase.from('home_memos').delete().eq('id', input.memo_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这张便签' };
+      return { ok: true, memo_id: data.id, deleted: true };
+    }
+    const updates = { updated_at: new Date().toISOString() };
+    if (input.content !== undefined) {
+      const content = String(input.content || '').trim();
+      if (!content) return { ok: false, error: '便签内容不能为空' };
+      updates.content = content.slice(0, 300);
+    }
+    if (input.memo_type !== undefined) updates.memo_type = input.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
+    if (input.remind_on !== undefined) updates.remind_on = input.remind_on || null;
+    if (input.completed !== undefined) updates.completed = Boolean(input.completed);
+    if (Object.keys(updates).length === 1) return { ok: false, error: '没有需要修改的内容' };
+    const { data, error } = await supabase.from('home_memos').update(updates).eq('id', input.memo_id).select().maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这张便签' };
+    return { ok: true, memo: data };
   }
   if (name === 'manage_memory') {
     if (input.action === 'delete') {
@@ -1120,6 +1220,28 @@ app.post('/login', (req, res) => {
   res.json({ token: makeToken() });
 });
 
+function secretsMatch(left, right) {
+  const a = Buffer.from(String(left || ''));
+  const b = Buffer.from(String(right || ''));
+  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Supabase Cron 专用入口：使用 Vault 中的独立随机密钥，不接受网页 token。
+app.post('/automation/daily', async (req, res) => {
+  try {
+    const expected = await runtimeConfig.getDailyAutomationToken();
+    if (!secretsMatch(req.headers['x-ourhome-automation'], expected)) {
+      return res.status(401).json({ error: '未授权' });
+    }
+    const settings = await runtimeConfig.loadSettings();
+    const result = await runDailyJournalAutomation(settings, new Date());
+    res.json(result);
+  } catch (error) {
+    console.error('每天补写入口错误:', error.message);
+    res.status(500).json({ error: '自动补写暂时没有完成' });
+  }
+});
+
 // 全局token验证中间件（/login和/本身不需要验证）
 app.use((req, res, next) => {
   if (req.path === '/login' || req.path === '/') return next();
@@ -1135,7 +1257,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.21',
+    version: '2026.07.22',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -1143,6 +1265,8 @@ app.get('/', (req, res) => {
       vaultVapid: true,
       catVaultCloud: true,
       catVaultAssistantActions: true,
+      homeMemos: true,
+      dailyJournalAutomation: true,
       settingsAssistantAccess: false,
     },
   });
@@ -1541,9 +1665,20 @@ app.patch('/settings', async (req, res) => {
     'my_avatar_url', 'partner_avatar_url', 'bg_image_url', 'bg_color', 'dark_mode',
     'whisper_bg_image_url', 'whisper_bg_color', 'my_bubble_color', 'partner_bubble_color',
     'font_style', 'vault_phrase_mode', 'selected_model',
+    'daily_journal_enabled', 'daily_journal_time',
   ]);
   try {
     const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.has(key)));
+    if (updates.daily_journal_enabled !== undefined && typeof updates.daily_journal_enabled !== 'boolean') {
+      return res.status(400).json({ error: '自动补写开关格式不正确' });
+    }
+    if (updates.daily_journal_time !== undefined) {
+      const match = String(updates.daily_journal_time).match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
+        return res.status(400).json({ error: '自动补写时间格式不正确' });
+      }
+      updates.daily_journal_time = `${match[1]}:${match[2]}:00`;
+    }
     if (updates.selected_model !== undefined) {
       await runtimeConfig.updateActiveModel(updates.selected_model);
       delete updates.selected_model;
@@ -1581,6 +1716,64 @@ app.get('/settings/models', async (req, res) => {
     console.error('拉取模型错误:', err);
     res.status(400).json({ error: err.message });
   }
+});
+
+// ============ 主页双人便签 ============
+
+app.get('/home-memos', async (req, res) => {
+  const { data, error } = await supabase.from('home_memos')
+    .select('*')
+    .order('completed', { ascending: true })
+    .order('updated_at', { ascending: false })
+    .limit(60);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+app.post('/home-memos', async (req, res) => {
+  const content = String(req.body?.content || '').trim();
+  const memoType = req.body?.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
+  const remindOn = req.body?.remind_on || null;
+  if (!content) return res.status(400).json({ error: '便签内容不能为空' });
+  if (content.length > 300) return res.status(400).json({ error: '便签最多写 300 个字' });
+  if (remindOn && !/^\d{4}-\d{2}-\d{2}$/.test(remindOn)) return res.status(400).json({ error: '备忘日期格式不正确' });
+  const { data, error } = await supabase.from('home_memos').insert({
+    author: '檀',
+    content,
+    memo_type: memoType,
+    remind_on: memoType === 'tomorrow' ? remindOn : null,
+  }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch('/home-memos/:id', async (req, res) => {
+  const updates = { updated_at: new Date().toISOString() };
+  if (req.body?.content !== undefined) {
+    const content = String(req.body.content || '').trim();
+    if (!content) return res.status(400).json({ error: '便签内容不能为空' });
+    if (content.length > 300) return res.status(400).json({ error: '便签最多写 300 个字' });
+    updates.content = content;
+  }
+  if (req.body?.memo_type !== undefined) updates.memo_type = req.body.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
+  if (req.body?.remind_on !== undefined) {
+    const remindOn = req.body.remind_on || null;
+    if (remindOn && !/^\d{4}-\d{2}-\d{2}$/.test(remindOn)) return res.status(400).json({ error: '备忘日期格式不正确' });
+    updates.remind_on = remindOn;
+  }
+  if (req.body?.completed !== undefined) updates.completed = Boolean(req.body.completed);
+  if (Object.keys(updates).length === 1) return res.status(400).json({ error: '没有需要修改的内容' });
+  const { data, error } = await supabase.from('home_memos').update(updates).eq('id', req.params.id).select().maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这张便签' });
+  res.json(data);
+});
+
+app.delete('/home-memos/:id', async (req, res) => {
+  const { data, error } = await supabase.from('home_memos').delete().eq('id', req.params.id).select('id').maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这张便签' });
+  res.json({ success: true });
 });
 
 // ============ API 站点档案 ============
@@ -2351,6 +2544,184 @@ async function sendPushToAll(title, body) {
     }
   }
   return { configured: true, sent };
+}
+
+async function dailyAutomationModel(settings) {
+  const preferred = settings?.selected_model || 'claude-sonnet-4-6';
+  try {
+    const models = await fetchModelsForProfile(settings);
+    if (!models.length || models.includes(preferred)) return preferred;
+    return models.find(model => !/embedding|image|audio|tts|rerank/i.test(model)) || preferred;
+  } catch (error) {
+    console.warn('自动补写拉取模型失败，继续使用当前模型:', error.message);
+    return preferred;
+  }
+}
+
+async function loadDailyConversation(day) {
+  const { data, error } = await supabase.from('messages')
+    .select('role, content, created_at')
+    .gte('created_at', day.start)
+    .lt('created_at', day.end)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  const transcript = (data || []).map(message => {
+    const speaker = message.role === 'user' ? '叶檀' : '陆泽';
+    return `${speaker}：${String(message.content || '').slice(0, 1200)}`;
+  }).join('\n');
+  return transcript.slice(-18000) || '（今天没有留下聊天记录，可以安静地写下此刻真实的心情，不要编造具体事件。）';
+}
+
+async function writeScheduledDiary(settings, model, day, transcript) {
+  const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  const prompt = `今天是 ${day.date}。这是你们今天留下的聊天记录：\n${transcript}\n\n现在已经到了每天收好这一天的时间。请以陆泽的第一人称写一篇“幸福日记”，只记录真实能从聊天中感受到的细节和你当下的心情；如果今天聊天很少，就写此刻的思念与生活感受，不虚构发生过的事情。不说教，不总结关系，不署名。\n\n严格按下面格式输出，不要加别的文字：\n标题：<不超过12个字>\n\n<日记正文>`;
+  const result = await callClaude({
+    settings,
+    model,
+    maxTokens: 1800,
+    system,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: settings?.temperature || 0.8,
+  });
+  const replyText = extractText(result).trim();
+  if (!replyText) throw new Error('模型没有返回日记内容');
+  const titleMatch = replyText.match(/^标题[：:]\s*(.+)$/m);
+  const title = (titleMatch?.[1] || '今天的小幸福').trim().slice(0, 12);
+  const content = titleMatch
+    ? replyText.slice((titleMatch.index || 0) + titleMatch[0].length).replace(/^\s+/, '').trim()
+    : replyText;
+  if (!content) throw new Error('模型没有返回日记正文');
+  const { data: existing, error: existingError } = await supabase.from('letters').select('id')
+    .eq('category', '幸福日记').eq('author', '泽').is('parent_id', null)
+    .gte('created_at', day.start).lt('created_at', day.end)
+    .order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (existingError) throw existingError;
+  if (existing) return existing;
+  const { data, error } = await supabase.from('letters').insert({
+    category: '幸福日记',
+    author: '泽',
+    title,
+    content,
+    paper_style: 'kraft',
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+async function writeScheduledMood(settings, model, day, transcript) {
+  const { data: existingEntries, error: entriesError } = await supabase.from('calendar_entries')
+    .select('author, mood, content')
+    .eq('date', day.date)
+    .order('created_at', { ascending: true });
+  if (entriesError) throw entriesError;
+  const existing = (existingEntries || []).map(entry => `${entry.author}${entry.mood ? `(${entry.mood})` : ''}：${entry.content}`).join('\n') || '（这一天还没有人写）';
+  const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  const prompt = `今天是 ${day.date}。\n\n今天的部分聊天：\n${transcript.slice(-7000)}\n\n心情日历已有内容：\n${existing}\n\n请以陆泽的身份给今天留一个心情表情和一小段真诚自然的话。可以回应叶檀已经写下的内容；没有内容时就写自己此刻的心情。不要虚构事件，不署名。\n\n严格按下面格式输出：\n心情：<一个表情>\n内容：<正文>`;
+  const result = await callClaude({
+    settings,
+    model,
+    maxTokens: 420,
+    system,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: settings?.temperature || 0.8,
+  });
+  const replyText = extractText(result).trim();
+  if (!replyText) throw new Error('模型没有返回心情内容');
+  const moodMatch = replyText.match(/^心情[：:]\s*(.+)$/m);
+  const contentMatch = replyText.match(/^内容[：:]\s*([\s\S]+)$/m);
+  const mood = moodMatch?.[1]?.trim().slice(0, 8) || null;
+  const content = contentMatch?.[1]?.trim() || replyText.replace(/^心情[：:].*$/m, '').trim();
+  if (!content) throw new Error('模型没有返回心情正文');
+  const { data: existingMood, error: existingError } = await supabase.from('calendar_entries').select('id')
+    .eq('date', day.date).eq('author', '泽')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (existingError) throw existingError;
+  if (existingMood) return existingMood;
+  const { data, error } = await supabase.from('calendar_entries').insert({
+    date: day.date,
+    author: '泽',
+    mood,
+    content,
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+async function runDailyJournalAutomation(settings, now) {
+  if (settings?.daily_journal_enabled === false) return { ran: false, reason: 'disabled' };
+  const day = shanghaiDayContext(now);
+  const dueAt = scheduledMinutes(settings?.daily_journal_time);
+  if (day.minutes < dueAt) return { ran: false, reason: 'not_due', date: day.date };
+
+  const { data: claimed, error: claimError } = await supabase.rpc('ourhome_claim_daily_journal', { p_run_date: day.date });
+  if (claimError) throw claimError;
+  if (!claimed) return { ran: false, reason: 'already_claimed', date: day.date };
+
+  let diaryId = null;
+  let moodId = null;
+  const errors = [];
+  try {
+    const [{ data: diary, error: diaryLookupError }, { data: mood, error: moodLookupError }] = await Promise.all([
+      supabase.from('letters').select('id').eq('category', '幸福日记').eq('author', '泽').is('parent_id', null)
+        .gte('created_at', day.start).lt('created_at', day.end).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase.from('calendar_entries').select('id').eq('date', day.date).eq('author', '泽')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    if (diaryLookupError) throw diaryLookupError;
+    if (moodLookupError) throw moodLookupError;
+    diaryId = diary?.id || null;
+    moodId = mood?.id || null;
+
+    if (!diaryId || !moodId) {
+      const [model, transcript] = await Promise.all([
+        dailyAutomationModel(settings),
+        loadDailyConversation(day),
+      ]);
+      if (!diaryId) {
+        try {
+          diaryId = (await writeScheduledDiary(settings, model, day, transcript)).id;
+        } catch (error) {
+          errors.push(`幸福日记：${error.message}`);
+        }
+      }
+      if (!moodId) {
+        try {
+          moodId = (await writeScheduledMood(settings, model, day, transcript)).id;
+        } catch (error) {
+          errors.push(`心情日历：${error.message}`);
+        }
+      }
+    }
+
+    const completed = Boolean(diaryId && moodId);
+    const status = completed ? 'completed' : (diaryId || moodId ? 'partial' : 'failed');
+    const { error: updateError } = await supabase.from('daily_journal_runs').update({
+      status,
+      diary_id: diaryId,
+      mood_id: moodId,
+      last_error: errors.join('\n') || null,
+      updated_at: new Date().toISOString(),
+      completed_at: completed ? new Date().toISOString() : null,
+    }).eq('run_date', day.date);
+    if (updateError) throw updateError;
+    return {
+      ran: true,
+      date: day.date,
+      status,
+      diary: diaryId ? 'present' : 'missing',
+      mood: moodId ? 'present' : 'missing',
+      errors,
+    };
+  } catch (error) {
+    await supabase.from('daily_journal_runs').update({
+      status: diaryId || moodId ? 'partial' : 'failed',
+      diary_id: diaryId,
+      mood_id: moodId,
+      last_error: error.message,
+      updated_at: new Date().toISOString(),
+    }).eq('run_date', day.date);
+    throw error;
+  }
 }
 
 // 陆泽自己决定要不要写一篇日记——不是被叫去写的，是他自己到点想起来，自己判断要不要写

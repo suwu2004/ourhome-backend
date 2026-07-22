@@ -196,6 +196,12 @@ function createRuntimeConfig(supabase) {
     return unwrap(data) || null;
   }
 
+  async function getDailyAutomationToken() {
+    const { data, error } = await supabase.rpc('ourhome_get_daily_automation_token');
+    if (error) throw error;
+    return unwrap(data) || null;
+  }
+
   return {
     getBaseSettings,
     loadSettings,
@@ -211,6 +217,7 @@ function createRuntimeConfig(supabase) {
     saveConnection,
     deleteConnection,
     getOrCreateVapidKeys,
+    getDailyAutomationToken,
   };
 }
 
