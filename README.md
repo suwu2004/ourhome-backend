@@ -2,6 +2,8 @@
 
 OurHome 的 Express 服务端。聊天、时光信差、记忆、日历、猫の金库、API 站点档案、Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
 
+主页天气由 `/weather?city=城市名` 提供，服务端通过 Open-Meteo 查询并缓存 15 分钟，不需要额外天气 API key。
+
 ## 本地运行
 
 ```bash

@@ -24,6 +24,8 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 const runtimeConfig = createRuntimeConfig(supabase);
 const integrationManager = createIntegrationManager(runtimeConfig);
 const vaultStore = createVaultStore(supabase);
+const weatherCache = new Map();
+const WEATHER_CACHE_MS = 15 * 60 * 1000;
 
 function activatePushKeys(publicKey, privateKey) {
   if (!publicKey || !privateKey) throw new Error('推送密钥不完整');
@@ -122,6 +124,30 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   const json = await response.json();
   console.log(`[DEBUG recv] stop_reason=${json.stop_reason} blockTypes=${JSON.stringify((json.content||[]).map(b=>b.type))}`);
   return json;
+}
+
+function isModelUnavailableError(error) {
+  const raw = String(error?.message || error || '');
+  return /model_not_found|no available channel|unknown model|model[^\n]*not found/i.test(raw);
+}
+
+function sendGenerationError(res, error, { model, userMessage } = {}) {
+  const extra = userMessage ? { userMessage } : {};
+  if (isModelUnavailableError(error)) {
+    const modelName = String(model || '').trim().slice(0, 120);
+    return res.status(503).json({
+      code: 'model_unavailable',
+      model: modelName || null,
+      error: modelName
+        ? `当前 API 站点暂时没有“${modelName}”的可用线路。换一个模型后直接重试就好。`
+        : '当前 API 站点暂时没有所选模型的可用线路。换一个模型后直接重试就好。',
+      ...extra,
+    });
+  }
+  return res.status(500).json({
+    error: error?.message || '生成回复时出了点问题，请稍后再试。',
+    ...extra,
+  });
 }
 
 // ↓↓↓ 陆泽能在聊天时真的去"操作"的三件事：写幸福日记 / 建日程 / 加心愿 ↓↓↓
@@ -1109,7 +1135,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.19',
+    version: '2026.07.21',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -1120,6 +1146,60 @@ app.get('/', (req, res) => {
       settingsAssistantAccess: false,
     },
   });
+});
+
+app.get('/weather', async (req, res) => {
+  const city = String(req.query.city || '').trim();
+  if (!city) return res.status(400).json({ error: '请先在设置里填写主页天气城市' });
+  if (city.length > 60) return res.status(400).json({ error: '城市名称太长了' });
+
+  const cacheKey = city.toLocaleLowerCase('zh-CN');
+  const cached = weatherCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);
+
+  try {
+    const signal = AbortSignal.timeout(9000);
+    const geocodingUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
+    geocodingUrl.searchParams.set('name', city);
+    geocodingUrl.searchParams.set('count', '1');
+    geocodingUrl.searchParams.set('language', 'zh');
+    geocodingUrl.searchParams.set('format', 'json');
+    const locationResponse = await fetch(geocodingUrl, { signal });
+    if (!locationResponse.ok) throw new Error('城市查询暂时没有回应');
+    const locationData = await locationResponse.json();
+    const location = locationData?.results?.[0];
+    if (!location) return res.status(404).json({ error: `没有找到“${city}”，可以换成附近城市再试` });
+
+    const forecastUrl = new URL('https://api.open-meteo.com/v1/forecast');
+    forecastUrl.searchParams.set('latitude', String(location.latitude));
+    forecastUrl.searchParams.set('longitude', String(location.longitude));
+    forecastUrl.searchParams.set('current', 'temperature_2m,apparent_temperature,weather_code,is_day');
+    forecastUrl.searchParams.set('timezone', 'auto');
+    const forecastResponse = await fetch(forecastUrl, { signal });
+    if (!forecastResponse.ok) throw new Error('天气查询暂时没有回应');
+    const forecast = await forecastResponse.json();
+    const current = forecast?.current;
+    if (!current || !Number.isFinite(Number(current.temperature_2m))) throw new Error('没有拿到当前天气');
+
+    const displayName = [...new Set([location.name, location.admin1, location.country].filter(Boolean))].join(' · ');
+    const value = {
+      city,
+      displayName,
+      temperature: Number(current.temperature_2m),
+      apparentTemperature: Number(current.apparent_temperature),
+      weatherCode: Number(current.weather_code),
+      isDay: Number(current.is_day),
+      observedAt: current.time || null,
+      timezone: forecast.timezone || null,
+    };
+    weatherCache.set(cacheKey, { value, expiresAt: Date.now() + WEATHER_CACHE_MS });
+    if (weatherCache.size > 60) weatherCache.delete(weatherCache.keys().next().value);
+    res.json(value);
+  } catch (error) {
+    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+    console.error('主页天气错误:', error.message);
+    res.status(502).json({ error: timedOut ? '天气连接超时了，稍后刷新就好' : '天气暂时走丢了，稍后再试' });
+  }
 });
 
 // ============ 猫の金库（页面与陆泽共用同一份 Supabase 数据） ============
@@ -1376,7 +1456,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
     });
   } catch (err) {
     console.error('编辑重发错误:', err);
-    res.status(500).json({ error: err.message });
+    sendGenerationError(res, err, { model });
   }
 });
 
@@ -2095,11 +2175,11 @@ app.post('/chat', async (req, res) => {
     });
   } catch (err) {
     console.error('对话错误:', err);
-    res.status(500).json({
-      error: err.message,
-      ...(persistedUserMessage ? {
-        userMessage: { id: persistedUserMessage.id, createdAt: persistedUserMessage.created_at },
-      } : {}),
+    sendGenerationError(res, err, {
+      model,
+      userMessage: persistedUserMessage
+        ? { id: persistedUserMessage.id, createdAt: persistedUserMessage.created_at }
+        : null,
     });
   }
 });
@@ -2175,7 +2255,7 @@ app.post('/chat/regenerate', async (req, res) => {
     res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed });
   } catch (err) {
     console.error('重新生成错误:', err);
-    res.status(500).json({ error: err.message });
+    sendGenerationError(res, err, { model });
   }
 });
 
