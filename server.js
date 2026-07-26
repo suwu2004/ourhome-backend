@@ -36,6 +36,30 @@ const integrationManager = createIntegrationManager(runtimeConfig);
 const vaultStore = createVaultStore(supabase);
 const weatherCache = new Map();
 const WEATHER_CACHE_MS = 15 * 60 * 1000;
+const WEATHER_STALE_MS = 6 * 60 * 60 * 1000;
+const WEATHER_REQUEST_TIMEOUT_MS = 8000;
+const WEATHER_REQUEST_ATTEMPTS = 2;
+
+async function fetchWeatherResponse(url, label) {
+  let lastError;
+  for (let attempt = 1; attempt <= WEATHER_REQUEST_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(WEATHER_REQUEST_TIMEOUT_MS) });
+      if (!response.ok) {
+        const error = new Error(`${label}暂时没有回应 (${response.status})`);
+        error.retryable = response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= WEATHER_REQUEST_ATTEMPTS || error.retryable === false) break;
+      console.warn(`主页天气${label}重试 ${attempt}/${WEATHER_REQUEST_ATTEMPTS - 1}:`, error.message);
+      await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+    }
+  }
+  throw lastError;
+}
 
 function activatePushKeys(publicKey, privateKey) {
   if (!publicKey || !privateKey) throw new Error('推送密钥不完整');
@@ -1378,7 +1402,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.22',
+    version: '2026.07.26-weather-retry',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -1403,14 +1427,12 @@ app.get('/weather', async (req, res) => {
   if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);
 
   try {
-    const signal = AbortSignal.timeout(9000);
     const geocodingUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
     geocodingUrl.searchParams.set('name', city);
     geocodingUrl.searchParams.set('count', '1');
     geocodingUrl.searchParams.set('language', 'zh');
     geocodingUrl.searchParams.set('format', 'json');
-    const locationResponse = await fetch(geocodingUrl, { signal });
-    if (!locationResponse.ok) throw new Error('城市查询暂时没有回应');
+    const locationResponse = await fetchWeatherResponse(geocodingUrl, '城市查询');
     const locationData = await locationResponse.json();
     const location = locationData?.results?.[0];
     if (!location) return res.status(404).json({ error: `没有找到“${city}”，可以换成附近城市再试` });
@@ -1420,8 +1442,7 @@ app.get('/weather', async (req, res) => {
     forecastUrl.searchParams.set('longitude', String(location.longitude));
     forecastUrl.searchParams.set('current', 'temperature_2m,apparent_temperature,weather_code,is_day');
     forecastUrl.searchParams.set('timezone', 'auto');
-    const forecastResponse = await fetch(forecastUrl, { signal });
-    if (!forecastResponse.ok) throw new Error('天气查询暂时没有回应');
+    const forecastResponse = await fetchWeatherResponse(forecastUrl, '实时预报');
     const forecast = await forecastResponse.json();
     const current = forecast?.current;
     if (!current || !Number.isFinite(Number(current.temperature_2m))) throw new Error('没有拿到当前天气');
@@ -1436,11 +1457,20 @@ app.get('/weather', async (req, res) => {
       isDay: Number(current.is_day),
       observedAt: current.time || null,
       timezone: forecast.timezone || null,
+      stale: false,
     };
-    weatherCache.set(cacheKey, { value, expiresAt: Date.now() + WEATHER_CACHE_MS });
+    weatherCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + WEATHER_CACHE_MS,
+      staleUntil: Date.now() + WEATHER_STALE_MS,
+    });
     if (weatherCache.size > 60) weatherCache.delete(weatherCache.keys().next().value);
     res.json(value);
   } catch (error) {
+    if (cached && cached.staleUntil > Date.now()) {
+      console.warn('主页天气暂时使用缓存:', city, error.message);
+      return res.json({ ...cached.value, stale: true });
+    }
     const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
     console.error('主页天气错误:', error.message);
     res.status(502).json({ error: timedOut ? '天气连接超时了，稍后刷新就好' : '天气暂时走丢了，稍后再试' });
