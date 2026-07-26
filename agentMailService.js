@@ -644,6 +644,25 @@ function createAgentMailService({
     }));
   }
 
+  async function retryDecision(activity) {
+    if (!activity?.id || activity.action !== 'decision' || activity.status !== 'failed' || !activity.message_id) {
+      throw new AgentMailError('这条记录现在不能重新处理', { status: 409, code: 'decision_not_retryable' });
+    }
+    const retryCount = Number(activity.metadata?.retry_count || 0) + 1;
+    return publicActivity(await auditStore.update(activity.id, {
+      status: 'pending',
+      reason: '编号绑定已经修复，陆泽正在重新处理这封来信',
+      error: '',
+      metadata: {
+        ...(activity.metadata || {}),
+        replied: false,
+        reply_activity_id: null,
+        retry_count: retryCount,
+        retried_at: new Date().toISOString(),
+      },
+    }));
+  }
+
   async function registerWebhook(webhookUrl) {
     const runtime = await loadRuntime({ allowDisabled: true });
     const url = new URL(webhookUrl);
@@ -714,6 +733,7 @@ function createAgentMailService({
     recordWebhookMessage,
     registerWebhook,
     replyMessage,
+    retryDecision,
     saveConfig,
     sendMessage,
     syncInbox,
