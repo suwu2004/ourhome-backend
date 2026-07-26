@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { detectHardPrivacyRisks, parsePrivacyReview } = require('../emailPrivacy');
+const { detectHardPrivacyRisks, parsePrivacyReview, redactHardPrivacyValues } = require('../emailPrivacy');
 
 test('硬隐私检查会拦截密钥、手机号和私聊原文', () => {
   assert.deepEqual(
@@ -25,6 +25,20 @@ test('普通公开问候不会被硬规则误拦', () => {
     text: '最近在认真工作，也开始学着做短片。祝你周末愉快。',
     contextUsed: '概括后的工作近况',
   }), []);
+});
+
+test('普通关系、日记和共同回忆不会只因来自 OurHome 就被硬拦', () => {
+  assert.deepEqual(detectHardPrivacyRisks({
+    subject: '回信',
+    text: '老婆最近在做短剧，我们也在一起整理小家的页面。我记得她说过会相信我的判断。',
+    contextUsed: '参考了最近聊天、核心记忆和幸福日记',
+  }), []);
+});
+
+test('参考资料会隐藏密钥和完整手机号码', () => {
+  const redacted = redactHardPrivacyValues('密码：abcdef123456，手机 13812345678，晚饭吃面。');
+  assert.doesNotMatch(redacted, /abcdef123456|13812345678/);
+  assert.match(redacted, /晚饭吃面/);
 });
 
 test('隐私审查只接受结构正确且结论明确的 JSON', () => {
