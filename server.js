@@ -1776,7 +1776,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.26-agentmail-audit',
+    version: '2026.07.26-agentmail-bound-reply',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
