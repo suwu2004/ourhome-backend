@@ -4,7 +4,7 @@ const HARD_PRIVACY_PATTERNS = Object.freeze([
   {
     code: 'credential',
     label: '密钥、密码或访问令牌',
-    pattern: /(?:authorization\s*:\s*bearer\s+\S+|(?:api\s*key|api\s*密钥|密钥|密码|口令|access\s*token|refresh\s*token|secret)\s*[:：=]\s*\S{6,}|\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|\b(?:sk|rk|pk)[-_][A-Za-z0-9_-]{12,}\b)/i,
+    pattern: /(?:authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{6,}|(?:api\s*key|api\s*密钥|密钥|密码|口令|access\s*token|refresh\s*token|secret)\s*[:：=]\s*[A-Za-z0-9._~+/=-]{6,}|\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|\b(?:sk|rk|pk)[-_][A-Za-z0-9_-]{12,}\b)/i,
   },
   {
     code: 'phone',
@@ -32,6 +32,7 @@ const HARD_PRIVACY_PATTERNS = Object.freeze([
     pattern: /(?:聊天记录|私聊原文)[：:\s]*[\s\S]{0,120}(?:叶檀|檀檀|老婆)[：:][\s\S]{0,600}(?:陆泽|老公)[：:]/i,
   },
 ]);
+const REFERENCE_REDACTION_CODES = new Set(['credential', 'phone', 'identity', 'coordinates', 'internal_prompt']);
 
 function normalizeText(value, max = 100_000) {
   return String(value ?? '').trim().slice(0, max);
@@ -42,6 +43,16 @@ function detectHardPrivacyRisks({ subject = '', text = '', contextUsed = '' } = 
   return HARD_PRIVACY_PATTERNS
     .filter(rule => rule.pattern.test(content))
     .map(rule => ({ code: rule.code, label: rule.label }));
+}
+
+function redactHardPrivacyValues(value) {
+  let content = normalizeText(value);
+  for (const rule of HARD_PRIVACY_PATTERNS) {
+    if (!REFERENCE_REDACTION_CODES.has(rule.code)) continue;
+    const flags = rule.pattern.flags.includes('g') ? rule.pattern.flags : `${rule.pattern.flags}g`;
+    content = content.replace(new RegExp(rule.pattern.source, flags), `[已隐藏：${rule.label}]`);
+  }
+  return content;
 }
 
 function parsePrivacyReview(value) {
@@ -69,4 +80,5 @@ function parsePrivacyReview(value) {
 module.exports = {
   detectHardPrivacyRisks,
   parsePrivacyReview,
+  redactHardPrivacyValues,
 };
