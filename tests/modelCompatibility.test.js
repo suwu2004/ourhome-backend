@@ -21,6 +21,24 @@ test('文字工具协议只解析严格标签，并移除内部标记', () => {
   assert.match(buildTextToolBridge([{ name: 'read_home_memos', description: '读取便签', input_schema: { type: 'object', properties: {} } }]), /read_home_memos/);
 });
 
+test('文字工具协议也会补全 MCP 缺失的参数类型', () => {
+  const bridge = buildTextToolBridge([{
+    name: 'mcp_search',
+    description: '搜索',
+    input_schema: {
+      type: 'object',
+      properties: {
+        exact_match: { description: '精确匹配', default: false },
+        filters: { properties: { domain: { enum: ['example.com'] } } },
+      },
+    },
+  }]);
+
+  assert.match(bridge, /"exact_match":\{"type":"boolean"/);
+  assert.match(bridge, /"filters":\{"type":"object"/);
+  assert.match(bridge, /"domain":\{"type":"string"/);
+});
+
 test('工具格式不兼容错误可以安全降级到文字协议', () => {
   assert.equal(isToolCompatibilityError(new Error('[400] tools are not supported for this model')), true);
   assert.equal(isToolCompatibilityError(new Error('[400] unsupported parameter: tools')), true);

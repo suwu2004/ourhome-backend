@@ -1,6 +1,6 @@
 # OurHome 后端
 
-OurHome 的 Express 服务端。聊天、时光信差、记忆、日历、猫の金库、API 站点档案、Linkup / Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
+OurHome 的 Express 服务端。聊天、时光信差、陆泽邮箱、记忆、日历、猫の金库、API 站点档案、Linkup / Tavily 联网搜索和远程 MCP 都由这里接入 Supabase。
 
 主页天气由 `/weather?city=城市名` 提供，服务端通过 Open-Meteo 查询并缓存 15 分钟，不需要额外天气 API key。
 
@@ -40,14 +40,22 @@ npx web-push generate-vapid-keys
 3. `supabase/migrations/20260719084259_ourhome_runtime_secrets.sql`
 4. `supabase/migrations/20260719115916_sync_cat_vault.sql`
 5. `supabase/migrations/20260719121339_index_vault_account_groups.sql`
+6. `supabase/migrations/20260719125821_safe_vault_state_replace.sql`
+7. `supabase/migrations/20260722080456_add_home_background_settings.sql`
+8. `supabase/migrations/20260726084421_add_home_memo_background_setting.sql`
+9. `supabase/migrations/20260726092630_add_agentmail_mailbox_audit.sql`
+10. `supabase/migrations/20260726100308_index_agentmail_activity_connection.sql`
 
-现有 OurHome 数据库已经应用过这些迁移。金库迁移会复用旧的 `vault_*` 表，补齐账户分组、流水快照、手机旧账本导入标记和原子记账函数；所有金库表都只允许服务端角色访问。
+金库迁移会复用旧的 `vault_*` 表，补齐账户分组、流水快照、手机旧账本导入标记和原子记账函数；所有金库表都只允许服务端角色访问。AgentMail 迁移会新增不可由页面删除的邮箱知情记录，并把 API Key 与 Webhook 签名密钥分别存入 Supabase Vault。
 
 ## OurHome 操作权限
 
 - 页面和聊天助手通过同一个后端金库服务读写数据，新增/修改/删除后都会反映到 Supabase。
 - 第一次打开猫の金库时，前端会把原有 `localStorage` 账本迁入云端，并继续保留一份本机副本。
 - 聊天助手可以管理金库、记忆、信件、心情记录、日程、心愿和重要时刻。
+- 陆泽可以自主检查、阅读、回复和寄送自己 AgentMail 邮箱里的邮件；每次收信、检查、阅读、发送、回复、隐私拦截、暂不回复或失败都会写入叶檀可见的知情记录。
+- 写邮件时可以参考由最近聊天与普通记忆整理出的“可公开近况”，但不会把原始记录直接交给邮件，也不会使用锁定记忆。
+- 每封待发送邮件都要再经过硬规则与独立模型两层隐私审查；私聊原文、身份与联系方式、精确位置行程、健康、财务、亲密内容、照片附件、设置和密钥等内容会被拦截。审查失败时默认不发送。
 - “设置”不会暴露为聊天工具；API 密钥、站点、模型、联网、MCP、人物设定和视觉设置只能由用户在设置页操作。
 
 ## Render 部署
@@ -66,3 +74,12 @@ npx web-push generate-vapid-keys
 - 本机 `stdio` MCP 无法由云端 OurHome 直接连接，需要先部署成远程 HTTP 服务。
 
 完整说明见 [MCP_DEPLOYMENT.md](./MCP_DEPLOYMENT.md)。
+
+## AgentMail
+
+1. 登录 OurHome，打开“设置 → 陆泽邮箱”。
+2. 填写 AgentMail Inbox ID（当前为 `luzeeagent-4803@agentmail.to`）与 API Key，保存后先测试连接。
+3. 后端已经部署到公网 HTTPS 后，点击“接通实时收信”。后端会向 AgentMail 注册 `message.received` Webhook，并把签名密钥加密保存到 Supabase Vault。
+4. 在“时光信差 → 陆泽邮箱”查看完整知情记录。页面只能读取记录，不提供删除入口。
+
+如果部署平台无法从请求自动判断自己的公网地址，可以设置 `AGENTMAIL_WEBHOOK_BASE_URL=https://你的后端域名`。API Key 不放环境变量，也不要提交到 GitHub。

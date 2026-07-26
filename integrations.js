@@ -1,5 +1,6 @@
 const dns = require('dns').promises;
 const net = require('net');
+const { normalizeMcpInputSchema, mergeMcpSchemaDiagnostics } = require('./mcpSchema');
 
 const MCP_VERSION = '2025-11-25';
 const SUPPORTED_MCP_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26']);
@@ -289,10 +290,11 @@ function createIntegrationManager(runtimeConfig) {
         const remoteTools = await listMcpTools(connection);
         for (const tool of remoteTools) {
           const exposedName = `mcp_${connection.id.slice(0, 8)}_${sanitizeToolName(tool.name)}`.slice(0, 64);
+          const { schema } = normalizeMcpInputSchema(tool.inputSchema);
           tools.push({
             name: exposedName,
             description: `[${connection.name} · 只读] ${tool.description || tool.name}`.slice(0, 900),
-            input_schema: tool.inputSchema || { type: 'object', properties: {} },
+            input_schema: schema,
           });
           handlers.set(exposedName, input => callMcpTool(connection, tool.name, input));
         }
@@ -313,7 +315,24 @@ function createIntegrationManager(runtimeConfig) {
     }
     if (connection.kind === 'mcp') {
       const tools = await listMcpTools(connection, { fresh: true });
-      return { ok: true, tool_count: tools.length, tools: tools.map(tool => ({ name: tool.name, description: tool.description || '' })) };
+      const normalized = tools.map(tool => {
+        const { diagnostics } = normalizeMcpInputSchema(tool.inputSchema);
+        return {
+          name: tool.name,
+          description: tool.description || '',
+          schema_repairs: diagnostics.repairs,
+          schema_notes: diagnostics.notes.slice(0, 3),
+          diagnostics,
+        };
+      });
+      const schemaDiagnostics = mergeMcpSchemaDiagnostics(normalized.map(tool => tool.diagnostics));
+      return {
+        ok: true,
+        tool_count: tools.length,
+        schema_repairs: schemaDiagnostics.repairs,
+        schema_diagnostics: schemaDiagnostics,
+        tools: normalized.map(({ diagnostics, ...tool }) => tool),
+      };
     }
     throw new Error('不支持的连接类型');
   }

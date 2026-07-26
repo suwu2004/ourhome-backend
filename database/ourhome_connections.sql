@@ -28,11 +28,12 @@ create table if not exists public.service_connections (
   name text not null,
   url text not null,
   secret_id uuid,
+  webhook_secret_id uuid,
   enabled boolean not null default true,
   config jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint service_connections_kind_check check (kind in ('web_search', 'mcp')),
+  constraint service_connections_kind_check check (kind in ('web_search', 'mcp', 'agentmail')),
   constraint service_connections_name_not_blank check (btrim(name) <> ''),
   constraint service_connections_url_not_blank check (btrim(url) <> ''),
   constraint service_connections_name_unique unique (kind, name)
@@ -40,6 +41,9 @@ create table if not exists public.service_connections (
 
 create unique index if not exists service_connections_one_web_search_idx
   on public.service_connections (kind) where kind = 'web_search';
+
+create unique index if not exists service_connections_one_agentmail_idx
+  on public.service_connections (kind) where kind = 'agentmail';
 
 alter table public.service_connections enable row level security;
 revoke all on table public.service_connections from anon, authenticated;
@@ -259,7 +263,7 @@ begin
   if v_role <> 'service_role' then
     raise exception 'service role required' using errcode = '42501';
   end if;
-  if p_kind not in ('web_search', 'mcp') then
+  if p_kind not in ('web_search', 'mcp', 'agentmail') then
     raise exception 'unsupported connection kind' using errcode = '22023';
   end if;
   if nullif(btrim(p_name), '') is null or nullif(btrim(p_url), '') is null then
@@ -308,12 +312,17 @@ as $$
 declare
   v_role text := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '');
   v_secret_id uuid;
+  v_webhook_secret_id uuid;
 begin
   if v_role <> 'service_role' then
     raise exception 'service role required' using errcode = '42501';
   end if;
-  delete from public.service_connections where id = p_id returning secret_id into v_secret_id;
+  delete from public.service_connections
+  where id = p_id
+  returning secret_id, webhook_secret_id
+  into v_secret_id, v_webhook_secret_id;
   if v_secret_id is not null then delete from vault.secrets where id = v_secret_id; end if;
+  if v_webhook_secret_id is not null then delete from vault.secrets where id = v_webhook_secret_id; end if;
 end;
 $$;
 

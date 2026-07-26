@@ -1,16 +1,27 @@
+const { normalizeMcpInputSchema } = require('./mcpSchema');
+
 const TEXT_TOOL_CALL_RE = /<ourhome_tool>\s*([\s\S]*?)\s*<\/ourhome_tool>/gi;
 const TEXT_TOOL_RESULT_RE = /<ourhome_tool_result>[\s\S]*?<\/ourhome_tool_result>/gi;
 
-function compactProperty(property = {}) {
+function compactProperty(property = {}, depth = 0) {
   const value = {};
   if (property.type) value.type = property.type;
   if (Array.isArray(property.enum)) value.enum = property.enum;
   if (property.description) value.description = String(property.description).slice(0, 110);
+  if (depth < 3 && property.type === 'object' && property.properties) {
+    value.properties = Object.fromEntries(
+      Object.entries(property.properties).map(([name, child]) => [name, compactProperty(child, depth + 1)]),
+    );
+    if (Array.isArray(property.required) && property.required.length) value.required = property.required;
+  }
+  if (depth < 3 && property.type === 'array' && property.items) {
+    value.items = compactProperty(property.items, depth + 1);
+  }
   return value;
 }
 
 function compactTool(tool = {}) {
-  const schema = tool.input_schema || tool.inputSchema || {};
+  const { schema } = normalizeMcpInputSchema(tool.input_schema || tool.inputSchema);
   const properties = Object.fromEntries(
     Object.entries(schema.properties || {}).map(([name, property]) => [name, compactProperty(property)]),
   );

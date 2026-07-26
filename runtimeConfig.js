@@ -122,7 +122,7 @@ function createRuntimeConfig(supabase) {
 
   async function listConnections() {
     const { data, error } = await supabase.from('service_connections')
-      .select('id, kind, name, url, enabled, config, secret_id, created_at, updated_at')
+      .select('id, kind, name, url, enabled, config, secret_id, webhook_secret_id, created_at, updated_at')
       .order('kind')
       .order('updated_at', { ascending: false });
     if (error) {
@@ -137,6 +137,7 @@ function createRuntimeConfig(supabase) {
       enabled: connection.enabled,
       config: connection.config || {},
       has_secret: Boolean(connection.secret_id),
+      has_webhook_secret: Boolean(connection.webhook_secret_id),
       created_at: connection.created_at,
       updated_at: connection.updated_at,
     }));
@@ -158,6 +159,21 @@ function createRuntimeConfig(supabase) {
     const connection = await getConnectionRow(id);
     if (!connection) return null;
     return { ...connection, secret: await getConnectionSecret(connection.id) };
+  }
+
+  async function getAgentMailWebhookSecret(id) {
+    const { data, error } = await supabase.rpc('ourhome_get_agentmail_webhook_secret', { p_connection_id: id });
+    if (error) throw error;
+    return unwrap(data) || null;
+  }
+
+  async function saveAgentMailWebhookSecret(id, secret) {
+    const { data, error } = await supabase.rpc('ourhome_save_agentmail_webhook_secret', {
+      p_connection_id: id,
+      p_secret: secret ?? null,
+    });
+    if (error) throw error;
+    return unwrap(data) || null;
   }
 
   async function listEnabledConnectionRuntimes() {
@@ -213,6 +229,8 @@ function createRuntimeConfig(supabase) {
     updateActiveModel,
     listConnections,
     getConnectionRuntime,
+    getAgentMailWebhookSecret,
+    saveAgentMailWebhookSecret,
     listEnabledConnectionRuntimes,
     saveConnection,
     deleteConnection,
