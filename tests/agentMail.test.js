@@ -9,6 +9,11 @@ const {
   normalizeAgentMailMessage,
   validateRecipients,
 } = require('../agentMailService');
+const {
+  createBoundReplyHandler,
+  createBoundReplyTool,
+  isLegacyReplyBindingFailure,
+} = require('../agentMailDecision');
 
 function jsonResponse(body, status = 200) {
   return {
@@ -219,6 +224,71 @@ test('自主发送与回复会记录完整正文、原因和最终状态', async
   assert.equal(replied.body_text, '我收到啦。');
   assert.equal(replied.reason, '这封信需要回应');
   assert.equal(auditStore.rows.some(row => row.action === 'read' && row.message_id === 'incoming-2'), true);
+});
+
+test('自主回复由服务器绑定当前来信，不再信任模型填写的邮件编号', async () => {
+  const tool = createBoundReplyTool({
+    name: 'reply_agentmail_message',
+    description: '回复邮件',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string' },
+        text: { type: 'string' },
+        reason: { type: 'string' },
+      },
+      required: ['message_id', 'text', 'reason'],
+    },
+  });
+  assert.equal('message_id' in tool.input_schema.properties, false);
+  assert.deepEqual(tool.input_schema.required, ['text', 'reason']);
+
+  const calls = [];
+  const handler = createBoundReplyHandler({
+    messageId: '<trusted-message@example.com>',
+    onReply: async (messageId, input) => {
+      calls.push({ messageId, input });
+      return { ok: true };
+    },
+  });
+  await handler({
+    message_id: '<model-invented-message@example.com>',
+    text: '收到啦。',
+    reason: '需要回复',
+  });
+  assert.equal(calls[0].messageId, '<trusted-message@example.com>');
+  await assert.rejects(handler({ text: '再回复一次' }), /只能自主回复一次/);
+});
+
+test('旧版编号比对失败只恢复一次，并复用原决定记录', async () => {
+  const auditStore = createMemoryAuditStore();
+  const service = createAgentMailService({
+    runtimeConfig: createRuntimeConfig(),
+    auditStore,
+    fetchImpl: async () => jsonResponse({}),
+  });
+  const decision = await service.claimDecision({
+    message_id: '<incoming@example.com>',
+    thread_id: 'thread-legacy',
+    from: 'friend@example.com',
+    to: ['luzeeagent-4803@agentmail.to'],
+    subject: '旧失败',
+    text: '你好',
+  });
+  const failed = await service.finishDecision(decision.id, {
+    status: 'failed',
+    error: '只能回复当前正在处理的来信',
+    metadata: { replied: false },
+  });
+  assert.equal(isLegacyReplyBindingFailure(failed), true);
+
+  const retrying = await service.retryDecision(failed);
+  assert.equal(retrying.id, decision.id);
+  assert.equal(retrying.status, 'pending');
+  assert.equal(retrying.error, '');
+  assert.equal(retrying.metadata.retry_count, 1);
+  assert.equal(isLegacyReplyBindingFailure(retrying), false);
+  assert.equal(auditStore.rows.filter(row => row.action === 'decision').length, 1);
 });
 
 test('隐私审查拒绝时不会调用发送接口，并如实留下拦截记录', async () => {
