@@ -2151,7 +2151,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.26-agentmail-autonomy',
+    version: '2026.07.27-memory-journal-smart',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2162,6 +2162,7 @@ app.get('/', (req, res) => {
       homeMemos: true,
       dailyJournalAutomation: true,
       memoryJournal: true,
+      memoryJournalSmartGuard: true,
       memoryFavorites: true,
       agentMail: true,
       agentMailAutonomy: true,
