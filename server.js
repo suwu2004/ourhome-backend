@@ -695,6 +695,11 @@ const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map(tool => tool.name));
 const FAVORITE_TYPES = new Set(['message', 'image', 'file', 'text', 'memory', 'event', 'link', 'setting', 'note']);
 const FAVORITE_SOURCES = new Set(['chat', 'manual', 'memory', 'event', 'upload', 'system']);
 const MEMORY_EVENT_TYPES = new Set(['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note']);
+const DIARY_PAPER_STYLES = new Set(['kraft', 'lined', 'floral', 'parchment']);
+
+function diaryPaperStyle(settings = {}) {
+  return DIARY_PAPER_STYLES.has(settings?.diary_paper_style) ? settings.diary_paper_style : 'floral';
+}
 
 function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
   const updates = {};
@@ -735,8 +740,9 @@ function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
 // 真正执行陆泽要做的那个动作，写进对应的表
 async function executeActionTool(name, input) {
   if (name === 'write_diary') {
+    const settings = await runtimeConfig.loadSettings();
     const { data, error } = await supabase.from('letters')
-      .insert({ category: '幸福日记', author: '泽', title: input.title, content: input.content, paper_style: 'kraft' })
+      .insert({ category: '幸福日记', author: '泽', title: input.title, content: input.content, paper_style: diaryPaperStyle(settings) })
       .select().single();
     if (error) return { ok: false, error: error.message };
     return { ok: true, letter_id: data.id };
@@ -2165,6 +2171,8 @@ app.get('/', (req, res) => {
       memoryJournal: true,
       memoryJournalSmartGuard: true,
       memoryEventManual: true,
+      memoryEventEditDelete: true,
+      diaryPaperStyle: true,
       memoryFavorites: true,
       agentMail: true,
       agentMailAutonomy: true,
@@ -2575,7 +2583,7 @@ app.patch('/settings', async (req, res) => {
     'home_memo_bg_image_url',
     'whisper_bg_image_url', 'whisper_bg_color', 'my_bubble_color', 'partner_bubble_color',
     'font_style', 'vault_phrase_mode', 'selected_model',
-    'daily_journal_enabled', 'daily_journal_time',
+    'daily_journal_enabled', 'daily_journal_time', 'diary_paper_style',
   ]);
   try {
     const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.has(key)));
@@ -2588,6 +2596,11 @@ app.patch('/settings', async (req, res) => {
         return res.status(400).json({ error: '自动补写时间格式不正确' });
       }
       updates.daily_journal_time = `${match[1]}:${match[2]}:00`;
+    }
+    if (updates.diary_paper_style !== undefined) {
+      if (!DIARY_PAPER_STYLES.has(updates.diary_paper_style)) {
+        return res.status(400).json({ error: '日记纸样式不正确' });
+      }
     }
     if (updates.home_memo_bg_image_url !== undefined) {
       if (updates.home_memo_bg_image_url !== null && typeof updates.home_memo_bg_image_url !== 'string') {
@@ -3095,18 +3108,80 @@ app.post('/memory-events', async (req, res) => {
 });
 
 app.patch('/memory-events/:id', async (req, res) => {
-  const status = String(req.body?.status || '').trim();
-  if (!['active', 'continued', 'resolved', 'archived'].includes(status)) {
-    return res.status(400).json({ error: '状态不正确' });
+  const updates = { updated_at: new Date().toISOString() };
+  if (req.body?.status !== undefined) {
+    const status = String(req.body.status || '').trim();
+    if (!['active', 'continued', 'resolved', 'archived'].includes(status)) {
+      return res.status(400).json({ error: '状态不正确' });
+    }
+    updates.status = status;
   }
+  if (req.body?.title !== undefined) {
+    const title = compactLine(req.body.title, 80);
+    if (!title) return res.status(400).json({ error: '标题不能为空' });
+    updates.title = title;
+  }
+  if (req.body?.summary !== undefined) {
+    const summary = compactLine(req.body.summary, 1200);
+    if (!summary) return res.status(400).json({ error: '内容不能为空' });
+    updates.summary = summary;
+  }
+  if (req.body?.event_type !== undefined) {
+    updates.event_type = MEMORY_EVENT_TYPES.has(req.body.event_type) ? req.body.event_type : 'note';
+  }
+  if (req.body?.emotion !== undefined) updates.emotion = compactLine(req.body.emotion, 100) || null;
+  if (req.body?.topic !== undefined) updates.topic = compactLine(req.body.topic, 80) || null;
+  if (req.body?.importance !== undefined) updates.importance = clampInt(req.body.importance, 1, 5, 3);
+  if (Object.keys(updates).length === 1) return res.status(400).json({ error: '没有需要修改的内容' });
   const { data, error } = await supabase.from('memory_events')
-    .update({ status, updated_at: new Date().toISOString() })
+    .update(updates)
     .eq('id', req.params.id)
     .select()
     .maybeSingle();
   if (error) return res.status(500).json({ error: error.message });
   if (!data) return res.status(404).json({ error: '找不到这条年表' });
   res.json(data);
+});
+
+app.delete('/memory-events/:id', async (req, res) => {
+  const { data, error } = await supabase.from('memory_events').delete().eq('id', req.params.id).select('id').maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这条年表' });
+  res.json({ success: true });
+});
+
+app.patch('/memory-marks/:id', async (req, res) => {
+  const updates = {};
+  if (req.body?.status !== undefined) {
+    const status = String(req.body.status || '').trim();
+    if (!['active', 'continued', 'resolved', 'archived'].includes(status)) {
+      return res.status(400).json({ error: '状态不正确' });
+    }
+    updates.status = status;
+  }
+  if (req.body?.summary !== undefined) {
+    const summary = compactLine(req.body.summary, 240);
+    if (!summary) return res.status(400).json({ error: '内容不能为空' });
+    updates.summary = summary;
+  }
+  if (req.body?.topic !== undefined) updates.topic = compactLine(req.body.topic, 80) || null;
+  if (req.body?.should_continue !== undefined) updates.should_continue = Boolean(req.body.should_continue);
+  if (Object.keys(updates).length === 0) return res.status(400).json({ error: '没有需要修改的内容' });
+  const { data, error } = await supabase.from('memory_marks')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select()
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这条未完待续' });
+  res.json(data);
+});
+
+app.delete('/memory-marks/:id', async (req, res) => {
+  const { data, error } = await supabase.from('memory_marks').delete().eq('id', req.params.id).select('id').maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这条未完待续' });
+  res.json({ success: true });
 });
 
 // ============ memory favorites (秘密抽屉 / 收藏夹) ============
@@ -3239,7 +3314,7 @@ app.post('/letters/generate', async (req, res) => {
     }
 
     const { data, error } = await supabase.from('letters')
-      .insert({ category, author: '泽', content: letterContent, title: letterTitle, parent_id: parent_id || null, paper_style: category === '幸福日记' ? 'kraft' : null })
+      .insert({ category, author: '泽', content: letterContent, title: letterTitle, parent_id: parent_id || null, paper_style: category === '幸福日记' ? diaryPaperStyle(settings) : null })
       .select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
@@ -3816,7 +3891,7 @@ async function writeScheduledDiary(settings, model, day, transcript) {
     author: '泽',
     title,
     content,
-    paper_style: 'kraft',
+    paper_style: diaryPaperStyle(settings),
   }).select().single();
   if (error) throw error;
   return data;
@@ -3975,7 +4050,7 @@ async function maybeAutoWriteLetter(settings, now) {
     const content = replyText.slice(titleMatch[0].length).replace(/^\s*\n+/, '').trim();
     if (!content) return;
 
-    await supabase.from('letters').insert({ category: '幸福日记', author: '泽', title, content, paper_style: 'kraft' });
+    await supabase.from('letters').insert({ category: '幸福日记', author: '泽', title, content, paper_style: diaryPaperStyle(settings) });
   } catch (err) {
     console.error('自主写信错误:', err.message);
   }
