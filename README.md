@@ -45,6 +45,7 @@ npx web-push generate-vapid-keys
 8. `supabase/migrations/20260726084421_add_home_memo_background_setting.sql`
 9. `supabase/migrations/20260726092630_add_agentmail_mailbox_audit.sql`
 10. `supabase/migrations/20260726100308_index_agentmail_activity_connection.sql`
+11. `supabase/migrations/20260727113500_add_memory_journal.sql`
 
 金库迁移会复用旧的 `vault_*` 表，补齐账户分组、流水快照、手机旧账本导入标记和原子记账函数；所有金库表都只允许服务端角色访问。AgentMail 迁移会新增不可由页面删除的邮箱知情记录，并把 API Key 与 Webhook 签名密钥分别存入 Supabase Vault。
 

@@ -139,6 +139,38 @@ function shanghaiDayContext(now = new Date()) {
   };
 }
 
+function shanghaiDateKeyFromTime(value = new Date()) {
+  return shanghaiDayContext(value instanceof Date ? value : new Date(value)).date;
+}
+
+function formatShanghaiClock(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function clampInt(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function normalizeTags(value, limit = 8) {
+  const list = Array.isArray(value) ? value : String(value || '').split(/[，,\s]+/);
+  return [...new Set(list.map(item => String(item || '').trim()).filter(Boolean))]
+    .slice(0, limit)
+    .map(item => item.slice(0, 24));
+}
+
+function compactLine(value, max = 300) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
 function scheduledMinutes(value) {
   const match = String(value || '23:30').match(/^(\d{1,2}):(\d{2})/);
   if (!match) return 23 * 60 + 30;
@@ -1253,6 +1285,229 @@ async function saveMemoryWithEmbedding(summary, extra = {}) {
   return { data, error: null };
 }
 
+function parseJsonObject(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch {}
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch {}
+  }
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(raw.slice(start, end + 1)); } catch {}
+  }
+  return null;
+}
+
+async function loadTodayMemoryContext(dateKey) {
+  const [{ data: summary }, { data: events }, { data: openMarks }] = await Promise.all([
+    supabase.from('daily_summaries')
+      .select('*')
+      .eq('summary_date', dateKey)
+      .maybeSingle(),
+    supabase.from('memory_events')
+      .select('id, event_type, title, summary, topic, emotion, importance, status, occurred_at, tags')
+      .eq('event_date', dateKey)
+      .order('occurred_at', { ascending: false })
+      .limit(12),
+    supabase.from('memory_marks')
+      .select('id, topic, emotion, summary, tags, importance, created_at')
+      .eq('should_continue', true)
+      .in('status', ['active', 'continued'])
+      .order('created_at', { ascending: false })
+      .limit(8),
+  ]);
+  return { summary: summary || null, events: events || [], openMarks: openMarks || [] };
+}
+
+function buildTodayMemoryPromptBlock({ summary, events, openMarks }) {
+  const blocks = [];
+  if (summary?.summary) {
+    blocks.push(`【今日摘要】\n${summary.summary}`);
+  }
+  const highlights = Array.isArray(summary?.highlights) ? summary.highlights.filter(Boolean).slice(0, 5) : [];
+  if (highlights.length) {
+    blocks.push(`【今日重点】\n${highlights.map(item => `- ${item}`).join('\n')}`);
+  }
+  const eventLines = (events || []).slice(0, 8).map(event => {
+    const time = formatShanghaiClock(event.occurred_at);
+    const label = event.title || event.topic || '一件小事';
+    return `- ${time ? `${time} ` : ''}${label}：${event.summary}`;
+  });
+  if (eventLines.length) blocks.push(`【今天的大事年表】\n${eventLines.join('\n')}`);
+
+  const openThreads = [
+    ...(Array.isArray(summary?.open_threads) ? summary.open_threads : []),
+    ...(openMarks || []).map(mark => mark.summary || mark.topic),
+  ]
+    .map(item => compactLine(item, 120))
+    .filter(Boolean);
+  const uniqueThreads = [...new Set(openThreads)].slice(0, 8);
+  if (uniqueThreads.length) {
+    blocks.push(`【今天还没聊完的事】\n${uniqueThreads.map(item => `- ${item}`).join('\n')}`);
+  }
+  return blocks.join('\n\n');
+}
+
+async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext }) {
+  const recentEvents = (existingContext.events || []).slice(0, 6)
+    .map(event => `- ${event.title}：${event.summary}`)
+    .join('\n') || '无';
+  const currentSummary = existingContext.summary?.summary || '无';
+  const openThreads = Array.isArray(existingContext.summary?.open_threads)
+    ? existingContext.summary.open_threads.join('；')
+    : '无';
+  const prompt = `请为 OurHome 的记忆日志分析刚刚这一轮聊天。你不是在回复叶檀，而是在做后台记录。
+
+【今天已有摘要】
+${currentSummary}
+
+【今天已有大事】
+${recentEvents}
+
+【未收尾话题】
+${openThreads}
+
+【刚刚这一轮】
+叶檀：${String(userText || '').slice(0, 1800)}
+陆泽：${String(assistantText || '').slice(0, 1800)}
+
+请只输出 JSON，不要解释。字段如下：
+{
+  "event": {
+    "should_create": true或false,
+    "event_type": "project/life/emotion/relationship/todo/memory/system/note",
+    "title": "不超过20字",
+    "summary": "客观记录发生了什么，不超过180字",
+    "topic": "主题",
+    "emotion": "叶檀这轮主要情绪，可为空",
+    "importance": 1到5,
+    "tags": ["标签"]
+  },
+  "mark": {
+    "topic": "这轮主题",
+    "emotion": "情绪",
+    "summary": "一句内部标记，不超过120字",
+    "importance": 1到5,
+    "should_continue": true或false,
+    "should_remember": true或false,
+    "tags": ["标签"]
+  },
+  "daily_summary": {
+    "summary": "把今天到目前为止发生的事更新成一段摘要，不超过260字",
+    "highlights": ["今天重要节点，最多5条"],
+    "open_threads": ["还没收尾、之后应接着聊/做的事，最多5条"],
+    "mood": "今天整体气氛"
+  },
+  "long_memory": {
+    "should_save": true或false,
+    "summary": "只有稳定偏好、重要约定、项目进度、长期事实才写；不超过120字"
+  }
+}
+
+判断规则：
+- 普通寒暄不要建大事，但仍可写 mark。
+- OurHome 项目、明确待办、重要情绪、关系约定、用户偏好，通常应建 event。
+- should_continue 表示之后一句“早上那个/继续”需要能接住。
+- long_memory 只保存长期稳定内容，不要和 event 重复记流水账。`;
+
+  const result = await callClaude({
+    settings,
+    model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking',
+    maxTokens: 900,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.2,
+  });
+  return parseJsonObject(extractText(result));
+}
+
+async function recordMemoryJournalTurn({
+  settings,
+  sessionId,
+  userMessageId,
+  assistantMessageId,
+  userText,
+  assistantText,
+}) {
+  const dateKey = shanghaiDateKeyFromTime();
+  const now = new Date();
+  const existingContext = await loadTodayMemoryContext(dateKey);
+  const analysis = await analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext });
+  if (!analysis || typeof analysis !== 'object') return;
+
+  const mark = analysis.mark || {};
+  const markSummary = compactLine(mark.summary || userText, 240);
+  if (markSummary) {
+    await supabase.from('memory_marks').insert({
+      message_id: userMessageId ? String(userMessageId) : null,
+      session_id: sessionId ? String(sessionId) : null,
+      role: 'user',
+      mark_date: dateKey,
+      topic: compactLine(mark.topic, 80) || null,
+      emotion: compactLine(mark.emotion, 80) || null,
+      summary: markSummary,
+      tags: normalizeTags(mark.tags),
+      importance: clampInt(mark.importance, 1, 5, 2),
+      should_continue: Boolean(mark.should_continue),
+      should_remember: Boolean(mark.should_remember),
+      metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
+    });
+  }
+
+  const event = analysis.event || {};
+  if (event.should_create && compactLine(event.title, 80) && compactLine(event.summary, 1200)) {
+    await supabase.from('memory_events').insert({
+      event_date: dateKey,
+      event_type: ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'].includes(event.event_type)
+        ? event.event_type
+        : 'note',
+      title: compactLine(event.title, 80),
+      summary: compactLine(event.summary, 1200),
+      source: 'chat',
+      topic: compactLine(event.topic, 80) || null,
+      tags: normalizeTags(event.tags),
+      emotion: compactLine(event.emotion, 100) || null,
+      importance: clampInt(event.importance, 1, 5, 3),
+      occurred_at: now.toISOString(),
+      related_message_id: userMessageId ? String(userMessageId) : null,
+      metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
+    });
+  }
+
+  const daily = analysis.daily_summary || {};
+  const summary = compactLine(daily.summary, 1200);
+  if (summary) {
+    await supabase.from('daily_summaries').upsert({
+      summary_date: dateKey,
+      summary,
+      highlights: normalizeTags(daily.highlights, 5).map(item => item.slice(0, 160)),
+      open_threads: normalizeTags(daily.open_threads, 5).map(item => item.slice(0, 160)),
+      mood: compactLine(daily.mood, 100) || null,
+      event_count: (existingContext.events || []).length + (event.should_create ? 1 : 0),
+      last_message_id: assistantMessageId ? String(assistantMessageId) : null,
+      updated_at: now.toISOString(),
+      generated_at: now.toISOString(),
+      metadata: { source: 'chat_turn' },
+    }, { onConflict: 'summary_date' });
+  }
+
+  const longMemory = analysis.long_memory || {};
+  const longSummary = compactLine(longMemory.summary, 400);
+  if (longMemory.should_save && longSummary) {
+    await saveMemoryWithEmbedding(longSummary, { last_referenced_at: now.toISOString() });
+  }
+}
+
+function queueMemoryJournalTurn(payload) {
+  setImmediate(() => {
+    recordMemoryJournalTurn(payload).catch(error => {
+      console.error('记忆日志写入失败:', error.message);
+    });
+  });
+}
+
 
 const OURHOME_ACTION_BOUNDARY = `
 
@@ -1284,6 +1539,8 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
     .eq('category', '幸福日记').is('parent_id', null)
     .order('created_at', { ascending: false }).limit(5);
 
+  const todayContext = await loadTodayMemoryContext(shanghaiDateKeyFromTime());
+  const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
@@ -1294,6 +1551,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
     .join('\n\n') || '';
 
   let prompt = basePrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  if (todayMemoryBlock) prompt += `\n\n${todayMemoryBlock}`;
   if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
   if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
@@ -1752,6 +2010,7 @@ app.get('/', (req, res) => {
       catVaultAssistantActions: true,
       homeMemos: true,
       dailyJournalAutomation: true,
+      memoryJournal: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -2604,6 +2863,65 @@ app.delete('/memories/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// ============ memory log (大事年表 / 隐藏标记 / 今日摘要) ============
+
+app.get('/memory-log', async (req, res) => {
+  try {
+    const date = String(req.query.date || shanghaiDateKeyFromTime()).slice(0, 10);
+    const days = Math.max(1, Math.min(Number.parseInt(req.query.days, 10) || 3, 14));
+    const startDate = new Date(`${date}T00:00:00.000Z`);
+    startDate.setUTCDate(startDate.getUTCDate() - days + 1);
+    const startKey = startDate.toISOString().slice(0, 10);
+
+    const [{ data: summaries, error: summariesError }, { data: events, error: eventsError }, { data: marks, error: marksError }] = await Promise.all([
+      supabase.from('daily_summaries')
+        .select('*')
+        .gte('summary_date', startKey)
+        .lte('summary_date', date)
+        .order('summary_date', { ascending: false }),
+      supabase.from('memory_events')
+        .select('*')
+        .gte('event_date', startKey)
+        .lte('event_date', date)
+        .order('occurred_at', { ascending: false })
+        .limit(80),
+      supabase.from('memory_marks')
+        .select('*')
+        .eq('should_continue', true)
+        .in('status', ['active', 'continued'])
+        .order('created_at', { ascending: false })
+        .limit(40),
+    ]);
+    const firstError = summariesError || eventsError || marksError;
+    if (firstError) return res.status(500).json({ error: firstError.message });
+
+    res.json({
+      date,
+      summaries: summaries || [],
+      todaySummary: (summaries || []).find(item => item.summary_date === date) || null,
+      events: events || [],
+      openMarks: marks || [],
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/memory-events/:id', async (req, res) => {
+  const status = String(req.body?.status || '').trim();
+  if (!['active', 'continued', 'resolved', 'archived'].includes(status)) {
+    return res.status(400).json({ error: '状态不正确' });
+  }
+  const { data, error } = await supabase.from('memory_events')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', req.params.id)
+    .select()
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这条年表' });
+  res.json(data);
+});
+
 // ============ letters (信件 / 日记 / 悄悄话) ============
 
 app.get('/letters', async (req, res) => {
@@ -2999,6 +3317,14 @@ app.post('/chat', async (req, res) => {
         userMessage: { id: userMessage.id, createdAt: userMessage.created_at },
       });
     }
+    queueMemoryJournalTurn({
+      settings,
+      sessionId: session_id,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      userText: latestUserMessage,
+      assistantText: replyText,
+    });
 
     res.json({
       reply: replyText,
