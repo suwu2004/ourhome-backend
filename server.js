@@ -171,6 +171,29 @@ function compactLine(value, max = 300) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+const MEMORY_JOURNAL_MODE = String(process.env.MEMORY_JOURNAL_MODE || 'smart').toLowerCase();
+const MEMORY_JOURNAL_MIN_SIGNAL = clampInt(process.env.MEMORY_JOURNAL_MIN_SIGNAL, 40, 500, 120);
+const MEMORY_JOURNAL_TRIGGER_RE = /(ourhome|agentmail|vercel|supabase|mcp|api|key|github|部署|上线|报错|失败|修复|优化|整合|计划|方案|项目|功能|页面|设置|模型|联网|邮箱|记忆|人设|年表|摘要|待续|秘密抽屉|收藏|置顶|提醒|待办|继续|明天|以后|记得|决定|约定|重要|偏好|喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|不喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|工作|面试|简历|论文|毕业|上课|学生|生病|发烧|疼|痛|医院|月经)/i;
+
+function signalLength(value) {
+  return String(value || '')
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\s~～!！?？。,.，、…（）()[\]{}'"“”‘’/\\|_-]+/gu, '')
+    .length;
+}
+
+function shouldAnalyzeMemoryJournalTurn({ userText, assistantText }) {
+  if (MEMORY_JOURNAL_MODE === 'off') return false;
+  if (MEMORY_JOURNAL_MODE === 'full') return true;
+
+  const user = compactLine(userText, 2000);
+  if (!user) return false;
+  if (/^\[发送了附件/.test(user)) return true;
+
+  const combined = `${user}\n${compactLine(assistantText, 1200)}`;
+  if (MEMORY_JOURNAL_TRIGGER_RE.test(combined)) return true;
+  return signalLength(combined) >= MEMORY_JOURNAL_MIN_SIGNAL;
+}
+
 function scheduledMinutes(value) {
   const match = String(value || '23:30').match(/^(\d{1,2}):(\d{2})/);
   if (!match) return 23 * 60 + 30;
@@ -1529,14 +1552,15 @@ ${openThreads}
 }
 
 判断规则：
-- 普通寒暄不要建大事，但仍可写 mark。
+- 普通寒暄、单纯撒娇、表情回应不要建大事，也不要写 mark。
+- mark 只记录未收尾、之后应该接住的话题；不要把每轮聊天都写成隐藏标记。
 - OurHome 项目、明确待办、重要情绪、关系约定、用户偏好，通常应建 event。
 - should_continue 表示之后一句“早上那个/继续”需要能接住。
 - long_memory 只保存长期稳定内容，不要和 event 重复记流水账。`;
 
   const result = await callClaude({
     settings,
-    model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking',
+    model: process.env.MEMORY_JOURNAL_MODEL || settings?.memory_journal_model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking',
     maxTokens: 900,
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.2,
@@ -1552,6 +1576,8 @@ async function recordMemoryJournalTurn({
   userText,
   assistantText,
 }) {
+  if (!shouldAnalyzeMemoryJournalTurn({ userText, assistantText })) return;
+
   const dateKey = shanghaiDateKeyFromTime();
   const now = new Date();
   const existingContext = await loadTodayMemoryContext(dateKey);
@@ -1560,7 +1586,9 @@ async function recordMemoryJournalTurn({
 
   const mark = analysis.mark || {};
   const markSummary = compactLine(mark.summary || userText, 240);
-  if (markSummary) {
+  const markImportance = clampInt(mark.importance, 1, 5, 2);
+  const shouldStoreMark = Boolean(mark.should_continue || mark.should_remember || markImportance >= 3);
+  if (markSummary && shouldStoreMark) {
     await supabase.from('memory_marks').insert({
       message_id: userMessageId ? String(userMessageId) : null,
       session_id: sessionId ? String(sessionId) : null,
@@ -1570,7 +1598,7 @@ async function recordMemoryJournalTurn({
       emotion: compactLine(mark.emotion, 80) || null,
       summary: markSummary,
       tags: normalizeTags(mark.tags),
-      importance: clampInt(mark.importance, 1, 5, 2),
+      importance: markImportance,
       should_continue: Boolean(mark.should_continue),
       should_remember: Boolean(mark.should_remember),
       metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
