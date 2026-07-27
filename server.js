@@ -694,6 +694,7 @@ const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map(tool => tool.name));
 
 const FAVORITE_TYPES = new Set(['message', 'image', 'file', 'text', 'memory', 'event', 'link', 'setting', 'note']);
 const FAVORITE_SOURCES = new Set(['chat', 'manual', 'memory', 'event', 'upload', 'system']);
+const MEMORY_EVENT_TYPES = new Set(['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note']);
 
 function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
   const updates = {};
@@ -2163,6 +2164,7 @@ app.get('/', (req, res) => {
       dailyJournalAutomation: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
+      memoryEventManual: true,
       memoryFavorites: true,
       agentMail: true,
       agentMailAutonomy: true,
@@ -3057,6 +3059,38 @@ app.get('/memory-log', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/memory-events', async (req, res) => {
+  try {
+    const title = compactLine(req.body?.title, 80);
+    const summary = compactLine(req.body?.summary, 1200);
+    if (!title || !summary) return res.status(400).json({ error: '标题和内容都要写一点' });
+
+    const eventDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.event_date || ''))
+      ? String(req.body.event_date)
+      : shanghaiDateKeyFromTime();
+    const eventType = MEMORY_EVENT_TYPES.has(req.body?.event_type) ? req.body.event_type : 'note';
+    const { data, error } = await supabase.from('memory_events').insert({
+      event_date: eventDate,
+      event_type: eventType,
+      title,
+      summary,
+      source: 'manual',
+      topic: compactLine(req.body?.topic, 80) || null,
+      tags: normalizeTags(req.body?.tags),
+      emotion: compactLine(req.body?.emotion, 100) || null,
+      importance: clampInt(req.body?.importance, 1, 5, 3),
+      status: req.body?.status === 'resolved' ? 'resolved' : 'active',
+      occurred_at: new Date().toISOString(),
+      metadata: { source_detail: 'memory_room_manual_entry' },
+    }).select().single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message || '保存年表失败' });
   }
 });
 
