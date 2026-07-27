@@ -341,6 +341,33 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: 'read_favorites',
+    description: '查看“秘密抽屉”里的收藏，尤其是置顶收藏和最近收藏。当叶檀问起收藏过什么、想回看某句话、某张图、某个链接或某个重要片段时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: '可选分类，例如聊天、灵感、秘密抽屉' },
+        limit: { type: 'number', description: '返回最近多少条，默认20，最多80' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'save_favorite',
+    description: '把一段消息、想法、链接、图片线索或文件线索放进“秘密抽屉”。适合叶檀明确说想收藏、保存、收起来、放抽屉，或你判断这不是长期事实但值得回看。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '收藏标题，简短' },
+        content: { type: 'string', description: '收藏正文或摘录' },
+        category: { type: 'string', description: '分类，默认秘密抽屉' },
+        note: { type: 'string', description: '补充说明，例如为什么收藏' },
+        is_pinned: { type: 'boolean', description: '是否置顶，默认否' },
+      },
+      required: ['title'],
+    },
+  },
+  {
     name: 'read_wishes',
     description: '查看心愿单里现在都有哪些心愿，包括是否已经完成。当叶檀问起心愿单内容、或者你自己想确认还有什么心愿没实现时使用。',
     input_schema: { type: 'object', properties: {}, required: [] },
@@ -642,6 +669,45 @@ const ACTION_TOOLS = [
 ];
 const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map(tool => tool.name));
 
+const FAVORITE_TYPES = new Set(['message', 'image', 'file', 'text', 'memory', 'event', 'link', 'setting', 'note']);
+const FAVORITE_SOURCES = new Set(['chat', 'manual', 'memory', 'event', 'upload', 'system']);
+
+function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
+  const updates = {};
+  const has = key => Object.prototype.hasOwnProperty.call(body, key);
+
+  if (!partial || has('favorite_type')) {
+    const type = compactLine(body.favorite_type, 40) || 'text';
+    if (!FAVORITE_TYPES.has(type)) throw new Error('收藏类型不正确');
+    updates.favorite_type = type;
+  }
+  if (!partial || has('source')) {
+    const source = compactLine(body.source, 40) || 'manual';
+    if (!FAVORITE_SOURCES.has(source)) throw new Error('收藏来源不正确');
+    updates.source = source;
+  }
+  if (!partial || has('title') || has('content')) {
+    const fallbackTitle = compactLine(body.content, 40) || '收藏的一句话';
+    const title = compactLine(body.title, 120) || fallbackTitle;
+    if (!title) throw new Error('缺少标题');
+    updates.title = title;
+  }
+  if (!partial || has('content')) updates.content = compactLine(body.content, 4000) || null;
+  if (!partial || has('source_message_id')) updates.source_message_id = compactLine(body.source_message_id, 120) || null;
+  if (!partial || has('source_url')) updates.source_url = compactLine(body.source_url, 1200) || null;
+  if (!partial || has('category')) updates.category = compactLine(body.category, 80) || '秘密抽屉';
+  if (!partial || has('tags')) updates.tags = normalizeTags(body.tags, 8).map(tag => tag.slice(0, 40));
+  if (!partial || has('note')) updates.note = compactLine(body.note, 800) || null;
+  if (!partial || has('is_pinned')) updates.is_pinned = Boolean(body.is_pinned);
+  if (!partial || has('metadata')) {
+    updates.metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+      ? body.metadata
+      : {};
+  }
+
+  return updates;
+}
+
 // 真正执行陆泽要做的那个动作，写进对应的表
 async function executeActionTool(name, input) {
   if (name === 'write_diary') {
@@ -683,6 +749,34 @@ async function executeActionTool(name, input) {
     const { data, error } = await saveMemoryWithEmbedding(input.summary);
     if (error) return { ok: false, error: error.message };
     return { ok: true, memory_id: data.id };
+  }
+  if (name === 'read_favorites') {
+    const limit = Math.max(1, Math.min(Number.parseInt(input.limit, 10) || 20, 80));
+    let query = supabase.from('memory_favorites')
+      .select('id, favorite_type, title, content, category, note, is_pinned, created_at')
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    const category = compactLine(input.category, 80);
+    if (category) query = query.eq('category', category);
+    const { data, error } = await query;
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, favorites: data || [] };
+  }
+  if (name === 'save_favorite') {
+    try {
+      const payload = normalizeFavoritePayload({
+        ...input,
+        favorite_type: 'note',
+        source: 'system',
+        category: input.category || '秘密抽屉',
+      });
+      const { data, error } = await supabase.from('memory_favorites').insert(payload).select().single();
+      if (error) return { ok: false, error: error.message };
+      return { ok: true, favorite_id: data.id, title: data.title };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
   }
   if (name === 'read_wishes') {
     const { data, error } = await supabase.from('wishes')
@@ -1351,6 +1445,33 @@ function buildTodayMemoryPromptBlock({ summary, events, openMarks }) {
   return blocks.join('\n\n');
 }
 
+async function loadPinnedFavorites() {
+  const { data, error } = await supabase.from('memory_favorites')
+    .select('favorite_type, title, content, category, note, created_at')
+    .eq('is_pinned', true)
+    .order('created_at', { ascending: false })
+    .limit(8);
+  if (error) {
+    console.error('读取置顶收藏失败:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+function buildPinnedFavoritesPromptBlock(favorites = []) {
+  const lines = favorites
+    .map(item => {
+      const title = compactLine(item.title, 80);
+      const content = compactLine(item.content, 220);
+      const note = compactLine(item.note, 120);
+      const category = compactLine(item.category, 40) || '秘密抽屉';
+      if (!title && !content) return '';
+      return `- [${category}] ${title || '收藏'}${content ? `：${content}` : ''}${note ? `（${note}）` : ''}`;
+    })
+    .filter(Boolean);
+  return lines.length ? `【秘密抽屉·置顶收藏】\n${lines.join('\n')}` : '';
+}
+
 async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext }) {
   const recentEvents = (existingContext.events || []).slice(0, 6)
     .map(event => `- ${event.title}：${event.summary}`)
@@ -1541,6 +1662,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
 
   const todayContext = await loadTodayMemoryContext(shanghaiDateKeyFromTime());
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
+  const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(await loadPinnedFavorites());
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
@@ -1552,6 +1674,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
 
   let prompt = basePrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
   if (todayMemoryBlock) prompt += `\n\n${todayMemoryBlock}`;
+  if (pinnedFavoritesBlock) prompt += `\n\n${pinnedFavoritesBlock}`;
   if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
   if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
@@ -2011,6 +2134,7 @@ app.get('/', (req, res) => {
       homeMemos: true,
       dailyJournalAutomation: true,
       memoryJournal: true,
+      memoryFavorites: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -2920,6 +3044,60 @@ app.patch('/memory-events/:id', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   if (!data) return res.status(404).json({ error: '找不到这条年表' });
   res.json(data);
+});
+
+// ============ memory favorites (秘密抽屉 / 收藏夹) ============
+
+app.get('/memory-favorites', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 100, 200));
+    let query = supabase.from('memory_favorites')
+      .select('*')
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    const category = compactLine(req.query.category, 80);
+    if (category) query = query.eq('category', category);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/memory-favorites', async (req, res) => {
+  try {
+    const payload = normalizeFavoritePayload(req.body || {});
+    const { data, error } = await supabase.from('memory_favorites').insert(payload).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.patch('/memory-favorites/:id', async (req, res) => {
+  try {
+    const updates = normalizeFavoritePayload(req.body || {}, { partial: true });
+    updates.updated_at = new Date().toISOString();
+    const { data, error } = await supabase.from('memory_favorites')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: '找不到这条收藏' });
+    res.json(data);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/memory-favorites/:id', async (req, res) => {
+  const { error } = await supabase.from('memory_favorites').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
 // ============ letters (信件 / 日记 / 悄悄话) ============
