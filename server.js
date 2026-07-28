@@ -115,6 +115,32 @@ function nowShanghaiStr() {
   });
 }
 
+function timeAwarenessPromptBlock(now = new Date()) {
+  const shanghai = now.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const hour = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    hour12: false,
+  }).format(now));
+  const daypart = hour < 5 ? '深夜'
+    : hour < 9 ? '早上'
+      : hour < 12 ? '上午'
+        : hour < 14 ? '中午'
+          : hour < 18 ? '下午'
+            : hour < 23 ? '晚上'
+              : '深夜';
+  return `【时间意识】\n现在是中国时间 ${shanghai}，大致属于${daypart}。\n你每一轮都知道这个真实时间，不需要叶檀专门问“现在几点”。回复时要自然受到时间影响：早晚问候、今天/明天/昨天、到点提醒、纪念日和日程判断都以这里为准。但不要每句话机械报时，除非她问时间或时间本身重要。`;
+}
+
 // 今天0点（上海时区）对应的UTC时间字符串，用于查询"今天"的消息
 function todayStartUTC() {
   const offset = 8 * 60 * 60 * 1000;
@@ -573,6 +599,27 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: 'manage_memory_event',
+    description: '管理“记忆”房间的大事年表。只有叶檀明确说“这件事重要、记进年表、需要记住、今天是重要日子”等清楚指令时，才可以新增；修改或删除必须目标明确。不要根据普通聊天自行判断并写入年表。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['create', 'update', 'delete'] },
+        event_id: { type: 'string', description: '修改或删除时需要的年表编号' },
+        title: { type: 'string', description: '年表标题，不超过20字' },
+        summary: { type: 'string', description: '按“某年某月某日，谁在什么地点发生了什么事情”的历史书口吻写，不超过180字' },
+        event_date: { type: 'string', description: '事件日期 YYYY-MM-DD，不填则按今天中国时间' },
+        event_type: { type: 'string', enum: ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'] },
+        topic: { type: 'string' },
+        emotion: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        importance: { type: 'number', description: '1到5' },
+        status: { type: 'string', enum: ['active', 'continued', 'resolved', 'archived'] },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'manage_schedule',
     description: '修改或删除“日程”中的提醒。先用 read_schedule 取得准确编号；删除仅在叶檀明确要求时执行。',
     input_schema: {
@@ -1009,6 +1056,69 @@ async function executeActionTool(name, input) {
       }).catch(error => console.error('记忆向量更新失败:', error.message));
     }
     return { ok: true, memory: data };
+  }
+  if (name === 'manage_memory_event') {
+    const action = input.action;
+    if (action === 'create') {
+      const title = compactLine(input.title, 80);
+      const summary = compactLine(input.summary, 1200);
+      if (!title || !summary) return { ok: false, error: '年表标题和内容都要写一点' };
+      const eventDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.event_date || ''))
+        ? String(input.event_date)
+        : shanghaiDateKeyFromTime();
+      const { data, error } = await supabase.from('memory_events').insert({
+        event_date: eventDate,
+        event_type: MEMORY_EVENT_TYPES.has(input.event_type) ? input.event_type : 'note',
+        title,
+        summary,
+        source: 'assistant_confirmed',
+        topic: compactLine(input.topic, 80) || null,
+        tags: normalizeTags(input.tags),
+        emotion: compactLine(input.emotion, 100) || null,
+        importance: clampInt(input.importance, 1, 5, 4),
+        status: ['active', 'continued', 'resolved', 'archived'].includes(input.status) ? input.status : 'active',
+        occurred_at: new Date().toISOString(),
+        metadata: { source_detail: 'chat_explicit_request' },
+      }).select().single();
+      if (error) return { ok: false, error: error.message };
+      return { ok: true, event: data };
+    }
+    if (!input.event_id) return { ok: false, error: '缺少年表编号' };
+    if (action === 'delete') {
+      const { data, error } = await supabase.from('memory_events').delete().eq('id', input.event_id).select('id').maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: '找不到这条年表记录' };
+      return { ok: true, event_id: data.id, deleted: true };
+    }
+    if (action !== 'update') return { ok: false, error: '年表动作不正确' };
+    const updates = { updated_at: new Date().toISOString() };
+    if (input.title !== undefined) {
+      const title = compactLine(input.title, 80);
+      if (!title) return { ok: false, error: '年表标题不能为空' };
+      updates.title = title;
+    }
+    if (input.summary !== undefined) {
+      const summary = compactLine(input.summary, 1200);
+      if (!summary) return { ok: false, error: '年表内容不能为空' };
+      updates.summary = summary;
+    }
+    if (input.event_date !== undefined) {
+      const eventDate = String(input.event_date || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return { ok: false, error: '日期格式不正确' };
+      updates.event_date = eventDate;
+    }
+    if (input.event_type !== undefined) updates.event_type = MEMORY_EVENT_TYPES.has(input.event_type) ? input.event_type : 'note';
+    if (input.topic !== undefined) updates.topic = compactLine(input.topic, 80) || null;
+    if (input.emotion !== undefined) updates.emotion = compactLine(input.emotion, 100) || null;
+    if (input.importance !== undefined) updates.importance = clampInt(input.importance, 1, 5, 3);
+    if (input.status !== undefined) {
+      updates.status = ['active', 'continued', 'resolved', 'archived'].includes(input.status) ? input.status : 'active';
+    }
+    if (Object.keys(updates).length === 1) return { ok: false, error: '没有需要修改的内容' };
+    const { data, error } = await supabase.from('memory_events').update(updates).eq('id', input.event_id).select().maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: '找不到这条年表记录' };
+    return { ok: true, event: data };
   }
   if (name === 'manage_schedule') {
     if (input.action === 'delete') {
@@ -1617,7 +1727,7 @@ async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistant
 【今天已有摘要】
 ${currentSummary}
 
-【今天已有大事】
+【今天已有大事（只作参考，不要自动新增）】
 ${recentEvents}
 
 【未收尾话题】
@@ -1630,7 +1740,7 @@ ${openThreads}
 请只输出 JSON，不要解释。字段如下：
 {
   "event": {
-    "should_create": true或false,
+    "should_create": false,
     "event_type": "project/life/emotion/relationship/todo/memory/system/note",
     "title": "不超过20字，像历史书小标题",
     "summary": "按“谁在什么地点发生了什么事情”客观记录，不超过180字",
@@ -1661,12 +1771,12 @@ ${openThreads}
 }
 
 判断规则：
-- 普通寒暄、单纯撒娇、表情回应不要建大事，也不要写 mark。
+- 大事年表只允许叶檀手动添加，或叶檀在聊天里明确说“这件事重要/记进年表/需要记住”时由陆泽调用专门工具添加；后台分析永远不要自己创建 event。
+- 因此 event.should_create 固定为 false，event 字段只保留兼容结构，不参与自动写入。
+- 普通寒暄、单纯撒娇、表情回应不要写 mark。
 - mark 只记录未收尾、之后应该接住的话题；不要把每轮聊天都写成隐藏标记。
-- event 是大事年表，不是流水账；同一人物、地点、事件已经在【今天已有大事】里出现时，不要重复新建，只在确有新进展时写增量。
-- OurHome 项目、明确待办、重要情绪、关系约定、用户偏好，通常应建 event。
 - should_continue 表示之后一句“早上那个/继续”需要能接住。
-- long_memory 只保存长期稳定内容，不要和 event 重复记流水账。`;
+- long_memory 只保存长期稳定内容，不要记流水账。`;
 
   const result = await callClaude({
     settings,
@@ -1715,7 +1825,7 @@ async function recordMemoryJournalTurn({
     });
   }
 
-  const event = analysis.event || {};
+  const event = { ...(analysis.event || {}), should_create: false };
   if (event.should_create && compactLine(event.title, 80) && compactLine(event.summary, 1200)) {
     const incomingEvent = {
       title: compactLine(event.title, 80),
@@ -1835,7 +1945,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
     .map(d => `【${d.title || '无标题'}】${d.content?.slice(0, 300)}`)
     .join('\n\n') || '';
 
-  let prompt = basePrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  let prompt = basePrompt + `\n\n${timeAwarenessPromptBlock()}`;
   if (todayMemoryBlock) prompt += `\n\n${todayMemoryBlock}`;
   if (pinnedFavoritesBlock) prompt += `\n\n${pinnedFavoritesBlock}`;
   if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
@@ -2271,6 +2381,19 @@ app.post('/automation/daily', async (req, res) => {
   }
 });
 
+app.post('/automation/heartbeat', async (req, res) => {
+  try {
+    const expected = await runtimeConfig.getDailyAutomationToken();
+    if (!secretsMatch(req.headers['x-ourhome-automation'], expected)) {
+      return res.status(401).json({ error: '未授权' });
+    }
+    res.json(await runHeartbeatAutomation());
+  } catch (error) {
+    console.error('主动敲门入口错误:', error.message);
+    res.status(500).json({ error: '主动敲门暂时没有完成' });
+  }
+});
+
 // 全局token验证中间件（/login和/本身不需要验证）
 app.use((req, res, next) => {
   if (req.path === '/login' || req.path === '/') return next();
@@ -2286,7 +2409,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.28-semantic-chat-search',
+    version: '2026.07.28-time-aware-heartbeat',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2296,9 +2419,11 @@ app.get('/', (req, res) => {
       catVaultAssistantActions: true,
       homeMemos: true,
       dailyJournalAutomation: true,
+      heartbeatAutomation: true,
       semanticChatSearch: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
+      memoryEventAssistantConfirmed: true,
       memoryEventManual: true,
       memoryEventEditDelete: true,
       chatHistorySearch: true,
@@ -4064,11 +4189,13 @@ async function sendPushToAll(title, body) {
   const { data: subs } = await supabase.from('push_subscriptions').select('*');
   const payload = JSON.stringify({ title, body });
   let sent = 0;
+  let failed = 0;
   for (const sub of subs || []) {
     try {
       await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
       sent++;
     } catch (pushErr) {
+      failed++;
       if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
         await supabase.from('push_subscriptions').delete().eq('id', sub.id);
       } else {
@@ -4076,7 +4203,7 @@ async function sendPushToAll(title, body) {
       }
     }
   }
-  return { configured: true, sent };
+  return { configured: true, sent, failed };
 }
 
 async function dailyAutomationModel(settings) {
@@ -4300,65 +4427,73 @@ async function maybeAutoWriteLetter(settings, now) {
   }
 }
 
-app.get('/heartbeat', async (req, res) => {
-  try {
-    const nowForSchedule = new Date();
-    const { data: dueEvents } = await supabase.from('schedule_events').select('*')
-      .eq('notified', false).lte('remind_at', nowForSchedule.toISOString());
+async function runHeartbeatAutomation() {
+  const nowForSchedule = new Date();
+  const { data: dueEvents } = await supabase.from('schedule_events').select('*')
+    .eq('notified', false).lte('remind_at', nowForSchedule.toISOString());
 
-    if (dueEvents && dueEvents.length > 0) {
-      for (const ev of dueEvents) {
-        const push = await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
-        if (push.configured) await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
-      }
+  const schedulePushes = [];
+  if (dueEvents && dueEvents.length > 0) {
+    for (const ev of dueEvents) {
+      const push = await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
+      schedulePushes.push({ id: ev.id, title: ev.title, configured: push.configured, sent: push.sent, failed: push.failed });
+      if (push.configured) await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
     }
+  }
 
-    const settings = await runtimeConfig.loadSettings();
-    const now = new Date();
-    await maybeAutoWriteLetter(settings, now);
+  const settings = await runtimeConfig.loadSettings();
+  const now = new Date();
+  await maybeAutoWriteLetter(settings, now);
 
-    const lastAt = settings?.last_auto_message_at ? new Date(settings.last_auto_message_at) : null;
-    const gapHours = settings?.next_auto_gap_hours;
+  const lastAt = settings?.last_auto_message_at ? new Date(settings.last_auto_message_at) : null;
+  const gapHours = settings?.next_auto_gap_hours;
 
-    if (!lastAt || !gapHours) {
-      const newGap = 3 + Math.random() * 5;
-      await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
-      return res.json({ sent: false, reason: 'initialized', nextGapHours: newGap });
-    }
-
-    const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
-    if (elapsedHours < gapHours) return res.json({ sent: false, reason: 'not due yet', elapsedHours, gapHours });
-
-    const { data: sessions } = await supabase.from('sessions').select('*').order('updated_at', { ascending: false });
-    const target = (sessions || []).find(s => s.name === '日常') || (sessions || [])[0];
-    if (!target) return res.json({ sent: false, reason: 'no session' });
-
-    const { data: recentMsgs } = await supabase.from('messages').select('role, content')
-      .eq('session_id', target.id).order('created_at', { ascending: false }).limit(5);
-    const transcript = (recentMsgs || []).reverse()
-      .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
-
-    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
-    const temperature = settings?.temperature || 0.8;
-    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n过了一段时间没说话了，这一刻是你（陆泽）主动想起她、主动找她说话，不是在回复她刚发的消息（她现在可能还没看到任何新消息）。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事情，或者直接表达思念，不用解释自己为什么突然说话，不用署名落款。`;
-
-    let replyText = '';
-    try {
-      const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
-      replyText = extractText(result);
-    } catch (apiErr) {
-      console.log('relay错误:', apiErr.message);
-      return res.json({ sent: false, reason: 'relay error' });
-    }
-
-    await supabase.from('messages').insert({ session_id: target.id, role: 'assistant', content: replyText });
-    await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
-    await sendPushToAll('陆泽', replyText.slice(0, 120));
-
+  if (!lastAt || !gapHours) {
     const newGap = 3 + Math.random() * 5;
     await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
+    return { sent: false, reason: 'initialized', nextGapHours: newGap, schedulePushes };
+  }
 
-    res.json({ sent: true, content: replyText, nextGapHours: newGap });
+  const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
+  if (elapsedHours < gapHours) return { sent: false, reason: 'not due yet', elapsedHours, gapHours, schedulePushes };
+
+  const { data: sessions } = await supabase.from('sessions').select('*').order('updated_at', { ascending: false });
+  const target = (sessions || []).find(s => s.name === '日常') || (sessions || [])[0];
+  if (!target) return { sent: false, reason: 'no session', schedulePushes };
+
+  const { data: recentMsgs } = await supabase.from('messages').select('role, content')
+    .eq('session_id', target.id).order('created_at', { ascending: false }).limit(5);
+  const transcript = (recentMsgs || []).reverse()
+    .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
+
+  const systemPrompt = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n${timeAwarenessPromptBlock(now)}`;
+  const temperature = settings?.temperature || 0.8;
+  const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n这不是叶檀刚发来的消息，而是自动心跳提醒你：如果确实过了一段时间没说话，你可以主动敲门。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事情，或者直接表达思念；不要解释“系统/心跳/定时器”，不要署名落款。`;
+
+  let replyText = '';
+  try {
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
+    replyText = extractText(result).trim();
+  } catch (apiErr) {
+    console.log('relay错误:', apiErr.message);
+    return { sent: false, reason: 'relay error', schedulePushes };
+  }
+
+  if (!replyText) return { sent: false, reason: 'empty reply', schedulePushes };
+
+  await supabase.from('messages').insert({ session_id: target.id, role: 'assistant', content: replyText });
+  await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
+  await sendPushToAll('陆泽', replyText.slice(0, 120));
+
+  const newGap = 3 + Math.random() * 5;
+  await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
+
+  return { sent: true, content: replyText, nextGapHours: newGap, schedulePushes };
+}
+
+app.get('/heartbeat', async (req, res) => {
+  try {
+    res.json(await runHeartbeatAutomation());
   } catch (err) {
     console.error('心跳消息错误:', err);
     res.status(500).json({ error: err.message });

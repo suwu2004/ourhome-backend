@@ -67,6 +67,13 @@ npx web-push generate-vapid-keys
 2. 再部署前端，并把前端 `VITE_BACKEND_URL` 指向这个 HTTPS 地址。
 3. 登录设置页，测试当前 API 站点、Linkup / Tavily 和 MCP。
 
+## 自动化入口
+
+- `POST /automation/daily`：每天收尾，补写幸福日记和心情日历。
+- `POST /automation/heartbeat`：稳定心跳，处理日程推送、陆泽主动敲门和自主写日记。
+
+两个入口都不使用网页登录 token，而是要求请求头 `x-ourhome-automation` 等于 Supabase Vault 中的自动化密钥。推荐用 Supabase Cron 调用，避免外部 cron 网站漏带鉴权或休眠失灵。旧的 `GET /heartbeat` 仍保留给登录后的手动测试。
+
 ## 联网与 MCP
 
 - 联网搜索：设置页先选择 Linkup 或 Tavily，再填写对应站点生成的 API key。模型在需要实时资料时会获得统一的 `web_search` 工具。
