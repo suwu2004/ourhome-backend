@@ -56,6 +56,7 @@ const WEATHER_CACHE_MS = 15 * 60 * 1000;
 const WEATHER_STALE_MS = 6 * 60 * 60 * 1000;
 const WEATHER_REQUEST_TIMEOUT_MS = 8000;
 const WEATHER_REQUEST_ATTEMPTS = 2;
+const HOME_MEMO_CONTENT_LIMIT = 50;
 
 async function fetchWeatherResponse(url, label) {
   let lastError;
@@ -530,13 +531,13 @@ const ACTION_TOOLS = [
   },
   {
     name: 'manage_home_memo',
-    description: '在主页“我们的小便签”中新增、修改、完成/恢复或删除便签。可以主动留下温馨提示；删除只有在叶檀明确要求且目标准确时使用。修改和删除前目标不明确就先调用 read_home_memos。',
+    description: '在主页“我们的小便签”中新增、修改、完成/恢复或删除便签。新增便签时用陆泽自己的口吻写，后端会记录作者为“泽”。可以主动留下温馨提示；删除只有在叶檀明确要求且目标准确时使用。修改和删除前目标不明确就先调用 read_home_memos。',
     input_schema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['create', 'update', 'delete'] },
         memo_id: { type: 'string', description: 'read_home_memos 返回的便签编号' },
-        content: { type: 'string', description: '便签内容，最多300字' },
+        content: { type: 'string', description: '便签内容，最多50字' },
         memo_type: { type: 'string', enum: ['note', 'tomorrow'], description: '温馨提示用 note，明日备忘用 tomorrow' },
         remind_on: { type: 'string', description: '备忘日期 YYYY-MM-DD，可省略' },
         completed: { type: 'boolean', description: '是否已经完成' },
@@ -904,7 +905,7 @@ async function executeActionTool(name, input) {
       if (!content) return { ok: false, error: '便签内容不能为空' };
       const { data, error } = await supabase.from('home_memos').insert({
         author: '泽',
-        content: content.slice(0, 300),
+        content: content.slice(0, HOME_MEMO_CONTENT_LIMIT),
         memo_type: input.memo_type === 'tomorrow' ? 'tomorrow' : 'note',
         remind_on: input.remind_on || null,
         completed: Boolean(input.completed),
@@ -923,7 +924,7 @@ async function executeActionTool(name, input) {
     if (input.content !== undefined) {
       const content = String(input.content || '').trim();
       if (!content) return { ok: false, error: '便签内容不能为空' };
-      updates.content = content.slice(0, 300);
+      updates.content = content.slice(0, HOME_MEMO_CONTENT_LIMIT);
     }
     if (input.memo_type !== undefined) updates.memo_type = input.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
     if (input.remind_on !== undefined) updates.remind_on = input.remind_on || null;
@@ -1475,6 +1476,49 @@ function buildTodayMemoryPromptBlock({ summary, events, openMarks }) {
   return blocks.join('\n\n');
 }
 
+function normalizedMemoryEventText(event) {
+  return `${event?.title || ''}${event?.summary || ''}`
+    .toLocaleLowerCase('zh-CN')
+    .replace(/[，。！？、；：,.!?;:\s"'“”‘’（）()[\]【】]/g, '');
+}
+
+function textBigrams(text) {
+  const normalized = String(text || '');
+  const result = new Set();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    result.add(normalized.slice(index, index + 2));
+  }
+  return result;
+}
+
+function memoryEventSimilarity(left, right) {
+  const leftText = normalizedMemoryEventText(left);
+  const rightText = normalizedMemoryEventText(right);
+  if (!leftText || !rightText) return 0;
+  if ((left?.title || '') && left.title === right?.title) return 1;
+  if (leftText.includes(rightText.slice(0, 14)) || rightText.includes(leftText.slice(0, 14))) return 1;
+  const leftSet = textBigrams(leftText);
+  const rightSet = textBigrams(rightText);
+  let overlap = 0;
+  for (const item of leftSet) {
+    if (rightSet.has(item)) overlap += 1;
+  }
+  const union = new Set([...leftSet, ...rightSet]).size || 1;
+  return overlap / union;
+}
+
+function findSimilarMemoryEvent(events, incoming) {
+  return (events || []).find(event => memoryEventSimilarity(event, incoming) >= 0.24);
+}
+
+function mergeMemoryEventSummary(existingSummary, incomingSummary) {
+  const existing = compactLine(existingSummary, 1200);
+  const incoming = compactLine(incomingSummary, 360);
+  if (!incoming) return existing;
+  if (existing.includes(incoming)) return existing;
+  return compactLine(`${existing}\n补充：${incoming}`, 1200);
+}
+
 async function loadPinnedFavorites() {
   const { data, error } = await supabase.from('memory_favorites')
     .select('favorite_type, title, content, category, note, created_at')
@@ -1530,8 +1574,8 @@ ${openThreads}
   "event": {
     "should_create": true或false,
     "event_type": "project/life/emotion/relationship/todo/memory/system/note",
-    "title": "不超过20字",
-    "summary": "客观记录发生了什么，不超过180字",
+    "title": "不超过20字，像历史书小标题",
+    "summary": "按“谁在什么地点发生了什么事情”客观记录，不超过180字",
     "topic": "主题",
     "emotion": "叶檀这轮主要情绪，可为空",
     "importance": 1到5,
@@ -1561,6 +1605,7 @@ ${openThreads}
 判断规则：
 - 普通寒暄、单纯撒娇、表情回应不要建大事，也不要写 mark。
 - mark 只记录未收尾、之后应该接住的话题；不要把每轮聊天都写成隐藏标记。
+- event 是大事年表，不是流水账；同一人物、地点、事件已经在【今天已有大事】里出现时，不要重复新建，只在确有新进展时写增量。
 - OurHome 项目、明确待办、重要情绪、关系约定、用户偏好，通常应建 event。
 - should_continue 表示之后一句“早上那个/继续”需要能接住。
 - long_memory 只保存长期稳定内容，不要和 event 重复记流水账。`;
@@ -1614,22 +1659,47 @@ async function recordMemoryJournalTurn({
 
   const event = analysis.event || {};
   if (event.should_create && compactLine(event.title, 80) && compactLine(event.summary, 1200)) {
-    await supabase.from('memory_events').insert({
-      event_date: dateKey,
-      event_type: ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'].includes(event.event_type)
-        ? event.event_type
-        : 'note',
+    const incomingEvent = {
       title: compactLine(event.title, 80),
       summary: compactLine(event.summary, 1200),
-      source: 'chat',
-      topic: compactLine(event.topic, 80) || null,
-      tags: normalizeTags(event.tags),
-      emotion: compactLine(event.emotion, 100) || null,
-      importance: clampInt(event.importance, 1, 5, 3),
-      occurred_at: now.toISOString(),
-      related_message_id: userMessageId ? String(userMessageId) : null,
-      metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
-    });
+    };
+    const similarEvent = findSimilarMemoryEvent(existingContext.events, incomingEvent);
+    if (similarEvent) {
+      await supabase.from('memory_events').update({
+        summary: mergeMemoryEventSummary(similarEvent.summary, incomingEvent.summary),
+        event_type: similarEvent.event_type === 'note' && ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'].includes(event.event_type)
+          ? event.event_type
+          : similarEvent.event_type,
+        topic: similarEvent.topic || compactLine(event.topic, 80) || null,
+        tags: [...new Set([...(Array.isArray(similarEvent.tags) ? similarEvent.tags : []), ...normalizeTags(event.tags)])].slice(0, 8),
+        emotion: similarEvent.emotion || compactLine(event.emotion, 100) || null,
+        importance: Math.max(Number(similarEvent.importance) || 1, clampInt(event.importance, 1, 5, 3)),
+        status: similarEvent.status === 'resolved' ? 'continued' : similarEvent.status,
+        updated_at: now.toISOString(),
+        metadata: {
+          ...(similarEvent.metadata && typeof similarEvent.metadata === 'object' ? similarEvent.metadata : {}),
+          last_merged_message_id: userMessageId ? String(userMessageId) : null,
+          assistant_message_id: assistantMessageId ? String(assistantMessageId) : null,
+        },
+      }).eq('id', similarEvent.id);
+    } else {
+      await supabase.from('memory_events').insert({
+        event_date: dateKey,
+        event_type: ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'].includes(event.event_type)
+        ? event.event_type
+        : 'note',
+        title: incomingEvent.title,
+        summary: incomingEvent.summary,
+        source: 'chat',
+        topic: compactLine(event.topic, 80) || null,
+        tags: normalizeTags(event.tags),
+        emotion: compactLine(event.emotion, 100) || null,
+        importance: clampInt(event.importance, 1, 5, 3),
+        occurred_at: now.toISOString(),
+        related_message_id: userMessageId ? String(userMessageId) : null,
+        metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
+      });
+    }
   }
 
   const daily = analysis.daily_summary || {};
@@ -2673,7 +2743,7 @@ app.post('/home-memos', async (req, res) => {
   const memoType = req.body?.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
   const remindOn = req.body?.remind_on || null;
   if (!content) return res.status(400).json({ error: '便签内容不能为空' });
-  if (content.length > 300) return res.status(400).json({ error: '便签最多写 300 个字' });
+  if (content.length > HOME_MEMO_CONTENT_LIMIT) return res.status(400).json({ error: `便签最多写 ${HOME_MEMO_CONTENT_LIMIT} 个字` });
   if (remindOn && !/^\d{4}-\d{2}-\d{2}$/.test(remindOn)) return res.status(400).json({ error: '备忘日期格式不正确' });
   const { data, error } = await supabase.from('home_memos').insert({
     author: '檀',
@@ -2690,7 +2760,7 @@ app.patch('/home-memos/:id', async (req, res) => {
   if (req.body?.content !== undefined) {
     const content = String(req.body.content || '').trim();
     if (!content) return res.status(400).json({ error: '便签内容不能为空' });
-    if (content.length > 300) return res.status(400).json({ error: '便签最多写 300 个字' });
+    if (content.length > HOME_MEMO_CONTENT_LIMIT) return res.status(400).json({ error: `便签最多写 ${HOME_MEMO_CONTENT_LIMIT} 个字` });
     updates.content = content;
   }
   if (req.body?.memo_type !== undefined) updates.memo_type = req.body.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
@@ -3128,6 +3198,11 @@ app.patch('/memory-events/:id', async (req, res) => {
   }
   if (req.body?.event_type !== undefined) {
     updates.event_type = MEMORY_EVENT_TYPES.has(req.body.event_type) ? req.body.event_type : 'note';
+  }
+  if (req.body?.event_date !== undefined) {
+    const eventDate = String(req.body.event_date || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return res.status(400).json({ error: '日期格式不正确' });
+    updates.event_date = eventDate;
   }
   if (req.body?.emotion !== undefined) updates.emotion = compactLine(req.body.emotion, 100) || null;
   if (req.body?.topic !== undefined) updates.topic = compactLine(req.body.topic, 80) || null;
