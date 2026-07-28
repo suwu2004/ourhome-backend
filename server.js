@@ -413,6 +413,19 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: 'search_chat_history',
+    description: '按关键词搜索可见聊天记录，类似聊天页里的搜索按钮。只读工具；当叶檀提到“之前聊过/早上说过/搜索聊天记录/找某句话”，或你需要精确回看旧聊天时使用。只返回短摘录，不会修改任何消息。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        keyword: { type: 'string', description: '要搜索的关键词或短语' },
+        limit: { type: 'number', description: '返回条数，默认8，最多12' },
+        session_id: { type: 'number', description: '可选，只搜索某个对话编号' },
+      },
+      required: ['keyword'],
+    },
+  },
+  {
     name: 'read_recent_diary',
     description: '看看最近写过的几篇"幸福日记"都写了什么。当叶檀问起日记内容、或者你自己想回顾最近写过什么时使用。',
     input_schema: { type: 'object', properties: {}, required: [] },
@@ -828,6 +841,39 @@ async function executeActionTool(name, input) {
       .order('weight', { ascending: false }).limit(10);
     if (error) return { ok: false, error: error.message };
     return { ok: true, memories: data };
+  }
+  if (name === 'search_chat_history') {
+    const keyword = String(input.keyword || '').trim();
+    if (!keyword) return { ok: false, error: '搜索词不能为空' };
+    if (keyword.length > 120) return { ok: false, error: '搜索词太长了' };
+    const limit = Math.max(1, Math.min(Number.parseInt(input.limit, 10) || 8, 12));
+    const escaped = keyword.replace(/[\\%_]/g, value => `\\${value}`);
+    let query = supabase.from('messages')
+      .select('id, session_id, role, content, created_at, sessions(name)')
+      .eq('visible', true)
+      .ilike('content', `%${escaped}%`)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (input.session_id !== undefined) {
+      const sessionId = Number.parseInt(input.session_id, 10);
+      if (!Number.isFinite(sessionId)) return { ok: false, error: '对话编号不正确' };
+      query = query.eq('session_id', sessionId);
+    }
+    const { data, error } = await query;
+    if (error) return { ok: false, error: error.message };
+    const results = (data || []).map(row => {
+      const positions = findTextMatches(row.content, keyword);
+      return {
+        id: row.id,
+        session_id: row.session_id,
+        session_name: row.sessions?.name || '',
+        role: row.role === 'user' ? '叶檀' : '陆泽',
+        created_at: row.created_at,
+        occurrences: positions.length,
+        snippet: buildSearchSnippet(row.content, keyword, positions[0] || 0),
+      };
+    });
+    return { ok: true, keyword, results };
   }
   if (name === 'read_recent_diary') {
     const { data, error } = await supabase.from('letters')
@@ -2228,7 +2274,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.27-memory-journal-smart',
+    version: '2026.07.28-chat-history-search',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2242,6 +2288,7 @@ app.get('/', (req, res) => {
       memoryJournalSmartGuard: true,
       memoryEventManual: true,
       memoryEventEditDelete: true,
+      chatHistorySearch: true,
       diaryPaperStyle: true,
       memoryFavorites: true,
       agentMail: true,
