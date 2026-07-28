@@ -10,7 +10,7 @@ create table if not exists public.home_memos (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint home_memos_author_check check (author in ('檀', '泽')),
-  constraint home_memos_content_check check (char_length(btrim(content)) between 1 and 300),
+  constraint home_memos_content_check check (char_length(btrim(content)) between 1 and 50),
   constraint home_memos_type_check check (memo_type in ('note', 'tomorrow'))
 );
 
