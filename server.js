@@ -847,33 +847,36 @@ async function executeActionTool(name, input) {
     if (!keyword) return { ok: false, error: '搜索词不能为空' };
     if (keyword.length > 120) return { ok: false, error: '搜索词太长了' };
     const limit = Math.max(1, Math.min(Number.parseInt(input.limit, 10) || 8, 12));
-    const escaped = keyword.replace(/[\\%_]/g, value => `\\${value}`);
-    let query = supabase.from('messages')
-      .select('id, session_id, role, content, created_at, sessions(name)')
-      .eq('visible', true)
-      .ilike('content', `%${escaped}%`)
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    if (input.session_id !== undefined) {
-      const sessionId = Number.parseInt(input.session_id, 10);
-      if (!Number.isFinite(sessionId)) return { ok: false, error: '对话编号不正确' };
-      query = query.eq('session_id', sessionId);
-    }
-    const { data, error } = await query;
-    if (error) return { ok: false, error: error.message };
-    const results = (data || []).map(row => {
-      const positions = findTextMatches(row.content, keyword);
+    const sessionId = input.session_id === undefined ? null : Number.parseInt(input.session_id, 10);
+    if (input.session_id !== undefined && !Number.isFinite(sessionId)) return { ok: false, error: '对话编号不正确' };
+    try {
+      const result = await searchChatHistory({
+        keyword,
+        limit,
+        page: 1,
+        scope: sessionId ? 'current' : 'all',
+        sessionId,
+        semantic: true,
+      });
       return {
-        id: row.id,
-        session_id: row.session_id,
-        session_name: row.sessions?.name || '',
-        role: row.role === 'user' ? '叶檀' : '陆泽',
-        created_at: row.created_at,
-        occurrences: positions.length,
-        snippet: buildSearchSnippet(row.content, keyword, positions[0] || 0),
+        ok: true,
+        keyword,
+        mode: result.mode,
+        semantic_available: result.semantic_available,
+        results: result.results.map(item => ({
+          id: item.id,
+          session_id: item.session_id,
+          session_name: item.session_name,
+          role: item.role === 'user' ? '叶檀' : '陆泽',
+          created_at: item.created_at,
+          snippet: item.snippet,
+          score: item.score,
+          match_type: item.match_type,
+        })),
       };
-    });
-    return { ok: true, keyword, results };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
   }
   if (name === 'read_recent_diary') {
     const { data, error } = await supabase.from('letters')
@@ -1341,22 +1344,31 @@ thinking是你（陆泽）脑内真实的声音，是写给自己看的，不是
 // ============ 向量语义搜索（Jina embeddings） ============
 
 // 调用Jina API生成文本向量
-async function getEmbedding(text) {
+async function getEmbeddings(texts) {
   const jinaKey = process.env.JINA_API_KEY;
   if (!jinaKey) return null;
+  const input = (Array.isArray(texts) ? texts : [texts])
+    .map(text => String(text || '').slice(0, 2000))
+    .filter(Boolean);
+  if (!input.length) return null;
   try {
     const response = await fetch('https://api.jina.ai/v1/embeddings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jinaKey}` },
-      body: JSON.stringify({ model: 'jina-embeddings-v3', input: [text.slice(0, 2000)] }),
+      body: JSON.stringify({ model: 'jina-embeddings-v3', input }),
     });
     if (!response.ok) { console.error('Jina error:', await response.text()); return null; }
     const data = await response.json();
-    return data.data?.[0]?.embedding || null;
+    return input.map((_, index) => data.data?.[index]?.embedding || null);
   } catch (err) {
-    console.error('getEmbedding失败:', err.message);
+    console.error('getEmbeddings失败:', err.message);
     return null;
   }
+}
+
+async function getEmbedding(text) {
+  const embeddings = await getEmbeddings([text]);
+  return embeddings?.[0] || null;
 }
 
 // 余弦相似度
@@ -2274,7 +2286,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.28-chat-history-search',
+    version: '2026.07.28-semantic-chat-search',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2284,6 +2296,7 @@ app.get('/', (req, res) => {
       catVaultAssistantActions: true,
       homeMemos: true,
       dailyJournalAutomation: true,
+      semanticChatSearch: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
       memoryEventManual: true,
@@ -2484,6 +2497,139 @@ function buildSearchSnippet(content, keyword, position) {
   return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }
 
+function compactSearchText(value) {
+  return String(value || '').toLocaleLowerCase('zh-CN').replace(/[\s,，。！？、!?.；;：:"'“”‘’（）()[\]【】]/g, '');
+}
+
+function keywordRelevance(content, keyword) {
+  const text = compactSearchText(content);
+  const query = compactSearchText(keyword);
+  if (!query || !text) return 0;
+  if (text.includes(query)) return 1;
+  const queryBigrams = textBigrams(query);
+  if (!queryBigrams.size) return 0;
+  let hits = 0;
+  for (const item of queryBigrams) {
+    if (text.includes(item)) hits += 1;
+  }
+  return hits / queryBigrams.size;
+}
+
+function chatSearchRoleLabel(role) {
+  return role === 'user' ? '叶檀' : '陆泽';
+}
+
+function normalizeChatSearchResult(row, keyword, score = null, matchType = 'keyword') {
+  const positions = findTextMatches(row.content, keyword);
+  return {
+    id: row.id,
+    session_id: row.session_id,
+    role: row.role,
+    content: row.content,
+    created_at: row.created_at,
+    sessions: row.sessions || null,
+    session_name: row.sessions?.name || '',
+    occurrences: positions.length,
+    match_positions: positions.slice(0, 20),
+    snippet: buildSearchSnippet(row.content, keyword, positions[0] || 0),
+    score,
+    match_type: matchType,
+  };
+}
+
+function uniqueRowsById(rows) {
+  const seen = new Set();
+  return (rows || []).filter(row => {
+    if (!row?.id || seen.has(row.id)) return false;
+    seen.add(row.id);
+    return true;
+  });
+}
+
+async function searchChatHistory({ keyword, page = 1, limit = 30, scope = 'all', sessionId = null, semantic = true }) {
+  const escaped = keyword.replace(/[\\%_]/g, value => `\\${value}`);
+  const offset = (page - 1) * limit;
+  let exactQuery = supabase.from('messages')
+    .select('id, session_id, role, content, created_at, sessions(name)', { count: 'exact' })
+    .eq('visible', true)
+    .ilike('content', `%${escaped}%`)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (scope === 'current') exactQuery = exactQuery.eq('session_id', sessionId);
+
+  const { data: exactRows, error: exactError, count } = await exactQuery;
+  if (exactError) throw exactError;
+
+  if (!semantic || page > 1) {
+    const results = (exactRows || []).map(row => normalizeChatSearchResult(row, keyword, null, 'keyword'));
+    return {
+      results,
+      total_messages: count || 0,
+      page,
+      limit,
+      has_more: offset + results.length < (count || 0),
+      mode: 'keyword',
+      semantic_available: false,
+    };
+  }
+
+  let recentQuery = supabase.from('messages')
+    .select('id, session_id, role, content, created_at, sessions(name)')
+    .eq('visible', true)
+    .order('created_at', { ascending: false })
+    .limit(Math.max(80, limit * 3));
+  if (scope === 'current') recentQuery = recentQuery.eq('session_id', sessionId);
+  const { data: recentRows, error: recentError } = await recentQuery;
+  if (recentError) throw recentError;
+
+  const candidates = uniqueRowsById([...(exactRows || []), ...(recentRows || [])])
+    .filter(row => String(row.content || '').trim());
+  const embeddingTexts = [keyword, ...candidates.map(row => `${chatSearchRoleLabel(row.role)}：${row.content}`)];
+  const embeddings = await getEmbeddings(embeddingTexts);
+  const queryEmbedding = embeddings?.[0] || null;
+  const rowEmbeddings = embeddings ? embeddings.slice(1) : [];
+  if (!queryEmbedding) {
+    const results = (exactRows || []).map(row => normalizeChatSearchResult(row, keyword, null, 'keyword'));
+    return {
+      results,
+      total_messages: count || 0,
+      page,
+      limit,
+      has_more: offset + results.length < (count || 0),
+      mode: 'keyword',
+      semantic_available: false,
+    };
+  }
+
+  const scored = candidates.map((row, index) => {
+    const keywordScore = keywordRelevance(row.content, keyword);
+    const semanticScore = rowEmbeddings[index] ? Math.max(0, cosineSimilarity(queryEmbedding, rowEmbeddings[index])) : 0;
+    const createdAt = Date.parse(row.created_at || '') || 0;
+    const daysSince = createdAt ? (Date.now() - createdAt) / 86_400_000 : 365;
+    const freshnessScore = Math.max(0, 1 - daysSince / 60);
+    const finalScore = semanticScore * 0.72 + keywordScore * 0.22 + freshnessScore * 0.06;
+    return {
+      row,
+      score: finalScore,
+      matchType: semanticScore > keywordScore ? 'semantic' : 'keyword',
+    };
+  })
+    .filter(item => item.score > 0.12)
+    .sort((left, right) => right.score - left.score || (Date.parse(right.row.created_at || '') - Date.parse(left.row.created_at || '')))
+    .slice(0, limit);
+
+  const results = scored.map(item => normalizeChatSearchResult(item.row, keyword, Number(item.score.toFixed(4)), item.matchType));
+  return {
+    results,
+    total_messages: count || results.length,
+    page,
+    limit,
+    has_more: offset + (exactRows || []).length < (count || 0),
+    mode: 'semantic',
+    semantic_available: true,
+  };
+}
+
 app.get('/messages/search', async (req, res) => {
   const keyword = String(req.query.q || '').trim();
   if (!keyword) return res.json({ results: [], total_messages: 0, page: 1, has_more: false });
@@ -2491,42 +2637,18 @@ app.get('/messages/search', async (req, res) => {
 
   const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
   const limit = Math.min(50, Math.max(10, Number.parseInt(req.query.limit, 10) || 30));
-  const offset = (page - 1) * limit;
-  const escaped = keyword.replace(/[\\%_]/g, value => `\\${value}`);
-
-  let query = supabase.from('messages')
-    .select('id, session_id, role, content, created_at, sessions(name)', { count: 'exact' })
-    .eq('visible', true)
-    .ilike('content', `%${escaped}%`)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (req.query.scope === 'current') {
-    const sessionId = Number.parseInt(req.query.session_id, 10);
+  const scope = req.query.scope === 'current' ? 'current' : 'all';
+  let sessionId = null;
+  if (scope === 'current') {
+    sessionId = Number.parseInt(req.query.session_id, 10);
     if (!Number.isFinite(sessionId)) return res.status(400).json({ error: '缺少当前对话编号' });
-    query = query.eq('session_id', sessionId);
   }
-
-  const { data, error, count } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-
-  const results = (data || []).map(row => {
-    const positions = findTextMatches(row.content, keyword);
-    return {
-      ...row,
-      occurrences: positions.length,
-      match_positions: positions.slice(0, 20),
-      snippet: buildSearchSnippet(row.content, keyword, positions[0] || 0),
-    };
-  });
-
-  res.json({
-    results,
-    total_messages: count || 0,
-    page,
-    limit,
-    has_more: offset + results.length < (count || 0),
-  });
+  const semantic = req.query.semantic !== '0';
+  try {
+    res.json(await searchChatHistory({ keyword, page, limit, scope, sessionId, semantic }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // 编辑一条叶檀发的消息，让陆泽根据新内容重新回复——后面原来的内容会先被藏起来
