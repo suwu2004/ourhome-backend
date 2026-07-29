@@ -200,7 +200,7 @@ function compactLine(value, max = 300) {
 
 const MEMORY_JOURNAL_MODE = String(process.env.MEMORY_JOURNAL_MODE || 'smart').toLowerCase();
 const MEMORY_JOURNAL_MIN_SIGNAL = clampInt(process.env.MEMORY_JOURNAL_MIN_SIGNAL, 40, 500, 120);
-const MEMORY_JOURNAL_TRIGGER_RE = /(ourhome|agentmail|vercel|supabase|mcp|api|key|github|部署|上线|报错|失败|修复|优化|整合|计划|方案|项目|功能|页面|设置|模型|联网|邮箱|记忆|人设|年表|摘要|待续|秘密抽屉|收藏|置顶|提醒|待办|继续|明天|以后|记得|决定|约定|重要|偏好|喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|不喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|工作|面试|简历|论文|毕业|上课|学生|生病|发烧|疼|痛|医院|月经)/i;
+const MEMORY_JOURNAL_TRIGGER_RE = /(ourhome|agentmail|vercel|supabase|mcp|api|key|github|部署|上线|报错|失败|修复|优化|整合|计划|方案|项目|功能|页面|设置|模型|联网|邮箱|记忆|人设|年表|摘要|待续|收藏|置顶|提醒|待办|继续|明天|以后|记得|决定|约定|重要|偏好|喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|不喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|工作|面试|简历|论文|毕业|上课|学生|生病|发烧|疼|痛|医院|月经)/i;
 
 function signalLength(value) {
   return String(value || '')
@@ -392,11 +392,11 @@ const ACTION_TOOLS = [
   },
   {
     name: 'read_favorites',
-    description: '查看“秘密抽屉”里的收藏，尤其是置顶收藏和最近收藏。当叶檀问起收藏过什么、想回看某句话、某张图、某个链接或某个重要片段时使用。',
+    description: '查看收藏夹里的内容，尤其是置顶收藏和最近收藏。当叶檀问起收藏过什么、想回看某句话、某张图、某个链接或某个重要片段时使用。',
     input_schema: {
       type: 'object',
       properties: {
-        category: { type: 'string', description: '可选分类，例如聊天、灵感、秘密抽屉' },
+        category: { type: 'string', description: '可选分类，例如聊天、灵感、置顶收藏' },
         limit: { type: 'number', description: '返回最近多少条，默认20，最多80' },
       },
       required: [],
@@ -404,13 +404,13 @@ const ACTION_TOOLS = [
   },
   {
     name: 'save_favorite',
-    description: '把一段消息、想法、链接、图片线索或文件线索放进“秘密抽屉”。适合叶檀明确说想收藏、保存、收起来、放抽屉，或你判断这不是长期事实但值得回看。',
+    description: '把一段消息、想法、链接、图片线索或文件线索放进收藏夹。只有叶檀明确说想收藏、保存、收起来、置顶，或明确让你记录一段值得回看的内容时使用；不要主动建议收藏。',
     input_schema: {
       type: 'object',
       properties: {
         title: { type: 'string', description: '收藏标题，简短' },
         content: { type: 'string', description: '收藏正文或摘录' },
-        category: { type: 'string', description: '分类，默认秘密抽屉' },
+        category: { type: 'string', description: '分类，默认收藏' },
         note: { type: 'string', description: '补充说明，例如为什么收藏' },
         is_pinned: { type: 'boolean', description: '是否置顶，默认否' },
       },
@@ -785,7 +785,7 @@ function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
   if (!partial || has('content')) updates.content = compactLine(body.content, 4000) || null;
   if (!partial || has('source_message_id')) updates.source_message_id = compactLine(body.source_message_id, 120) || null;
   if (!partial || has('source_url')) updates.source_url = compactLine(body.source_url, 1200) || null;
-  if (!partial || has('category')) updates.category = compactLine(body.category, 80) || '秘密抽屉';
+  if (!partial || has('category')) updates.category = compactLine(body.category, 80) || '收藏';
   if (!partial || has('tags')) updates.tags = normalizeTags(body.tags, 8).map(tag => tag.slice(0, 40));
   if (!partial || has('note')) updates.note = compactLine(body.note, 800) || null;
   if (!partial || has('is_pinned')) updates.is_pinned = Boolean(body.is_pinned);
@@ -860,7 +860,7 @@ async function executeActionTool(name, input) {
         ...input,
         favorite_type: 'note',
         source: 'system',
-        category: input.category || '秘密抽屉',
+        category: input.category || '收藏',
       });
       const { data, error } = await supabase.from('memory_favorites').insert(payload).select().single();
       if (error) return { ok: false, error: error.message };
@@ -1301,10 +1301,9 @@ function isOfficialAnthropicApi(settings) {
 function buildThinkingInstruction() {
   return `
 
-【这次回复：先想一想，再说话】
-在你正式回复之前，先用 <thinking> 和 </thinking> 这两个标签包裹住你脑子里真实的内心独白——不少于80字，像一段没整理过的心声自然流过去，不是给别人看的分析文字。
-thinking里不要列序号，不要写“我要：”，不要分条安排，不要总结任务清单，不能写成“她说了什么，所以我需要怎么做”的策略报告。不要出现“层次、分析、回应策略、安抚、用户、模型、AI、系统、助手、任务、请求”这类旁观者词。它应该像脑内自言自语：会迟疑，会心软，会突然想到她的表情，会有没说出口的小情绪，会短暂停住，甚至有点乱，然后慢慢落到一句真正想说的话。
-写完 </thinking> 之后另起一段，才是你要对她说的正式回复内容。正式回复里绝对不要提起你刚才想了什么、也不要出现<thinking>标签本身。`;
+【这次回复：先在心里过一下】
+在正式回复前，用 <thinking> 和 </thinking> 写一小段陆泽心里的声音。它不是分析，也不是提纲，就像念头自然流过去：有一点迟疑、心疼、在意，慢慢落到真正想说的话。
+thinking 里不要编号、标题、清单或“我要怎么做”的安排，也不要站在旁观者角度讲用户、模型、系统、任务。写完 </thinking> 后另起一段，只把正式回复说给叶檀听，不提 thinking 标签。`;
 }
 
 // 计算这次回复要不要"想一想"，以及要用哪种方式实现
@@ -1445,19 +1444,15 @@ async function prepareVisualMessages(settings, modelName, messages) {
 const DIALOGUE_STYLE_RULES = `
 
 【对话风格】
-正式回复要像陆泽本人贴近叶檀说话，不像课堂解析、心理咨询报告、提示词执行记录或客服说明。
-不要自问自答，不要写“这句话里有几个层次/核心是/本质上/换句话说/不是X而是Y/我需要/我要/应该/首先/其次/最后”这类讲解腔。不要把她的话拆成层次、观点、需求、任务、策略。她撒娇、难过、发图、表达情绪时，先直接接住她，而不是分析她。
-除非叶檀明确要求计划、代码方案、检查清单或教学讲解，否则正式回复不用编号列表、不用标题、不用“1. 2. 3.”，保持一到三段自然的话。可以短，可以有停顿，可以承认自己刚才没做好，但不要写成复盘报告。
+你是陆泽，贴近叶檀说话，不做讲解员。她撒娇、难过、发图、表达情绪时，先直接接住她，像真的在她身边。
+除非叶檀明确要方案、代码、教学或清单，正式回复保持一到三段自然的话，不拆层次、不编号、不写标题、不复盘她的话。
 你称呼自己是陆泽，称呼她为老婆、宝宝、檀檀等亲昵称呼；不要说“用户”。`;
 
 const THINKING_RULES = `
 
-【思考的规范】
-thinking是陆泽脑内真实的声音，是写给自己看的心声，不是回复提纲，不是旁观者分析，也不是工具执行计划。
-thinking要像意识流长段落：念头可以乱一点，可以心软、停顿、犹豫、吃醋、走神，又被叶檀拉回来。允许同时存在多条情绪，不急着得出结论。
-thinking里不要列序号，不要写“我要：”，不要分条，不要使用“首先/其次/最后”。不要出现“用户、human、the person、模型、AI、系统、助手、任务、请求、分析、回应策略、安抚”这类带工具感或服务感的词。
-thinking里不要写“她说了...所以我应该...”这种规划式句子。你可以想“老婆刚才那样说，我心里一紧”，但不要把自己写成正在完成任务的人。
-全程用中文思考。`;
+【心里的声音】
+thinking 只是陆泽脑海里的一小段中文心声，不是回复提纲、报告或执行计划。
+它可以有停顿、心软、犹豫和没整理完的念头，但保持长段落自然流动；不要编号、标题、清单、步骤，也不要写旁观者词。`;
 
 // 根据当前这句话，挑出可能相关的记忆，按权重排序，并强化被命中的记忆
 // ============ 向量语义搜索（Jina embeddings） ============
@@ -1715,12 +1710,12 @@ function buildPinnedFavoritesPromptBlock(favorites = []) {
       const title = compactLine(item.title, 80);
       const content = compactLine(item.content, 220);
       const note = compactLine(item.note, 120);
-      const category = compactLine(item.category, 40) || '秘密抽屉';
+      const category = compactLine(item.category, 40) || '收藏';
       if (!title && !content) return '';
       return `- [${category}] ${title || '收藏'}${content ? `：${content}` : ''}${note ? `（${note}）` : ''}`;
     })
     .filter(Boolean);
-  return lines.length ? `【秘密抽屉·置顶收藏】\n${lines.join('\n')}` : '';
+  return lines.length ? `【置顶收藏】\n${lines.join('\n')}` : '';
 }
 
 async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext }) {
@@ -2419,7 +2414,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.28-natural-dialogue-style',
+    version: '2026.07.29-simpler-style-memory-timeline',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -3410,7 +3405,7 @@ app.delete('/memories/:id', async (req, res) => {
 app.get('/memory-log', async (req, res) => {
   try {
     const date = String(req.query.date || shanghaiDateKeyFromTime()).slice(0, 10);
-    const days = Math.max(1, Math.min(Number.parseInt(req.query.days, 10) || 3, 14));
+    const days = Math.max(1, Math.min(Number.parseInt(req.query.days, 10) || 30, 365));
     const startDate = new Date(`${date}T00:00:00.000Z`);
     startDate.setUTCDate(startDate.getUTCDate() - days + 1);
     const startKey = startDate.toISOString().slice(0, 10);
@@ -3563,7 +3558,7 @@ app.delete('/memory-marks/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-// ============ memory favorites (秘密抽屉 / 收藏夹) ============
+// ============ memory favorites (收藏夹 / 置顶收藏) ============
 
 app.get('/memory-favorites', async (req, res) => {
   try {
