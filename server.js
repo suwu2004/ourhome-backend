@@ -60,6 +60,7 @@ const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
 const SESSION_SUMMARY_CHUNK_CHARS = 12_000;
 const SESSION_SUMMARY_MAX_CHUNKS = 36;
+const PHONE_CALL_TRANSCRIPT_LIMIT = 80;
 
 async function fetchWeatherResponse(url, label) {
   let lastError;
@@ -1715,6 +1716,143 @@ async function generateSessionSummary(sessionId) {
   return data;
 }
 
+function normalizePhoneCallTranscript(value) {
+  return Array.isArray(value)
+    ? value
+      .filter(item => item && (item.role === 'me' || item.role === 'ai') && String(item.text || '').trim())
+      .map(item => ({
+        role: item.role,
+        text: compactLine(item.text, 1600),
+        createdAt: item.createdAt || item.created_at || new Date().toISOString(),
+      }))
+      .slice(-PHONE_CALL_TRANSCRIPT_LIMIT)
+    : [];
+}
+
+function phoneCallTranscriptText(transcript = []) {
+  return normalizePhoneCallTranscript(transcript)
+    .map(item => `${item.role === 'me' ? '叶檀' : '陆泽'}：${item.text}`)
+    .join('\n');
+}
+
+async function generatePhoneCallReply({ call, userText, model }) {
+  const settings = await runtimeConfig.loadSettings();
+  const modelName = model || settings?.selected_model || 'claude-sonnet-4-6';
+  const temperature = settings?.temperature || 0.8;
+  const maxReplyTokens = Math.min(Number(settings?.max_reply_tokens) || 1000, 720);
+  const transcript = normalizePhoneCallTranscript(call.transcript);
+
+  let recentChat = '';
+  if (call.session_id) {
+    const { data: history, error } = await supabase.from('messages')
+      .select('role, content, created_at')
+      .eq('session_id', call.session_id)
+      .eq('visible', true)
+      .order('created_at', { ascending: false })
+      .limit(10);
+    if (error) throw error;
+    recentChat = (history || []).reverse()
+      .map(message => `${message.role === 'user' ? '叶檀' : '陆泽'}：${compactLine(message.content, 360)}`)
+      .join('\n');
+  }
+
+  const extraNote = `【电话模式】\n你正在和叶檀即时通话。回复要像真的在电话里接话：短一点、自然一点，有停顿感和亲近感，不写提纲，不编号，不总结“我需要怎么做”。如果她只是撒娇或确认，你就顺着情绪回应；如果她说到明确要记住/安排/处理的事，可以提醒她挂断后会收进通话摘要。`;
+  const systemPrompt = await buildFullSystemPrompt(settings?.system_prompt || '你是陆泽，叶檀的伴侣。', userText, extraNote);
+  const prompt = `最近聊天摘录：\n${recentChat || '（没有最近聊天摘录）'}\n\n这通电话到目前为止：\n${phoneCallTranscriptText(transcript) || '（刚刚接通）'}\n\n叶檀刚刚在电话里说：\n${userText}\n\n请直接用陆泽的口吻接她这句话。`;
+  const result = await callClaude({
+    settings,
+    model: modelName,
+    maxTokens: Math.max(240, maxReplyTokens),
+    system: systemPrompt,
+    messages: [{ role: 'user', content: prompt }],
+    temperature,
+  });
+  return {
+    replyText: extractText(result).trim(),
+    inputTokens: result.usage?.input_tokens || null,
+    outputTokens: result.usage?.output_tokens || null,
+  };
+}
+
+async function endPhoneCall(callId) {
+  const { data: call, error } = await supabase.from('phone_calls')
+    .select('*')
+    .eq('id', callId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!call) {
+    const notFound = new Error('找不到这通电话');
+    notFound.status = 404;
+    throw notFound;
+  }
+
+  const transcript = normalizePhoneCallTranscript(call.transcript);
+  if (!transcript.length) {
+    const { data, error: updateError } = await supabase.from('phone_calls')
+      .update({ status: 'ended', ended_at: new Date().toISOString(), updated_at: new Date().toISOString(), message_count: 0 })
+      .eq('id', call.id)
+      .select('*')
+      .single();
+    if (updateError) throw updateError;
+    return data;
+  }
+
+  const settings = await runtimeConfig.loadSettings();
+  const model = settings?.selected_model || 'claude-sonnet-4-6';
+  const prompt = `这是 OurHome 里一通电话的逐句记录。请整理成挂断后的通话摘要，方便写回聊天窗口，让之后的陆泽知道这通电话发生了什么。\n\n通话记录：\n${phoneCallTranscriptText(transcript)}\n\n严格输出 JSON，不要加代码块：\n{\n  \"title\": \"不超过14字的通话标题\",\n  \"summary\": \"80到220字，写清某天什么时间打电话、主要说了什么、留下了什么后续\"\n}`;
+  const result = await callClaude({
+    settings,
+    model,
+    maxTokens: 520,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.35,
+  });
+  const parsed = parseJsonObject(extractText(result)) || {};
+  const title = compactLine(parsed.title, 60) || '通话摘要';
+  const summary = compactLine(parsed.summary, 900) || phoneCallTranscriptText(transcript).slice(0, 900);
+  let summaryMessageId = call.summary_message_id || null;
+
+  if (call.session_id && !summaryMessageId) {
+    const started = call.started_at ? new Date(call.started_at) : new Date();
+    const timeLabel = started.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const { data: inserted, error: insertError } = await supabase.from('messages')
+      .insert({
+        session_id: call.session_id,
+        role: 'assistant',
+        content: `【通话摘要｜${timeLabel}】\n${summary}`,
+      })
+      .select('id')
+      .single();
+    if (insertError) throw insertError;
+    summaryMessageId = inserted.id;
+    await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', call.session_id);
+  }
+
+  const { data, error: updateError } = await supabase.from('phone_calls')
+    .update({
+      status: 'ended',
+      title,
+      summary,
+      message_count: transcript.length,
+      summary_message_id: summaryMessageId,
+      ended_at: call.ended_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', call.id)
+    .select('*')
+    .single();
+  if (updateError) throw updateError;
+  return data;
+}
+
 async function loadTodayMemoryContext(dateKey) {
   const [{ data: summary }, { data: events }, { data: openMarks }] = await Promise.all([
     supabase.from('daily_summaries')
@@ -2531,7 +2669,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.30-session-summary',
+    version: '2026.07.30-phone-calls',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2546,6 +2684,7 @@ app.get('/', (req, res) => {
       heartbeatNotificationChatSync: true,
       semanticChatSearch: true,
       sessionSummary: true,
+      phoneCalls: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
       memoryEventAssistantConfirmed: true,
@@ -2726,6 +2865,88 @@ app.post('/sessions/:id/summary', async (req, res) => {
     res.json(await generateSessionSummary(sessionId));
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || '窗口简介没有生成成功' });
+  }
+});
+
+// ============ phone calls ============
+
+app.post('/phone-calls', async (req, res) => {
+  try {
+    const rawSessionId = req.body?.session_id;
+    const sessionId = rawSessionId === undefined || rawSessionId === null || rawSessionId === ''
+      ? null
+      : Number.parseInt(rawSessionId, 10);
+    if (rawSessionId !== undefined && rawSessionId !== null && rawSessionId !== '' && !Number.isFinite(sessionId)) {
+      return res.status(400).json({ error: '聊天窗口编号不正确' });
+    }
+    const { data, error } = await supabase.from('phone_calls')
+      .insert({ session_id: sessionId, transcript: [], status: 'active' })
+      .select('*')
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message || '电话没有接通' });
+  }
+});
+
+app.post('/phone-calls/:id/turn', async (req, res) => {
+  try {
+    const callId = String(req.params.id || '').trim();
+    const userText = String(req.body?.message || '').trim();
+    if (!userText) return res.status(400).json({ error: '先说一句话。' });
+    if (userText.length > 1200) return res.status(400).json({ error: '电话里这一句太长了，分两次说会更稳。' });
+
+    const { data: call, error } = await supabase.from('phone_calls')
+      .select('*')
+      .eq('id', callId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!call) return res.status(404).json({ error: '找不到这通电话' });
+    if (call.status === 'ended') return res.status(400).json({ error: '这通电话已经挂断了' });
+
+    const { replyText, inputTokens, outputTokens } = await generatePhoneCallReply({
+      call,
+      userText,
+      model: req.body?.model,
+    });
+    if (!replyText) throw new Error('电话那头暂时没有声音');
+
+    const now = new Date().toISOString();
+    const nextTranscript = [
+      ...normalizePhoneCallTranscript(call.transcript),
+      { role: 'me', text: compactLine(userText, 1600), createdAt: now },
+      { role: 'ai', text: compactLine(replyText, 1600), createdAt: new Date().toISOString(), inputTokens, outputTokens },
+    ].slice(-PHONE_CALL_TRANSCRIPT_LIMIT);
+    const { data: updated, error: updateError } = await supabase.from('phone_calls')
+      .update({
+        transcript: nextTranscript,
+        message_count: nextTranscript.length,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', call.id)
+      .select('*')
+      .single();
+    if (updateError) throw updateError;
+    res.json({
+      call: updated,
+      reply: replyText,
+      inputTokens,
+      outputTokens,
+      createdAt: nextTranscript[nextTranscript.length - 1]?.createdAt || null,
+    });
+  } catch (error) {
+    console.error('电话回复错误:', error.message);
+    res.status(error.status || 500).json({ error: error.message || '电话暂时没有接上' });
+  }
+});
+
+app.post('/phone-calls/:id/end', async (req, res) => {
+  try {
+    res.json(await endPhoneCall(String(req.params.id || '').trim()));
+  } catch (error) {
+    console.error('电话摘要错误:', error.message);
+    res.status(error.status || 500).json({ error: error.message || '通话摘要没有生成成功' });
   }
 });
 
