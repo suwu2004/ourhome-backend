@@ -2414,7 +2414,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.29-simpler-style-memory-timeline',
+    version: '2026.07.29-notification-chat-sync',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2425,6 +2425,7 @@ app.get('/', (req, res) => {
       homeMemos: true,
       dailyJournalAutomation: true,
       heartbeatAutomation: true,
+      heartbeatNotificationChatSync: true,
       semanticChatSearch: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
@@ -4189,10 +4190,10 @@ app.post('/calendar/generate', async (req, res) => {
 // ============ heartbeat (心跳保活 + 提醒推送 + 主动消息) ============
 
 // 给所有订阅了推送的设备发一条通知，自动清理失效的订阅
-async function sendPushToAll(title, body) {
+async function sendPushToAll(title, body, data = {}) {
   if (!PUSH_CONFIGURED) return { configured: false, sent: 0 };
   const { data: subs } = await supabase.from('push_subscriptions').select('*');
-  const payload = JSON.stringify({ title, body });
+  const payload = JSON.stringify({ title, body, data });
   let sent = 0;
   let failed = 0;
   for (const sub of subs || []) {
@@ -4440,7 +4441,7 @@ async function runHeartbeatAutomation() {
   const schedulePushes = [];
   if (dueEvents && dueEvents.length > 0) {
     for (const ev of dueEvents) {
-      const push = await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了');
+      const push = await sendPushToAll('✦ ' + ev.title, ev.content || '到时间了', { type: 'schedule_event', schedule_id: ev.id });
       schedulePushes.push({ id: ev.id, title: ev.title, configured: push.configured, sent: push.sent, failed: push.failed });
       if (push.configured) await supabase.from('schedule_events').update({ notified: true }).eq('id', ev.id);
     }
@@ -4486,14 +4487,28 @@ async function runHeartbeatAutomation() {
 
   if (!replyText) return { sent: false, reason: 'empty reply', schedulePushes };
 
-  await supabase.from('messages').insert({ session_id: target.id, role: 'assistant', content: replyText });
-  await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
-  await sendPushToAll('陆泽', replyText.slice(0, 120));
+  const { data: insertedMessage, error: messageInsertError } = await supabase.from('messages')
+    .insert({ session_id: target.id, role: 'assistant', content: replyText })
+    .select('id, session_id, created_at')
+    .single();
+  if (messageInsertError) {
+    console.error('主动消息保存失败:', messageInsertError.message);
+    return { sent: false, reason: 'message insert error', error: messageInsertError.message, schedulePushes };
+  }
+
+  const { error: sessionUpdateError } = await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
+  if (sessionUpdateError) console.error('主动消息会话更新时间失败:', sessionUpdateError.message);
+
+  const push = await sendPushToAll('陆泽', replyText.slice(0, 120), {
+    type: 'chat_message',
+    session_id: target.id,
+    message_id: insertedMessage.id,
+  });
 
   const newGap = 3 + Math.random() * 5;
   await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
 
-  return { sent: true, content: replyText, nextGapHours: newGap, schedulePushes };
+  return { sent: true, content: replyText, messageId: insertedMessage.id, sessionId: target.id, nextGapHours: newGap, push, schedulePushes };
 }
 
 app.get('/heartbeat', async (req, res) => {
