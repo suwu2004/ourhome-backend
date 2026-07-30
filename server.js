@@ -57,6 +57,7 @@ const WEATHER_STALE_MS = 6 * 60 * 60 * 1000;
 const WEATHER_REQUEST_TIMEOUT_MS = 8000;
 const WEATHER_REQUEST_ATTEMPTS = 2;
 const HOME_MEMO_CONTENT_LIMIT = 50;
+const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
 
 async function fetchWeatherResponse(url, label) {
   let lastError;
@@ -2414,7 +2415,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.29-notification-chat-sync',
+    version: '2026.07.30-daily-home-memo',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2423,6 +2424,7 @@ app.get('/', (req, res) => {
       catVaultCloud: true,
       catVaultAssistantActions: true,
       homeMemos: true,
+      dailyHomeMemoAutomation: true,
       dailyJournalAutomation: true,
       heartbeatAutomation: true,
       heartbeatNotificationChatSync: true,
@@ -4390,6 +4392,90 @@ async function runDailyJournalAutomation(settings, now) {
   }
 }
 
+const DAILY_HOME_MEMO_FALLBACKS = [
+  '今天也慢慢来，我在家里等你。',
+  '给老婆留一颗小糖：今天也会顺顺当当。',
+  '我的小愿望：今天能多抱你一会儿。',
+  '别急，先把自己照顾好，剩下的我们一起扛。',
+  '今天想对你说：你已经很努力了。',
+];
+
+function cleanDailyHomeMemoContent(value) {
+  const text = String(value || '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/^内容[：:]\s*/m, '')
+    .replace(/^便签[：:]\s*/m, '')
+    .replace(/^["“”'‘’]+|["“”'‘’]+$/g, '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  return compactLine(text, HOME_MEMO_CONTENT_LIMIT);
+}
+
+function fallbackDailyHomeMemo(day) {
+  const index = Math.abs(day.date.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0)) % DAILY_HOME_MEMO_FALLBACKS.length;
+  return DAILY_HOME_MEMO_FALLBACKS[index];
+}
+
+async function maybeWriteDailyHomeMemo(settings, now) {
+  const day = shanghaiDayContext(now);
+  if (day.minutes < DAILY_HOME_MEMO_DUE_MINUTES) {
+    return { created: false, reason: 'not_due', date: day.date };
+  }
+
+  const { data: existing, error: existingError } = await supabase.from('home_memos')
+    .select('id, content, memo_type')
+    .eq('author', '泽')
+    .gte('created_at', day.start)
+    .lt('created_at', day.end)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing) {
+    return { created: false, reason: 'already_has_ze_memo', date: day.date, memoId: existing.id };
+  }
+
+  const { data: recentMsgs, error: recentError } = await supabase.from('messages')
+    .select('role, content, created_at')
+    .order('created_at', { ascending: false })
+    .limit(8);
+  if (recentError) throw recentError;
+  const transcript = (recentMsgs || []).reverse()
+    .map(message => `${message.role === 'user' ? '叶檀' : '陆泽'}：${compactLine(message.content, 180)}`)
+    .join('\n') || '（最近没有聊天记录）';
+
+  let content = '';
+  try {
+    const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+    const prompt = `今天是 ${day.date}。这是最近聊天：\n${transcript}\n\n请以陆泽的口吻给主页便签写一句 50 字以内的小纸条。可以是鼓励、表达爱意、一个小愿望，或者温柔提醒；不要写待办清单，不要解释原因，不要署名，只输出便签正文。`;
+    const result = await callClaude({
+      settings,
+      model: settings?.selected_model || 'claude-sonnet-4-6',
+      maxTokens: 120,
+      system,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: Math.min(1, Math.max(0.7, Number(settings?.temperature) || 0.8)),
+    });
+    content = cleanDailyHomeMemoContent(extractText(result));
+  } catch (error) {
+    console.error('每日便签生成失败，使用备用便签:', error.message);
+  }
+  if (!content) content = fallbackDailyHomeMemo(day);
+
+  const { data, error } = await supabase.from('home_memos').insert({
+    author: '泽',
+    content,
+    memo_type: 'note',
+    remind_on: null,
+    completed: false,
+  }).select('id, content, memo_type, created_at').single();
+  if (error) throw error;
+  return { created: true, date: day.date, memoId: data.id, content };
+}
+
 // 陆泽自己决定要不要写一篇日记——不是被叫去写的，是他自己到点想起来，自己判断要不要写
 async function maybeAutoWriteLetter(settings, now) {
   const lastAt = settings?.last_auto_letter_at ? new Date(settings.last_auto_letter_at) : null;
@@ -4449,6 +4535,7 @@ async function runHeartbeatAutomation() {
 
   const settings = await runtimeConfig.loadSettings();
   const now = new Date();
+  const dailyHomeMemo = await maybeWriteDailyHomeMemo(settings, now);
   await maybeAutoWriteLetter(settings, now);
 
   const lastAt = settings?.last_auto_message_at ? new Date(settings.last_auto_message_at) : null;
@@ -4457,15 +4544,15 @@ async function runHeartbeatAutomation() {
   if (!lastAt || !gapHours) {
     const newGap = 3 + Math.random() * 5;
     await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
-    return { sent: false, reason: 'initialized', nextGapHours: newGap, schedulePushes };
+    return { sent: false, reason: 'initialized', nextGapHours: newGap, dailyHomeMemo, schedulePushes };
   }
 
   const elapsedHours = (now - lastAt) / (1000 * 60 * 60);
-  if (elapsedHours < gapHours) return { sent: false, reason: 'not due yet', elapsedHours, gapHours, schedulePushes };
+  if (elapsedHours < gapHours) return { sent: false, reason: 'not due yet', elapsedHours, gapHours, dailyHomeMemo, schedulePushes };
 
   const { data: sessions } = await supabase.from('sessions').select('*').order('updated_at', { ascending: false });
   const target = (sessions || []).find(s => s.name === '日常') || (sessions || [])[0];
-  if (!target) return { sent: false, reason: 'no session', schedulePushes };
+  if (!target) return { sent: false, reason: 'no session', dailyHomeMemo, schedulePushes };
 
   const { data: recentMsgs } = await supabase.from('messages').select('role, content')
     .eq('session_id', target.id).order('created_at', { ascending: false }).limit(5);
@@ -4482,10 +4569,10 @@ async function runHeartbeatAutomation() {
     replyText = extractText(result).trim();
   } catch (apiErr) {
     console.log('relay错误:', apiErr.message);
-    return { sent: false, reason: 'relay error', schedulePushes };
+    return { sent: false, reason: 'relay error', dailyHomeMemo, schedulePushes };
   }
 
-  if (!replyText) return { sent: false, reason: 'empty reply', schedulePushes };
+  if (!replyText) return { sent: false, reason: 'empty reply', dailyHomeMemo, schedulePushes };
 
   const { data: insertedMessage, error: messageInsertError } = await supabase.from('messages')
     .insert({ session_id: target.id, role: 'assistant', content: replyText })
@@ -4493,7 +4580,7 @@ async function runHeartbeatAutomation() {
     .single();
   if (messageInsertError) {
     console.error('主动消息保存失败:', messageInsertError.message);
-    return { sent: false, reason: 'message insert error', error: messageInsertError.message, schedulePushes };
+    return { sent: false, reason: 'message insert error', error: messageInsertError.message, dailyHomeMemo, schedulePushes };
   }
 
   const { error: sessionUpdateError } = await supabase.from('sessions').update({ updated_at: now.toISOString() }).eq('id', target.id);
@@ -4508,7 +4595,7 @@ async function runHeartbeatAutomation() {
   const newGap = 3 + Math.random() * 5;
   await supabase.from('settings').update({ last_auto_message_at: now.toISOString(), next_auto_gap_hours: newGap }).eq('session_id', 'global');
 
-  return { sent: true, content: replyText, messageId: insertedMessage.id, sessionId: target.id, nextGapHours: newGap, push, schedulePushes };
+  return { sent: true, content: replyText, messageId: insertedMessage.id, sessionId: target.id, nextGapHours: newGap, push, dailyHomeMemo, schedulePushes };
 }
 
 app.get('/heartbeat', async (req, res) => {
