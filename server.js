@@ -58,6 +58,8 @@ const WEATHER_REQUEST_TIMEOUT_MS = 8000;
 const WEATHER_REQUEST_ATTEMPTS = 2;
 const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
+const SESSION_SUMMARY_CHUNK_CHARS = 12_000;
+const SESSION_SUMMARY_MAX_CHUNKS = 36;
 
 async function fetchWeatherResponse(url, label) {
   let lastError;
@@ -1599,6 +1601,120 @@ function parseJsonObject(text) {
   return null;
 }
 
+function sessionSummaryLine(message) {
+  const speaker = message.role === 'user' ? '叶檀' : '陆泽';
+  const time = message.created_at ? new Date(message.created_at).toISOString().replace('T', ' ').slice(0, 16) : '';
+  return `${time} ${speaker}：${compactLine(message.content, 900)}`;
+}
+
+function buildSessionSummaryChunks(messages = []) {
+  const chunks = [];
+  let current = '';
+  for (const message of messages) {
+    const line = `${sessionSummaryLine(message)}\n`;
+    if (current && current.length + line.length > SESSION_SUMMARY_CHUNK_CHARS) {
+      chunks.push(current.trim());
+      current = '';
+    }
+    current += line;
+  }
+  if (current.trim()) chunks.push(current.trim());
+  if (chunks.length <= SESSION_SUMMARY_MAX_CHUNKS) return chunks;
+
+  const keepHead = Math.floor(SESSION_SUMMARY_MAX_CHUNKS * 0.4);
+  const keepTail = SESSION_SUMMARY_MAX_CHUNKS - keepHead;
+  return [
+    ...chunks.slice(0, keepHead),
+    `（中间有 ${chunks.length - SESSION_SUMMARY_MAX_CHUNKS} 段很长的聊天。摘要时请在最终简介里标明：中段较长，已按首尾重点压缩。）`,
+    ...chunks.slice(-keepTail),
+  ];
+}
+
+async function summarizeSessionChunk(settings, model, chunk, index, total) {
+  const prompt = `这是某个 OurHome 聊天窗口的第 ${index + 1}/${total} 段聊天记录。请压缩成一段“接续用摘要”，保留事实、约定、项目进展、未完事项、情绪变化和重要称呼。不要抄原文，不要评价，不要写无关寒暄。\n\n聊天段落：\n${chunk}\n\n输出不超过260字。`;
+  const result = await callClaude({
+    settings,
+    model,
+    maxTokens: 520,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.35,
+  });
+  return compactLine(extractText(result), 1200);
+}
+
+async function generateSessionSummary(sessionId) {
+  const [{ data: session, error: sessionError }, { data: messages, error: messagesError }] = await Promise.all([
+    supabase.from('sessions').select('id, name, created_at, updated_at').eq('id', sessionId).maybeSingle(),
+    supabase.from('messages')
+      .select('id, role, content, created_at, input_tokens, output_tokens')
+      .eq('session_id', sessionId)
+      .eq('visible', true)
+      .order('created_at', { ascending: true }),
+  ]);
+  if (sessionError) throw sessionError;
+  if (!session) {
+    const error = new Error('找不到这个聊天窗口');
+    error.status = 404;
+    throw error;
+  }
+  if (messagesError) throw messagesError;
+  const rows = messages || [];
+  if (!rows.length) {
+    const error = new Error('这个窗口还没有聊天内容');
+    error.status = 400;
+    throw error;
+  }
+
+  const settings = await runtimeConfig.loadSettings();
+  const model = settings?.selected_model || 'claude-sonnet-4-6';
+  const chunks = buildSessionSummaryChunks(rows);
+  const chunkSummaries = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    chunkSummaries.push(await summarizeSessionChunk(settings, model, chunks[index], index, chunks.length));
+  }
+
+  const firstAt = rows[0]?.created_at || session.created_at || null;
+  const lastAt = rows[rows.length - 1]?.created_at || session.updated_at || null;
+  const totalInputTokens = rows.reduce((sum, item) => sum + (Number(item.input_tokens) || 0), 0);
+  const totalOutputTokens = rows.reduce((sum, item) => sum + (Number(item.output_tokens) || 0), 0);
+  const finalPrompt = `下面是一个 OurHome 聊天窗口已经分段压缩后的摘要。请再整理成给“未来陆泽”接续用的窗口简介。\n\n窗口名：${session.name}\n时间范围：${firstAt || '未知'} 到 ${lastAt || '未知'}\n消息数：${rows.length}\n\n分段摘要：\n${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n严格输出 JSON，不要加代码块：\n{\n  \"title\": \"不超过18字的窗口标题\",\n  \"summary\": \"260到600字，说明这个窗口主要聊了什么、发生了什么变化、哪些事情要延续\",\n  \"open_threads\": [\"最多6条未完事项或后续话题\"],\n  \"handoff\": \"不超过160字，未来陆泽打开新窗口时最该带上的一句接续提示\"\n}`;
+  const finalResult = await callClaude({
+    settings,
+    model,
+    maxTokens: 1200,
+    messages: [{ role: 'user', content: finalPrompt }],
+    temperature: 0.3,
+  });
+  const parsed = parseJsonObject(extractText(finalResult)) || {};
+  const title = compactLine(parsed.title, 80) || compactLine(session.name, 80) || '窗口简介';
+  const openThreads = Array.isArray(parsed.open_threads)
+    ? parsed.open_threads.map(item => compactLine(item, 160)).filter(Boolean).slice(0, 6)
+    : [];
+  const handoff = compactLine(parsed.handoff, 320);
+  const body = [
+    compactLine(parsed.summary, 1600) || chunkSummaries.join('\n'),
+    openThreads.length ? `\n未完待续：\n${openThreads.map(item => `- ${item}`).join('\n')}` : '',
+    handoff ? `\n接续提示：${handoff}` : '',
+  ].filter(Boolean).join('\n');
+
+  const payload = {
+    session_id: session.id,
+    title,
+    summary: body,
+    message_count: rows.length,
+    last_message_id: rows[rows.length - 1]?.id || null,
+    input_tokens: totalInputTokens || null,
+    output_tokens: totalOutputTokens || null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from('session_summaries')
+    .upsert(payload, { onConflict: 'session_id' })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 async function loadTodayMemoryContext(dateKey) {
   const [{ data: summary }, { data: events }, { data: openMarks }] = await Promise.all([
     supabase.from('daily_summaries')
@@ -2415,7 +2531,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.30-daily-home-memo',
+    version: '2026.07.30-session-summary',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2429,6 +2545,7 @@ app.get('/', (req, res) => {
       heartbeatAutomation: true,
       heartbeatNotificationChatSync: true,
       semanticChatSearch: true,
+      sessionSummary: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
       memoryEventAssistantConfirmed: true,
@@ -2590,6 +2707,26 @@ app.get('/sessions/:id/messages', async (req, res) => {
     .eq('session_id', id).eq('visible', true).order('created_at', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+app.get('/sessions/:id/summary', async (req, res) => {
+  const { id } = req.params;
+  const { data, error } = await supabase.from('session_summaries')
+    .select('*')
+    .eq('session_id', id)
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || null);
+});
+
+app.post('/sessions/:id/summary', async (req, res) => {
+  try {
+    const sessionId = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(sessionId)) return res.status(400).json({ error: '聊天窗口编号不正确' });
+    res.json(await generateSessionSummary(sessionId));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || '窗口简介没有生成成功' });
+  }
 });
 
 // ============ messages ============
