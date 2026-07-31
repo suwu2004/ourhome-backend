@@ -2614,7 +2614,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-music-search-world-import',
+    version: '2026.07.31-theater-night-cleanup',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4095,7 +4095,7 @@ app.post('/theater/books/:id/chat', async (req, res) => {
 - 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
 - 不要跳出剧情解释“我理解了/我会这样写”，除非叶檀明确要求场外讨论。
 - 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
-- 如果是互动推进，正文后用“【可选走向】”给 3 个下一步选择，每个一句话。`;
+- 不替叶檀预设下一步选项，不输出“【可选走向】”；剧情停在自然能继续接话的位置。`;
 
     const prompt = `【剧本名】
 ${book.title}
@@ -4116,7 +4116,7 @@ ${recentMessages || '（还没有正式开始。）'}
 ${userText}
 
 【玩法】
-${playMode === 'interactive' ? '互动推进：回复正文后给 3 个可选走向。' : '沉浸长文：只回复正文，不给选项。'}
+${playMode === 'interactive' ? '互动推进：用 chat 的方式自然接戏，不要给预设选项。' : '沉浸长文：只回复正文，不给选项。'}
 
 请直接接着演。`;
 
@@ -4161,7 +4161,7 @@ ${playMode === 'interactive' ? '互动推进：回复正文后给 3 个可选走
     res.json({
       user_message: parseTheaterBook(bookRow, [userInsert.data]).messages[0],
       assistant_message: parseTheaterBook(bookRow, [assistantInsert.data]).messages[0],
-      choices: parsed.choices,
+      choices: [],
       input_tokens: result?.usage?.input_tokens || null,
       output_tokens: result?.usage?.output_tokens || null,
     });
@@ -4203,7 +4203,7 @@ app.post('/theater/generate', async (req, res) => {
 - 如果设定不足，可以用温柔合理的细节补足，但不要推翻叶檀给的设定。
 - 番外模式要像同一世界里的独立篇章，可以更偏日常、补完、IF 或回忆，但不要破坏主线。
 - 不写现实 OurHome 记忆，不调用工具，不保存长期记忆。
-- 如果本次是互动推进，正文之后要另起一段写“【可选走向】”，给 3 个下一步走向，每个走向一句话，像剧情选择，不要解释。`;
+- 不替叶檀预设下一步选项，不输出“【可选走向】”；互动推进也要像自然接戏一样停在可继续的位置。`;
 
     const userPrompt = `【剧场名】
 ${theaterName}
@@ -4212,7 +4212,7 @@ ${theaterName}
 ${mode === 'extra' ? '番外' : '正文续写'}
 
 【玩法】
-${playMode === 'interactive' ? '互动推进：正文后给出 3 个可选走向。' : '沉浸长文：只输出完整正文，不要给选项。'}
+${playMode === 'interactive' ? '互动推进：自然接着写，不要给预设选项。' : '沉浸长文：只输出完整正文，不要给选项。'}
 
 【世界观/剧情设定】
 ${premise || '（未填写，按本次要求自然补足）'}
@@ -4229,7 +4229,7 @@ ${previousText || '（这是开篇，可以从头开始。）'}
 【这次想看的内容】
 ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着上面的剧情自然往下写。')}
 
-请直接输出作品正文。第一行可写“标题：xxx”，然后空一行进入正文。${playMode === 'interactive' ? '\n正文结束后再写“【可选走向】”，列 3 个下一步选择。' : ''}`;
+请直接输出作品正文。第一行可写“标题：xxx”，然后空一行进入正文。`;
 
     const result = await callClaude({
       settings,
@@ -4264,7 +4264,7 @@ ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着�
     res.json({
       title: parsed.title,
       content: parsed.content,
-      choices: parsed.choices,
+      choices: [],
       saved,
       input_tokens: result?.usage?.input_tokens || null,
       output_tokens: result?.usage?.output_tokens || null,
