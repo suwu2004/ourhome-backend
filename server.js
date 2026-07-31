@@ -60,7 +60,6 @@ const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
 const SESSION_SUMMARY_CHUNK_CHARS = 12_000;
 const SESSION_SUMMARY_MAX_CHUNKS = 36;
-const PHONE_CALL_TRANSCRIPT_LIMIT = 80;
 
 async function fetchWeatherResponse(url, label) {
   let lastError;
@@ -603,27 +602,6 @@ const ACTION_TOOLS = [
     },
   },
   {
-    name: 'manage_memory_event',
-    description: '管理“记忆”房间的大事年表。只有叶檀明确说“这件事重要、记进年表、需要记住、今天是重要日子”等清楚指令时，才可以新增；修改或删除必须目标明确。不要根据普通聊天自行判断并写入年表。',
-    input_schema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['create', 'update', 'delete'] },
-        event_id: { type: 'string', description: '修改或删除时需要的年表编号' },
-        title: { type: 'string', description: '年表标题，不超过20字' },
-        summary: { type: 'string', description: '按“某年某月某日，谁在什么地点发生了什么事情”的历史书口吻写，不超过180字' },
-        event_date: { type: 'string', description: '事件日期 YYYY-MM-DD，不填则按今天中国时间' },
-        event_type: { type: 'string', enum: ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'] },
-        topic: { type: 'string' },
-        emotion: { type: 'string' },
-        tags: { type: 'array', items: { type: 'string' } },
-        importance: { type: 'number', description: '1到5' },
-        status: { type: 'string', enum: ['active', 'continued', 'resolved', 'archived'] },
-      },
-      required: ['action'],
-    },
-  },
-  {
     name: 'manage_schedule',
     description: '修改或删除“日程”中的提醒。先用 read_schedule 取得准确编号；删除仅在叶檀明确要求时执行。',
     input_schema: {
@@ -759,7 +737,6 @@ const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map(tool => tool.name));
 
 const FAVORITE_TYPES = new Set(['message', 'image', 'file', 'text', 'memory', 'event', 'link', 'setting', 'note']);
 const FAVORITE_SOURCES = new Set(['chat', 'manual', 'memory', 'event', 'upload', 'system']);
-const MEMORY_EVENT_TYPES = new Set(['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note']);
 const DIARY_PAPER_STYLES = new Set(['kraft', 'lined', 'floral', 'parchment']);
 
 function diaryPaperStyle(settings = {}) {
@@ -1060,69 +1037,6 @@ async function executeActionTool(name, input) {
       }).catch(error => console.error('记忆向量更新失败:', error.message));
     }
     return { ok: true, memory: data };
-  }
-  if (name === 'manage_memory_event') {
-    const action = input.action;
-    if (action === 'create') {
-      const title = compactLine(input.title, 80);
-      const summary = compactLine(input.summary, 1200);
-      if (!title || !summary) return { ok: false, error: '年表标题和内容都要写一点' };
-      const eventDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.event_date || ''))
-        ? String(input.event_date)
-        : shanghaiDateKeyFromTime();
-      const { data, error } = await supabase.from('memory_events').insert({
-        event_date: eventDate,
-        event_type: MEMORY_EVENT_TYPES.has(input.event_type) ? input.event_type : 'note',
-        title,
-        summary,
-        source: 'assistant_confirmed',
-        topic: compactLine(input.topic, 80) || null,
-        tags: normalizeTags(input.tags),
-        emotion: compactLine(input.emotion, 100) || null,
-        importance: clampInt(input.importance, 1, 5, 4),
-        status: ['active', 'continued', 'resolved', 'archived'].includes(input.status) ? input.status : 'active',
-        occurred_at: new Date().toISOString(),
-        metadata: { source_detail: 'chat_explicit_request' },
-      }).select().single();
-      if (error) return { ok: false, error: error.message };
-      return { ok: true, event: data };
-    }
-    if (!input.event_id) return { ok: false, error: '缺少年表编号' };
-    if (action === 'delete') {
-      const { data, error } = await supabase.from('memory_events').delete().eq('id', input.event_id).select('id').maybeSingle();
-      if (error) return { ok: false, error: error.message };
-      if (!data) return { ok: false, error: '找不到这条年表记录' };
-      return { ok: true, event_id: data.id, deleted: true };
-    }
-    if (action !== 'update') return { ok: false, error: '年表动作不正确' };
-    const updates = { updated_at: new Date().toISOString() };
-    if (input.title !== undefined) {
-      const title = compactLine(input.title, 80);
-      if (!title) return { ok: false, error: '年表标题不能为空' };
-      updates.title = title;
-    }
-    if (input.summary !== undefined) {
-      const summary = compactLine(input.summary, 1200);
-      if (!summary) return { ok: false, error: '年表内容不能为空' };
-      updates.summary = summary;
-    }
-    if (input.event_date !== undefined) {
-      const eventDate = String(input.event_date || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return { ok: false, error: '日期格式不正确' };
-      updates.event_date = eventDate;
-    }
-    if (input.event_type !== undefined) updates.event_type = MEMORY_EVENT_TYPES.has(input.event_type) ? input.event_type : 'note';
-    if (input.topic !== undefined) updates.topic = compactLine(input.topic, 80) || null;
-    if (input.emotion !== undefined) updates.emotion = compactLine(input.emotion, 100) || null;
-    if (input.importance !== undefined) updates.importance = clampInt(input.importance, 1, 5, 3);
-    if (input.status !== undefined) {
-      updates.status = ['active', 'continued', 'resolved', 'archived'].includes(input.status) ? input.status : 'active';
-    }
-    if (Object.keys(updates).length === 1) return { ok: false, error: '没有需要修改的内容' };
-    const { data, error } = await supabase.from('memory_events').update(updates).eq('id', input.event_id).select().maybeSingle();
-    if (error) return { ok: false, error: error.message };
-    if (!data) return { ok: false, error: '找不到这条年表记录' };
-    return { ok: true, event: data };
   }
   if (name === 'manage_schedule') {
     if (input.action === 'delete') {
@@ -1716,154 +1630,12 @@ async function generateSessionSummary(sessionId) {
   return data;
 }
 
-function normalizePhoneCallTranscript(value) {
-  return Array.isArray(value)
-    ? value
-      .filter(item => item && (item.role === 'me' || item.role === 'ai') && String(item.text || '').trim())
-      .map(item => ({
-        role: item.role,
-        text: compactLine(item.text, 1600),
-        createdAt: item.createdAt || item.created_at || new Date().toISOString(),
-      }))
-      .slice(-PHONE_CALL_TRANSCRIPT_LIMIT)
-    : [];
-}
-
-function phoneCallTranscriptText(transcript = []) {
-  return normalizePhoneCallTranscript(transcript)
-    .map(item => `${item.role === 'me' ? '叶檀' : '陆泽'}：${item.text}`)
-    .join('\n');
-}
-
-async function generatePhoneCallReply({ call, userText, model }) {
-  const settings = await runtimeConfig.loadSettings();
-  const modelName = model || settings?.selected_model || 'claude-sonnet-4-6';
-  const temperature = settings?.temperature || 0.8;
-  const maxReplyTokens = Math.min(Number(settings?.max_reply_tokens) || 1000, 720);
-  const transcript = normalizePhoneCallTranscript(call.transcript);
-
-  let recentChat = '';
-  if (call.session_id) {
-    const { data: history, error } = await supabase.from('messages')
-      .select('role, content, created_at')
-      .eq('session_id', call.session_id)
-      .eq('visible', true)
-      .order('created_at', { ascending: false })
-      .limit(10);
-    if (error) throw error;
-    recentChat = (history || []).reverse()
-      .map(message => `${message.role === 'user' ? '叶檀' : '陆泽'}：${compactLine(message.content, 360)}`)
-      .join('\n');
-  }
-
-  const extraNote = `【电话模式】\n你正在和叶檀即时通话。回复要像真的在电话里接话：短一点、自然一点，有停顿感和亲近感，不写提纲，不编号，不总结“我需要怎么做”。如果她只是撒娇或确认，你就顺着情绪回应；如果她说到明确要记住/安排/处理的事，可以提醒她挂断后会收进通话摘要。`;
-  const systemPrompt = await buildFullSystemPrompt(settings?.system_prompt || '你是陆泽，叶檀的伴侣。', userText, extraNote);
-  const prompt = `最近聊天摘录：\n${recentChat || '（没有最近聊天摘录）'}\n\n这通电话到目前为止：\n${phoneCallTranscriptText(transcript) || '（刚刚接通）'}\n\n叶檀刚刚在电话里说：\n${userText}\n\n请直接用陆泽的口吻接她这句话。`;
-  const result = await callClaude({
-    settings,
-    model: modelName,
-    maxTokens: Math.max(240, maxReplyTokens),
-    system: systemPrompt,
-    messages: [{ role: 'user', content: prompt }],
-    temperature,
-  });
-  return {
-    replyText: extractText(result).trim(),
-    inputTokens: result.usage?.input_tokens || null,
-    outputTokens: result.usage?.output_tokens || null,
-  };
-}
-
-async function endPhoneCall(callId) {
-  const { data: call, error } = await supabase.from('phone_calls')
-    .select('*')
-    .eq('id', callId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!call) {
-    const notFound = new Error('找不到这通电话');
-    notFound.status = 404;
-    throw notFound;
-  }
-
-  const transcript = normalizePhoneCallTranscript(call.transcript);
-  if (!transcript.length) {
-    const { data, error: updateError } = await supabase.from('phone_calls')
-      .update({ status: 'ended', ended_at: new Date().toISOString(), updated_at: new Date().toISOString(), message_count: 0 })
-      .eq('id', call.id)
-      .select('*')
-      .single();
-    if (updateError) throw updateError;
-    return data;
-  }
-
-  const settings = await runtimeConfig.loadSettings();
-  const model = settings?.selected_model || 'claude-sonnet-4-6';
-  const prompt = `这是 OurHome 里一通电话的逐句记录。请整理成挂断后的通话摘要，方便写回聊天窗口，让之后的陆泽知道这通电话发生了什么。\n\n通话记录：\n${phoneCallTranscriptText(transcript)}\n\n严格输出 JSON，不要加代码块：\n{\n  \"title\": \"不超过14字的通话标题\",\n  \"summary\": \"80到220字，写清某天什么时间打电话、主要说了什么、留下了什么后续\"\n}`;
-  const result = await callClaude({
-    settings,
-    model,
-    maxTokens: 520,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.35,
-  });
-  const parsed = parseJsonObject(extractText(result)) || {};
-  const title = compactLine(parsed.title, 60) || '通话摘要';
-  const summary = compactLine(parsed.summary, 900) || phoneCallTranscriptText(transcript).slice(0, 900);
-  let summaryMessageId = call.summary_message_id || null;
-
-  if (call.session_id && !summaryMessageId) {
-    const started = call.started_at ? new Date(call.started_at) : new Date();
-    const timeLabel = started.toLocaleString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-    const { data: inserted, error: insertError } = await supabase.from('messages')
-      .insert({
-        session_id: call.session_id,
-        role: 'assistant',
-        content: `【通话摘要｜${timeLabel}】\n${summary}`,
-      })
-      .select('id')
-      .single();
-    if (insertError) throw insertError;
-    summaryMessageId = inserted.id;
-    await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', call.session_id);
-  }
-
-  const { data, error: updateError } = await supabase.from('phone_calls')
-    .update({
-      status: 'ended',
-      title,
-      summary,
-      message_count: transcript.length,
-      summary_message_id: summaryMessageId,
-      ended_at: call.ended_at || new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', call.id)
-    .select('*')
-    .single();
-  if (updateError) throw updateError;
-  return data;
-}
-
 async function loadTodayMemoryContext(dateKey) {
-  const [{ data: summary }, { data: events }, { data: openMarks }] = await Promise.all([
+  const [{ data: summary }, { data: openMarks }] = await Promise.all([
     supabase.from('daily_summaries')
       .select('*')
       .eq('summary_date', dateKey)
       .maybeSingle(),
-    supabase.from('memory_events')
-      .select('id, event_type, title, summary, topic, emotion, importance, status, occurred_at, tags')
-      .eq('event_date', dateKey)
-      .order('occurred_at', { ascending: false })
-      .limit(12),
     supabase.from('memory_marks')
       .select('id, topic, emotion, summary, tags, importance, created_at')
       .eq('should_continue', true)
@@ -1871,10 +1643,10 @@ async function loadTodayMemoryContext(dateKey) {
       .order('created_at', { ascending: false })
       .limit(8),
   ]);
-  return { summary: summary || null, events: events || [], openMarks: openMarks || [] };
+  return { summary: summary || null, openMarks: openMarks || [] };
 }
 
-function buildTodayMemoryPromptBlock({ summary, events, openMarks }) {
+function buildTodayMemoryPromptBlock({ summary, openMarks }) {
   const blocks = [];
   if (summary?.summary) {
     blocks.push(`【今日摘要】\n${summary.summary}`);
@@ -1883,13 +1655,6 @@ function buildTodayMemoryPromptBlock({ summary, events, openMarks }) {
   if (highlights.length) {
     blocks.push(`【今日重点】\n${highlights.map(item => `- ${item}`).join('\n')}`);
   }
-  const eventLines = (events || []).slice(0, 8).map(event => {
-    const time = formatShanghaiClock(event.occurred_at);
-    const label = event.title || event.topic || '一件小事';
-    return `- ${time ? `${time} ` : ''}${label}：${event.summary}`;
-  });
-  if (eventLines.length) blocks.push(`【今天的大事年表】\n${eventLines.join('\n')}`);
-
   const openThreads = [
     ...(Array.isArray(summary?.open_threads) ? summary.open_threads : []),
     ...(openMarks || []).map(mark => mark.summary || mark.topic),
@@ -1901,49 +1666,6 @@ function buildTodayMemoryPromptBlock({ summary, events, openMarks }) {
     blocks.push(`【今天还没聊完的事】\n${uniqueThreads.map(item => `- ${item}`).join('\n')}`);
   }
   return blocks.join('\n\n');
-}
-
-function normalizedMemoryEventText(event) {
-  return `${event?.title || ''}${event?.summary || ''}`
-    .toLocaleLowerCase('zh-CN')
-    .replace(/[，。！？、；：,.!?;:\s"'“”‘’（）()[\]【】]/g, '');
-}
-
-function textBigrams(text) {
-  const normalized = String(text || '');
-  const result = new Set();
-  for (let index = 0; index < normalized.length - 1; index += 1) {
-    result.add(normalized.slice(index, index + 2));
-  }
-  return result;
-}
-
-function memoryEventSimilarity(left, right) {
-  const leftText = normalizedMemoryEventText(left);
-  const rightText = normalizedMemoryEventText(right);
-  if (!leftText || !rightText) return 0;
-  if ((left?.title || '') && left.title === right?.title) return 1;
-  if (leftText.includes(rightText.slice(0, 14)) || rightText.includes(leftText.slice(0, 14))) return 1;
-  const leftSet = textBigrams(leftText);
-  const rightSet = textBigrams(rightText);
-  let overlap = 0;
-  for (const item of leftSet) {
-    if (rightSet.has(item)) overlap += 1;
-  }
-  const union = new Set([...leftSet, ...rightSet]).size || 1;
-  return overlap / union;
-}
-
-function findSimilarMemoryEvent(events, incoming) {
-  return (events || []).find(event => memoryEventSimilarity(event, incoming) >= 0.24);
-}
-
-function mergeMemoryEventSummary(existingSummary, incomingSummary) {
-  const existing = compactLine(existingSummary, 1200);
-  const incoming = compactLine(incomingSummary, 360);
-  if (!incoming) return existing;
-  if (existing.includes(incoming)) return existing;
-  return compactLine(`${existing}\n补充：${incoming}`, 1200);
 }
 
 async function loadPinnedFavorites() {
@@ -1974,9 +1696,6 @@ function buildPinnedFavoritesPromptBlock(favorites = []) {
 }
 
 async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext }) {
-  const recentEvents = (existingContext.events || []).slice(0, 6)
-    .map(event => `- ${event.title}：${event.summary}`)
-    .join('\n') || '无';
   const currentSummary = existingContext.summary?.summary || '无';
   const openThreads = Array.isArray(existingContext.summary?.open_threads)
     ? existingContext.summary.open_threads.join('；')
@@ -1985,9 +1704,6 @@ async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistant
 
 【今天已有摘要】
 ${currentSummary}
-
-【今天已有大事（只作参考，不要自动新增）】
-${recentEvents}
 
 【未收尾话题】
 ${openThreads}
@@ -1998,16 +1714,6 @@ ${openThreads}
 
 请只输出 JSON，不要解释。字段如下：
 {
-  "event": {
-    "should_create": false,
-    "event_type": "project/life/emotion/relationship/todo/memory/system/note",
-    "title": "不超过20字，像历史书小标题",
-    "summary": "按“谁在什么地点发生了什么事情”客观记录，不超过180字",
-    "topic": "主题",
-    "emotion": "叶檀这轮主要情绪，可为空",
-    "importance": 1到5,
-    "tags": ["标签"]
-  },
   "mark": {
     "topic": "这轮主题",
     "emotion": "情绪",
@@ -2030,8 +1736,6 @@ ${openThreads}
 }
 
 判断规则：
-- 大事年表只允许叶檀手动添加，或叶檀在聊天里明确说“这件事重要/记进年表/需要记住”时由陆泽调用专门工具添加；后台分析永远不要自己创建 event。
-- 因此 event.should_create 固定为 false，event 字段只保留兼容结构，不参与自动写入。
 - 普通寒暄、单纯撒娇、表情回应不要写 mark。
 - mark 只记录未收尾、之后应该接住的话题；不要把每轮聊天都写成隐藏标记。
 - should_continue 表示之后一句“早上那个/继续”需要能接住。
@@ -2084,51 +1788,6 @@ async function recordMemoryJournalTurn({
     });
   }
 
-  const event = { ...(analysis.event || {}), should_create: false };
-  if (event.should_create && compactLine(event.title, 80) && compactLine(event.summary, 1200)) {
-    const incomingEvent = {
-      title: compactLine(event.title, 80),
-      summary: compactLine(event.summary, 1200),
-    };
-    const similarEvent = findSimilarMemoryEvent(existingContext.events, incomingEvent);
-    if (similarEvent) {
-      await supabase.from('memory_events').update({
-        summary: mergeMemoryEventSummary(similarEvent.summary, incomingEvent.summary),
-        event_type: similarEvent.event_type === 'note' && ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'].includes(event.event_type)
-          ? event.event_type
-          : similarEvent.event_type,
-        topic: similarEvent.topic || compactLine(event.topic, 80) || null,
-        tags: [...new Set([...(Array.isArray(similarEvent.tags) ? similarEvent.tags : []), ...normalizeTags(event.tags)])].slice(0, 8),
-        emotion: similarEvent.emotion || compactLine(event.emotion, 100) || null,
-        importance: Math.max(Number(similarEvent.importance) || 1, clampInt(event.importance, 1, 5, 3)),
-        status: similarEvent.status === 'resolved' ? 'continued' : similarEvent.status,
-        updated_at: now.toISOString(),
-        metadata: {
-          ...(similarEvent.metadata && typeof similarEvent.metadata === 'object' ? similarEvent.metadata : {}),
-          last_merged_message_id: userMessageId ? String(userMessageId) : null,
-          assistant_message_id: assistantMessageId ? String(assistantMessageId) : null,
-        },
-      }).eq('id', similarEvent.id);
-    } else {
-      await supabase.from('memory_events').insert({
-        event_date: dateKey,
-        event_type: ['project', 'life', 'emotion', 'relationship', 'todo', 'memory', 'system', 'note'].includes(event.event_type)
-        ? event.event_type
-        : 'note',
-        title: incomingEvent.title,
-        summary: incomingEvent.summary,
-        source: 'chat',
-        topic: compactLine(event.topic, 80) || null,
-        tags: normalizeTags(event.tags),
-        emotion: compactLine(event.emotion, 100) || null,
-        importance: clampInt(event.importance, 1, 5, 3),
-        occurred_at: now.toISOString(),
-        related_message_id: userMessageId ? String(userMessageId) : null,
-        metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
-      });
-    }
-  }
-
   const daily = analysis.daily_summary || {};
   const summary = compactLine(daily.summary, 1200);
   if (summary) {
@@ -2138,7 +1797,7 @@ async function recordMemoryJournalTurn({
       highlights: normalizeTags(daily.highlights, 5).map(item => item.slice(0, 160)),
       open_threads: normalizeTags(daily.open_threads, 5).map(item => item.slice(0, 160)),
       mood: compactLine(daily.mood, 100) || null,
-      event_count: (existingContext.events || []).length + (event.should_create ? 1 : 0),
+      event_count: 0,
       last_message_id: assistantMessageId ? String(assistantMessageId) : null,
       updated_at: now.toISOString(),
       generated_at: now.toISOString(),
@@ -2669,7 +2328,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.30-phone-calls',
+    version: '2026.07.30-simplified-memory',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2684,12 +2343,8 @@ app.get('/', (req, res) => {
       heartbeatNotificationChatSync: true,
       semanticChatSearch: true,
       sessionSummary: true,
-      phoneCalls: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
-      memoryEventAssistantConfirmed: true,
-      memoryEventManual: true,
-      memoryEventEditDelete: true,
       chatHistorySearch: true,
       diaryPaperStyle: true,
       memoryFavorites: true,
@@ -2865,88 +2520,6 @@ app.post('/sessions/:id/summary', async (req, res) => {
     res.json(await generateSessionSummary(sessionId));
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || '窗口简介没有生成成功' });
-  }
-});
-
-// ============ phone calls ============
-
-app.post('/phone-calls', async (req, res) => {
-  try {
-    const rawSessionId = req.body?.session_id;
-    const sessionId = rawSessionId === undefined || rawSessionId === null || rawSessionId === ''
-      ? null
-      : Number.parseInt(rawSessionId, 10);
-    if (rawSessionId !== undefined && rawSessionId !== null && rawSessionId !== '' && !Number.isFinite(sessionId)) {
-      return res.status(400).json({ error: '聊天窗口编号不正确' });
-    }
-    const { data, error } = await supabase.from('phone_calls')
-      .insert({ session_id: sessionId, transcript: [], status: 'active' })
-      .select('*')
-      .single();
-    if (error) throw error;
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message || '电话没有接通' });
-  }
-});
-
-app.post('/phone-calls/:id/turn', async (req, res) => {
-  try {
-    const callId = String(req.params.id || '').trim();
-    const userText = String(req.body?.message || '').trim();
-    if (!userText) return res.status(400).json({ error: '先说一句话。' });
-    if (userText.length > 1200) return res.status(400).json({ error: '电话里这一句太长了，分两次说会更稳。' });
-
-    const { data: call, error } = await supabase.from('phone_calls')
-      .select('*')
-      .eq('id', callId)
-      .maybeSingle();
-    if (error) throw error;
-    if (!call) return res.status(404).json({ error: '找不到这通电话' });
-    if (call.status === 'ended') return res.status(400).json({ error: '这通电话已经挂断了' });
-
-    const { replyText, inputTokens, outputTokens } = await generatePhoneCallReply({
-      call,
-      userText,
-      model: req.body?.model,
-    });
-    if (!replyText) throw new Error('电话那头暂时没有声音');
-
-    const now = new Date().toISOString();
-    const nextTranscript = [
-      ...normalizePhoneCallTranscript(call.transcript),
-      { role: 'me', text: compactLine(userText, 1600), createdAt: now },
-      { role: 'ai', text: compactLine(replyText, 1600), createdAt: new Date().toISOString(), inputTokens, outputTokens },
-    ].slice(-PHONE_CALL_TRANSCRIPT_LIMIT);
-    const { data: updated, error: updateError } = await supabase.from('phone_calls')
-      .update({
-        transcript: nextTranscript,
-        message_count: nextTranscript.length,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', call.id)
-      .select('*')
-      .single();
-    if (updateError) throw updateError;
-    res.json({
-      call: updated,
-      reply: replyText,
-      inputTokens,
-      outputTokens,
-      createdAt: nextTranscript[nextTranscript.length - 1]?.createdAt || null,
-    });
-  } catch (error) {
-    console.error('电话回复错误:', error.message);
-    res.status(error.status || 500).json({ error: error.message || '电话暂时没有接上' });
-  }
-});
-
-app.post('/phone-calls/:id/end', async (req, res) => {
-  try {
-    res.json(await endPhoneCall(String(req.params.id || '').trim()));
-  } catch (error) {
-    console.error('电话摘要错误:', error.message);
-    res.status(error.status || 500).json({ error: error.message || '通话摘要没有生成成功' });
   }
 });
 
@@ -3761,7 +3334,7 @@ app.delete('/memories/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-// ============ memory log (大事年表 / 隐藏标记 / 今日摘要) ============
+// ============ memory log (隐藏标记 / 今日摘要) ============
 
 app.get('/memory-log', async (req, res) => {
   try {
@@ -3771,18 +3344,12 @@ app.get('/memory-log', async (req, res) => {
     startDate.setUTCDate(startDate.getUTCDate() - days + 1);
     const startKey = startDate.toISOString().slice(0, 10);
 
-    const [{ data: summaries, error: summariesError }, { data: events, error: eventsError }, { data: marks, error: marksError }] = await Promise.all([
+    const [{ data: summaries, error: summariesError }, { data: marks, error: marksError }] = await Promise.all([
       supabase.from('daily_summaries')
         .select('*')
         .gte('summary_date', startKey)
         .lte('summary_date', date)
         .order('summary_date', { ascending: false }),
-      supabase.from('memory_events')
-        .select('*')
-        .gte('event_date', startKey)
-        .lte('event_date', date)
-        .order('occurred_at', { ascending: false })
-        .limit(80),
       supabase.from('memory_marks')
         .select('*')
         .eq('should_continue', true)
@@ -3790,99 +3357,19 @@ app.get('/memory-log', async (req, res) => {
         .order('created_at', { ascending: false })
         .limit(40),
     ]);
-    const firstError = summariesError || eventsError || marksError;
+    const firstError = summariesError || marksError;
     if (firstError) return res.status(500).json({ error: firstError.message });
 
     res.json({
       date,
       summaries: summaries || [],
       todaySummary: (summaries || []).find(item => item.summary_date === date) || null,
-      events: events || [],
+      events: [],
       openMarks: marks || [],
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-app.post('/memory-events', async (req, res) => {
-  try {
-    const title = compactLine(req.body?.title, 80);
-    const summary = compactLine(req.body?.summary, 1200);
-    if (!title || !summary) return res.status(400).json({ error: '标题和内容都要写一点' });
-
-    const eventDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.event_date || ''))
-      ? String(req.body.event_date)
-      : shanghaiDateKeyFromTime();
-    const eventType = MEMORY_EVENT_TYPES.has(req.body?.event_type) ? req.body.event_type : 'note';
-    const { data, error } = await supabase.from('memory_events').insert({
-      event_date: eventDate,
-      event_type: eventType,
-      title,
-      summary,
-      source: 'manual',
-      topic: compactLine(req.body?.topic, 80) || null,
-      tags: normalizeTags(req.body?.tags),
-      emotion: compactLine(req.body?.emotion, 100) || null,
-      importance: clampInt(req.body?.importance, 1, 5, 3),
-      status: req.body?.status === 'resolved' ? 'resolved' : 'active',
-      occurred_at: new Date().toISOString(),
-      metadata: { source_detail: 'memory_room_manual_entry' },
-    }).select().single();
-
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message || '保存年表失败' });
-  }
-});
-
-app.patch('/memory-events/:id', async (req, res) => {
-  const updates = { updated_at: new Date().toISOString() };
-  if (req.body?.status !== undefined) {
-    const status = String(req.body.status || '').trim();
-    if (!['active', 'continued', 'resolved', 'archived'].includes(status)) {
-      return res.status(400).json({ error: '状态不正确' });
-    }
-    updates.status = status;
-  }
-  if (req.body?.title !== undefined) {
-    const title = compactLine(req.body.title, 80);
-    if (!title) return res.status(400).json({ error: '标题不能为空' });
-    updates.title = title;
-  }
-  if (req.body?.summary !== undefined) {
-    const summary = compactLine(req.body.summary, 1200);
-    if (!summary) return res.status(400).json({ error: '内容不能为空' });
-    updates.summary = summary;
-  }
-  if (req.body?.event_type !== undefined) {
-    updates.event_type = MEMORY_EVENT_TYPES.has(req.body.event_type) ? req.body.event_type : 'note';
-  }
-  if (req.body?.event_date !== undefined) {
-    const eventDate = String(req.body.event_date || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return res.status(400).json({ error: '日期格式不正确' });
-    updates.event_date = eventDate;
-  }
-  if (req.body?.emotion !== undefined) updates.emotion = compactLine(req.body.emotion, 100) || null;
-  if (req.body?.topic !== undefined) updates.topic = compactLine(req.body.topic, 80) || null;
-  if (req.body?.importance !== undefined) updates.importance = clampInt(req.body.importance, 1, 5, 3);
-  if (Object.keys(updates).length === 1) return res.status(400).json({ error: '没有需要修改的内容' });
-  const { data, error } = await supabase.from('memory_events')
-    .update(updates)
-    .eq('id', req.params.id)
-    .select()
-    .maybeSingle();
-  if (error) return res.status(500).json({ error: error.message });
-  if (!data) return res.status(404).json({ error: '找不到这条年表' });
-  res.json(data);
-});
-
-app.delete('/memory-events/:id', async (req, res) => {
-  const { data, error } = await supabase.from('memory_events').delete().eq('id', req.params.id).select('id').maybeSingle();
-  if (error) return res.status(500).json({ error: error.message });
-  if (!data) return res.status(404).json({ error: '找不到这条年表' });
-  res.json({ success: true });
 });
 
 app.patch('/memory-marks/:id', async (req, res) => {
