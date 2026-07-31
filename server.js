@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -1235,6 +1236,118 @@ function normalizeTheaterSettings(value = {}) {
   };
 }
 
+function appendTheaterSection(target, key, value) {
+  const text = compactBlock(value, key === 'rules' ? 4000 : 5000);
+  if (!text) return;
+  target[key] = [target[key], text].filter(Boolean).join('\n').trim();
+}
+
+function parseTheaterImportText(rawText) {
+  const text = compactBlock(String(rawText || '').replace(/\r\n/g, '\n'), 16000);
+  const draft = { title: '导入的小世界', settings: emptyTheaterSettings() };
+  if (!text) return draft;
+  const buckets = emptyTheaterSettings();
+  let current = 'premise';
+  const sections = [
+    ['title', /^(?:#+\s*)?(?:剧场名|小剧场名|书名|标题|世界名|世界名称)\s*[：:]\s*(.*)$/i],
+    ['premise', /^(?:#+\s*)?(?:世界观|背景|剧情设定|故事设定|世界设定|故事背景|设定)\s*[：:]?\s*(.*)$/i],
+    ['characters', /^(?:#+\s*)?(?:人设|人物设定|角色卡|角色|角色关系|关系|人物关系|cp|主角)\s*[：:]?\s*(.*)$/i],
+    ['rules', /^(?:#+\s*)?(?:禁区|避雷|规则|写作规则|注意事项|不能|不要|防ooc|防 OOC|ooc)\s*[：:]?\s*(.*)$/i],
+  ];
+  text.split('\n').forEach(line => {
+    const trimmed = line.trim();
+    const matched = sections.find(([, pattern]) => pattern.test(trimmed));
+    if (matched) {
+      const [section, pattern] = matched;
+      const inline = trimmed.match(pattern)?.[1]?.trim() || '';
+      if (section === 'title') {
+        if (inline) draft.title = compactLine(inline, 80) || draft.title;
+        current = 'premise';
+      } else {
+        current = section;
+        appendTheaterSection(buckets, current, inline);
+      }
+      return;
+    }
+    appendTheaterSection(buckets, current, line);
+  });
+  const headingTitle = text.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  if (draft.title === '导入的小世界' && headingTitle) draft.title = compactLine(headingTitle, 80) || draft.title;
+  draft.settings = normalizeTheaterSettings(buckets);
+  if (!draft.settings.premise && !draft.settings.characters && !draft.settings.rules) {
+    draft.settings.premise = compactBlock(text, 5000);
+  }
+  return draft;
+}
+
+function decodeXmlEntities(value) {
+  return String(value || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function extractZipEntry(buffer, wantedName) {
+  const eocdSignature = 0x06054b50;
+  let eocdOffset = -1;
+  for (let index = buffer.length - 22; index >= Math.max(0, buffer.length - 66000); index -= 1) {
+    if (buffer.readUInt32LE(index) === eocdSignature) {
+      eocdOffset = index;
+      break;
+    }
+  }
+  if (eocdOffset < 0) throw new Error('这个 Word 文件结构不完整');
+  const entryCount = buffer.readUInt16LE(eocdOffset + 10);
+  const centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+  let offset = centralDirectoryOffset;
+  for (let entryIndex = 0; entryIndex < entryCount; entryIndex += 1) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.slice(offset + 46, offset + 46 + nameLength).toString('utf8');
+    if (name === wantedName) {
+      const localNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+      const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      const compressed = buffer.slice(dataStart, dataStart + compressedSize);
+      if (method === 0) return compressed;
+      if (method === 8) return zlib.inflateRawSync(compressed);
+      throw new Error('这个 Word 压缩格式暂时不支持');
+    }
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error('这个 Word 里没有找到正文');
+}
+
+function extractDocxText(buffer) {
+  const xml = extractZipEntry(buffer, 'word/document.xml').toString('utf8');
+  return xml
+    .split(/<\/w:p>/i)
+    .map(paragraph => {
+      const parts = [...paragraph.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/gi)]
+        .map(match => decodeXmlEntities(match[1]));
+      return parts.join('');
+    })
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractTheaterImportFile(file) {
+  const name = String(file?.originalname || '').toLowerCase();
+  const type = String(file?.mimetype || '').toLowerCase();
+  if (name.endsWith('.doc')) throw new Error('旧版 .doc 暂时读不了，把它另存为 .docx 再传。');
+  if (name.endsWith('.docx') || type.includes('wordprocessingml.document')) return extractDocxText(file.buffer);
+  if (name.endsWith('.txt') || name.endsWith('.md') || type.startsWith('text/')) return file.buffer.toString('utf8');
+  throw new Error('先传 .docx、.txt 或 .md 格式的世界书。');
+}
+
 function parseTheaterBook(row, children = []) {
   let settings = emptyTheaterSettings();
   try {
@@ -1273,6 +1386,7 @@ function normalizeMusicTrack(value = {}) {
     audio_url: compactLine(value.audio_url, 1000),
     source_url: compactLine(value.source_url, 1000),
     cover_url: compactLine(value.cover_url, 1000),
+    lyrics: compactBlock(value.lyrics, 3000),
     note: compactLine(value.note, 500),
   };
 }
@@ -1297,6 +1411,7 @@ function normalizeMusicState(value = {}) {
   return {
     track_id: value.track_id ? String(value.track_id) : null,
     is_playing: Boolean(value.is_playing),
+    shuffle: Boolean(value.shuffle),
     updated_at: value.updated_at || new Date().toISOString(),
   };
 }
@@ -2499,7 +2614,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-music-room',
+    version: '2026.07.31-music-search-world-import',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2525,8 +2640,11 @@ app.get('/', (req, res) => {
       theaterInteractive: true,
       theaterBooks: true,
       theaterChat: true,
+      theaterWorldImport: true,
       musicRoom: true,
       musicPlaylist: true,
+      musicSearch: true,
+      musicLyrics: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -3641,6 +3759,63 @@ app.delete('/memory-favorites/:id', async (req, res) => {
 
 // ============ music room (一起听) ============
 
+app.get('/music/search', async (req, res) => {
+  try {
+    const term = compactLine(req.query.q, 120);
+    if (!term) return res.status(400).json({ error: '先写歌名或歌手。' });
+    const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 12, 25));
+    const searchOnce = async country => {
+      const params = new URLSearchParams({
+        term,
+        media: 'music',
+        entity: 'song',
+        country,
+        limit: String(limit),
+      });
+      const response = await fetch(`https://itunes.apple.com/search?${params.toString()}`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(9000),
+      });
+      if (!response.ok) throw new Error(`音乐搜索暂时没有回应 (${response.status})`);
+      const json = await response.json();
+      return Array.isArray(json.results) ? json.results : [];
+    };
+    let results = await searchOnce('CN');
+    if (!results.length) results = await searchOnce('US');
+    res.json(results
+      .filter(item => item.previewUrl)
+      .slice(0, limit)
+      .map(item => normalizeMusicTrack({
+        title: item.trackName,
+        artist: item.artistName,
+        album: item.collectionName,
+        audio_url: item.previewUrl,
+        source_url: item.trackViewUrl,
+        cover_url: item.artworkUrl100 ? String(item.artworkUrl100).replace('100x100bb', '600x600bb') : '',
+        note: 'Apple Music 试听片段',
+      })));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '音乐搜索暂时没有结果' });
+  }
+});
+
+app.get('/music/lyrics', async (req, res) => {
+  try {
+    const artist = compactLine(req.query.artist, 100);
+    const title = compactLine(req.query.title, 100);
+    if (!artist || !title) return res.status(400).json({ error: '需要歌名和歌手才能找歌词。' });
+    const response = await fetch(`https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(9000),
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok || !json.lyrics) return res.status(404).json({ error: '暂时没有找到这首歌的歌词' });
+    res.json({ lyrics: compactBlock(json.lyrics, 3000) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || '歌词暂时没有回来' });
+  }
+});
+
 app.get('/music/tracks', async (req, res) => {
   const { data, error } = await supabase.from('letters')
     .select('*')
@@ -3815,6 +3990,33 @@ app.post('/theater/books', async (req, res) => {
     res.json(parseTheaterBook(data));
   } catch (error) {
     res.status(500).json({ error: error.message || '小世界没有创建成功' });
+  }
+});
+
+app.post('/theater/import-world', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: '先选择一个世界书文件。' });
+    const rawText = extractTheaterImportFile(file);
+    const draft = parseTheaterImportText(rawText);
+    if (!draft.settings.premise && !draft.settings.characters && !draft.settings.rules) {
+      return res.status(400).json({ error: '这个文件里没有读到可导入的设定。' });
+    }
+    const { data, error } = await supabase.from('letters')
+      .insert({
+        category: THEATER_BOOK_CATEGORY,
+        author: '檀',
+        title: draft.title,
+        content: JSON.stringify(draft.settings),
+        parent_id: null,
+        paper_style: null,
+      })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...parseTheaterBook(data), imported_chars: rawText.length });
+  } catch (error) {
+    res.status(400).json({ error: error.message || '世界书没有导入成功' });
   }
 });
 
