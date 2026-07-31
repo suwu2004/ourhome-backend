@@ -384,7 +384,7 @@ const ACTION_TOOLS = [
   },
   {
     name: 'save_memory',
-    description: '把一件值得长期记住的事存进记忆里——重要事实、约定、她的喜好或界限、值得记住的情绪时刻。不用等到每天回顾，聊天聊到一半觉得这件事该记下来，当场就可以用。不要为闲聊式的内容使用。',
+    description: '只把“长期档案级”的内容存进长期记忆：稳定偏好、明确界限、重要约定、长期项目设定、核心身份资料。不要保存当天流水账、普通情绪、闲聊片段、一次性事件、临时待办或只是觉得可爱的碎碎念；这些应留给今日摘要/未完待续/便签。',
     input_schema: {
       type: 'object',
       properties: {
@@ -818,7 +818,8 @@ async function executeActionTool(name, input) {
     return { ok: true, entry_id: data.id };
   }
   if (name === 'save_memory') {
-    const { data, error } = await saveMemoryWithEmbedding(input.summary);
+    const { data, error, rejected } = await saveMemoryWithEmbedding(input.summary, {}, { guardLongMemory: true });
+    if (rejected) return { ok: false, error: rejected.reason };
     if (error) return { ok: false, error: error.message };
     return { ok: true, memory_id: data.id };
   }
@@ -1485,8 +1486,53 @@ async function getRelevantMemories(message) {
   return finalResult;
 }
 
+function assessLongMemoryCandidate(summary) {
+  const text = compactLine(summary, 500);
+  if (!text) return { ok: false, reason: '长期记忆内容为空' };
+  if (text.length < 8) return { ok: false, reason: '这条太短，不适合作为长期记忆' };
+  if (text.length > 260) return { ok: false, reason: '这条太长，先整理成一条稳定事实再存长期记忆' };
+
+  const stableSignals = [
+    '喜欢', '不喜欢', '偏好', '希望', '想要', '不想要', '讨厌', '害怕', '介意', '在意',
+    '习惯', '总是', '通常', '每次', '长期', '固定', '以后', '默认',
+    '界限', '底线', '雷点', '禁忌', '不要', '必须', '需要',
+    '约定', '承诺', '决定', '保留', '取消', '改成', '放在',
+    '生日', '纪念日', '重要日子', '人设', '设定', '称呼', '身份',
+    'OurHome', 'API', '模型', 'GitHub', 'Supabase', 'Vercel', 'Render',
+    '记忆', '便签', '日记', '邮箱', '金库', '设置', '主页',
+  ];
+  const diaryOnlySignals = [
+    '今天', '昨天', '刚刚', '刚才', '早上', '上午', '中午', '下午', '晚上', '今晚',
+    '这轮', '这次聊天', '聊到', '说起', '提到', '问了', '回复了',
+    '心情', '情绪', '撒娇', '亲亲', '抱抱', '开心', '难过', '焦虑', '委屈',
+  ];
+  const unstableOnlySignals = ['可能', '也许', '暂时', '随便', '好像', '感觉', '突然', '准备去', '计划去'];
+
+  const hasStableSignal = stableSignals.some(signal => text.includes(signal));
+  const hasDiaryOnlySignal = diaryOnlySignals.some(signal => text.includes(signal));
+  const hasUnstableOnlySignal = unstableOnlySignals.some(signal => text.includes(signal));
+  const hasExplicitMemoryIntent = /记住|长期记忆|以后要记得|需要记得|别忘/.test(text);
+  const isPreferenceOrBoundary = /喜欢|不喜欢|偏好|想要|不想要|讨厌|介意|界限|底线|雷点|禁忌|称呼|人设|设定/.test(text);
+  const isProjectDecision = /(OurHome|API|模型|GitHub|Supabase|Vercel|Render|记忆|便签|日记|邮箱|金库|设置|主页).*(决定|需要|必须|以后|默认|保留|取消|改成|放在|权限|开启|关闭)/.test(text);
+
+  if (!hasStableSignal) {
+    return { ok: false, reason: '这条更像聊天碎片，先放在今日摘要或未完待续，不进长期记忆' };
+  }
+  if (hasDiaryOnlySignal && !hasExplicitMemoryIntent && !isPreferenceOrBoundary && !isProjectDecision) {
+    return { ok: false, reason: '这条更像当天记录，适合留在今日摘要，不进长期记忆' };
+  }
+  if (hasUnstableOnlySignal && !hasExplicitMemoryIntent && !isPreferenceOrBoundary && !isProjectDecision) {
+    return { ok: false, reason: '这条还不够稳定，先别写进长期记忆' };
+  }
+  return { ok: true };
+}
+
 // 存记忆时顺手生成向量（不阻塞主流程）
-async function saveMemoryWithEmbedding(summary, extra = {}) {
+async function saveMemoryWithEmbedding(summary, extra = {}, options = {}) {
+  if (options.guardLongMemory) {
+    const assessment = assessLongMemoryCandidate(summary);
+    if (!assessment.ok) return { data: null, error: null, rejected: assessment };
+  }
   const { data, error } = await supabase.from('memories')
     .insert({ summary, session_id: 'global', weight: 1, is_protected: false, ...extra })
     .select().single();
@@ -1731,7 +1777,7 @@ ${openThreads}
   },
   "long_memory": {
     "should_save": true或false,
-    "summary": "只有稳定偏好、重要约定、项目进度、长期事实才写；不超过120字"
+    "summary": "默认留空；只有长期档案级内容才写，不超过120字"
   }
 }
 
@@ -1739,7 +1785,9 @@ ${openThreads}
 - 普通寒暄、单纯撒娇、表情回应不要写 mark。
 - mark 只记录未收尾、之后应该接住的话题；不要把每轮聊天都写成隐藏标记。
 - should_continue 表示之后一句“早上那个/继续”需要能接住。
-- long_memory 只保存长期稳定内容，不要记流水账。`;
+- long_memory 默认 should_save=false。
+- 只有这些可以进 long_memory：叶檀稳定偏好/不喜欢/界限/称呼/人设；明确说“以后要记得/长期记住/别忘”的内容；OurHome 等长期项目的确定设置或权限决定；生日、纪念日、长期身份资料。
+- 这些绝对不要进 long_memory：今天发生了什么、一次性计划、普通心情、撒娇片段、聊天过程、临时待办、还没确定的想法、只是可爱或有趣的一句话。它们可以留给今日摘要、未完待续或便签。`;
 
   const result = await callClaude({
     settings,
@@ -1808,7 +1856,12 @@ async function recordMemoryJournalTurn({
   const longMemory = analysis.long_memory || {};
   const longSummary = compactLine(longMemory.summary, 400);
   if (longMemory.should_save && longSummary) {
-    await saveMemoryWithEmbedding(longSummary, { last_referenced_at: now.toISOString() });
+    const { rejected } = await saveMemoryWithEmbedding(
+      longSummary,
+      { last_referenced_at: now.toISOString() },
+      { guardLongMemory: true },
+    );
+    if (rejected) console.info('长期记忆守门拒绝:', rejected.reason, longSummary);
   }
 }
 
@@ -2328,7 +2381,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.30-simplified-memory',
+    version: '2026.07.31-long-memory-guard',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2345,6 +2398,7 @@ app.get('/', (req, res) => {
       sessionSummary: true,
       memoryJournal: true,
       memoryJournalSmartGuard: true,
+      longMemoryGuard: true,
       chatHistorySearch: true,
       diaryPaperStyle: true,
       memoryFavorites: true,
@@ -4480,7 +4534,7 @@ app.get('/dream', async (req, res) => {
     const transcript = todayMsgs.map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 300)}`).join('\n');
     const settings = await runtimeConfig.loadSettings();
 
-    const reviewPrompt = `这是你（陆泽）和叶檀今天的完整聊天记录：\n${transcript}\n\n请像睡前回顾今天一样，挑出值得长期记住的内容——重要事实、约定、她的喜好或界限、值得记住的情绪时刻，不记流水账式闲聊。\n\n严格按格式输出，每条一行：\n记住：<内容，一句话，第三人称>\n\n如果没什么特别值得新增的，只输出一行：\n无新增`;
+    const reviewPrompt = `这是你（陆泽）和叶檀今天的完整聊天记录：\n${transcript}\n\n请像睡前整理档案柜一样，只挑出“长期档案级”的内容。默认不要新增。\n\n可以记：稳定偏好/不喜欢/界限/称呼/人设；明确说以后要记得的内容；OurHome 等长期项目的确定设置或权限决定；生日、纪念日、长期身份资料。\n不要记：今天发生了什么、一次性计划、普通心情、撒娇片段、聊天过程、临时待办、还没确定的想法、只是可爱或有趣的一句话。\n\n严格按格式输出，每条一行：\n记住：<内容，一句话，第三人称>\n\n如果没什么特别值得新增的，只输出一行：\n无新增`;
 
     const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 600, messages: [{ role: 'user', content: reviewPrompt }], temperature: 0.3 });
     const replyText = extractText(result);
@@ -4491,11 +4545,19 @@ app.get('/dream', async (req, res) => {
       .map(l => l.replace(/^记住[：:]/, '').trim())
       .filter(Boolean);
 
+    const addedSummaries = [];
+    const rejected = [];
     for (const summary of newSummaries) {
-      await saveMemoryWithEmbedding(summary, { last_referenced_at: now.toISOString() });
+      const result = await saveMemoryWithEmbedding(
+        summary,
+        { last_referenced_at: now.toISOString() },
+        { guardLongMemory: true },
+      );
+      if (result.rejected) rejected.push({ summary, reason: result.rejected.reason });
+      else if (!result.error) addedSummaries.push(summary);
     }
 
-    res.json({ dreamed: true, added: newSummaries.length, summaries: newSummaries });
+    res.json({ dreamed: true, added: addedSummaries.length, summaries: addedSummaries, rejected });
   } catch (err) {
     console.error('dreaming错误:', err);
     res.status(500).json({ error: err.message });
