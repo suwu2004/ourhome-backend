@@ -1225,14 +1225,27 @@ function emptyTheaterSettings() {
     premise: '',
     characters: '',
     rules: '',
+    user_name: '',
+    assistant_name: '',
+    chat_background_mode: 'main',
+    chat_background_color: '',
+    chat_background_image_url: '',
   };
 }
 
 function normalizeTheaterSettings(value = {}) {
+  const bgMode = ['main', 'paper', 'cream', 'blush', 'night', 'custom'].includes(value.chat_background_mode)
+    ? value.chat_background_mode
+    : 'main';
   return {
     premise: compactBlock(value.premise, 5000),
     characters: compactBlock(value.characters, 5000),
     rules: compactBlock(value.rules, 4000),
+    user_name: compactLine(value.user_name, 40),
+    assistant_name: compactLine(value.assistant_name, 40),
+    chat_background_mode: bgMode,
+    chat_background_color: compactLine(value.chat_background_color, 40),
+    chat_background_image_url: compactLine(value.chat_background_image_url, 1000),
   };
 }
 
@@ -1253,6 +1266,8 @@ function parseTheaterImportText(rawText) {
     ['premise', /^(?:#+\s*)?(?:世界观|背景|剧情设定|故事设定|世界设定|故事背景|设定)\s*[：:]?\s*(.*)$/i],
     ['characters', /^(?:#+\s*)?(?:人设|人物设定|角色卡|角色|角色关系|关系|人物关系|cp|主角)\s*[：:]?\s*(.*)$/i],
     ['rules', /^(?:#+\s*)?(?:禁区|避雷|规则|写作规则|注意事项|不能|不要|防ooc|防 OOC|ooc)\s*[：:]?\s*(.*)$/i],
+    ['user_name', /^(?:#+\s*)?(?:我的名字|我的昵称|玩家名|用户名|主控名|女主名|我在这里叫)\s*[：:]\s*(.*)$/i],
+    ['assistant_name', /^(?:#+\s*)?(?:对方名字|对方昵称|剧场称呼|小剧场称呼|男主名|对手戏名字|他在这里叫)\s*[：:]\s*(.*)$/i],
   ];
   text.split('\n').forEach(line => {
     const trimmed = line.trim();
@@ -1262,6 +1277,9 @@ function parseTheaterImportText(rawText) {
       const inline = trimmed.match(pattern)?.[1]?.trim() || '';
       if (section === 'title') {
         if (inline) draft.title = compactLine(inline, 80) || draft.title;
+        current = 'premise';
+      } else if (section === 'user_name' || section === 'assistant_name') {
+        if (inline) buckets[section] = compactLine(inline, 40);
         current = 'premise';
       } else {
         current = section;
@@ -2614,7 +2632,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-night-cleanup',
+    version: '2026.07.31-theater-chat-polish',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4082,8 +4100,10 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     if (historyError) return res.status(500).json({ error: historyError.message });
 
     const book = parseTheaterBook(bookRow, historyRows || []);
+    const theaterUserName = book.settings.user_name || '叶檀';
+    const theaterAssistantName = book.settings.assistant_name || '剧场';
     const recentMessages = book.messages.slice(-18)
-      .map(item => `${item.role === 'user' ? '叶檀/导演' : '剧场'}：${item.content}`)
+      .map(item => `${item.role === 'user' ? theaterUserName : theaterAssistantName}：${item.content}`)
       .join('\n\n');
 
     const system = `你是 OurHome 的“小剧场”互动写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
@@ -4091,11 +4111,11 @@ app.post('/theater/books/:id/chat', async (req, res) => {
 
 互动规则：
 - 严格遵守这本小剧本的世界观、角色卡、关系、禁区和写作规则，禁止 OOC。
-- 叶檀发来的内容可能是角色台词、动作，也可能是导演指令；你要自然接住并推进。
+- ${theaterUserName}发来的内容可能是角色台词、动作，也可能是场外指令；你要自然接住并推进。
 - 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
-- 不要跳出剧情解释“我理解了/我会这样写”，除非叶檀明确要求场外讨论。
+- 不要跳出剧情解释“我理解了/我会这样写”，除非${theaterUserName}明确要求场外讨论。
 - 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
-- 不替叶檀预设下一步选项，不输出“【可选走向】”；剧情停在自然能继续接话的位置。`;
+- 不替${theaterUserName}预设下一步选项，不输出“【可选走向】”；剧情停在自然能继续接话的位置。`;
 
     const prompt = `【剧本名】
 ${book.title}
@@ -4109,10 +4129,14 @@ ${book.settings.characters || '（未填写，按互动自然补足。）'}
 【禁区/写作规则】
 ${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}
 
+【本书称呼】
+${theaterUserName}：叶檀在这本书里的名字或称呼。
+${theaterAssistantName}：你在这本书里承担的角色、旁白或对手戏称呼。
+
 【最近互动记录】
 ${recentMessages || '（还没有正式开始。）'}
 
-【叶檀刚刚发来】
+【${theaterUserName}刚刚发来】
 ${userText}
 
 【玩法】
