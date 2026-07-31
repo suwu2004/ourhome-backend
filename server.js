@@ -1222,6 +1222,8 @@ const MUSIC_STATE_CATEGORY = '一起听状态';
 
 function emptyTheaterSettings() {
   return {
+    worldbook_text: '',
+    worldbook_only: false,
     premise: '',
     characters: '',
     rules: '',
@@ -1238,9 +1240,11 @@ function normalizeTheaterSettings(value = {}) {
     ? value.chat_background_mode
     : 'main';
   return {
-    premise: compactBlock(value.premise, 5000),
-    characters: compactBlock(value.characters, 5000),
-    rules: compactBlock(value.rules, 4000),
+    worldbook_text: compactBlock(value.worldbook_text, 30000),
+    worldbook_only: Boolean(value.worldbook_only),
+    premise: compactBlock(value.premise, 9000),
+    characters: compactBlock(value.characters, 9000),
+    rules: compactBlock(value.rules, 7000),
     user_name: compactLine(value.user_name, 40),
     assistant_name: compactLine(value.assistant_name, 40),
     chat_background_mode: bgMode,
@@ -1250,16 +1254,18 @@ function normalizeTheaterSettings(value = {}) {
 }
 
 function appendTheaterSection(target, key, value) {
-  const text = compactBlock(value, key === 'rules' ? 4000 : 5000);
+  const text = compactBlock(value, key === 'rules' ? 7000 : 9000);
   if (!text) return;
   target[key] = [target[key], text].filter(Boolean).join('\n').trim();
 }
 
 function parseTheaterImportText(rawText) {
-  const text = compactBlock(String(rawText || '').replace(/\r\n/g, '\n'), 16000);
+  const text = compactBlock(String(rawText || '').replace(/\r\n/g, '\n'), 30000);
   const draft = { title: '导入的小世界', settings: emptyTheaterSettings() };
   if (!text) return draft;
   const buckets = emptyTheaterSettings();
+  buckets.worldbook_text = text;
+  buckets.worldbook_only = true;
   let current = 'premise';
   const sections = [
     ['title', /^(?:#+\s*)?(?:剧场名|小剧场名|书名|标题|世界名|世界名称)\s*[：:]\s*(.*)$/i],
@@ -1293,7 +1299,8 @@ function parseTheaterImportText(rawText) {
   if (draft.title === '导入的小世界' && headingTitle) draft.title = compactLine(headingTitle, 80) || draft.title;
   draft.settings = normalizeTheaterSettings(buckets);
   if (!draft.settings.premise && !draft.settings.characters && !draft.settings.rules) {
-    draft.settings.premise = compactBlock(text, 5000);
+    draft.settings.worldbook_text = compactBlock(text, 30000);
+    draft.settings.worldbook_only = true;
   }
   return draft;
 }
@@ -1372,7 +1379,8 @@ function parseTheaterBook(row, children = []) {
     const parsed = JSON.parse(row?.content || '{}');
     settings = { ...settings, ...normalizeTheaterSettings(parsed) };
   } catch {
-    settings.premise = compactBlock(row?.content, 5000);
+    settings.worldbook_text = compactBlock(row?.content, 30000);
+    settings.worldbook_only = true;
   }
   const messages = [...children]
     .sort((left, right) => Date.parse(left?.created_at || '') - Date.parse(right?.created_at || ''))
@@ -2632,7 +2640,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-chat-polish',
+    version: '2026.07.31-theater-worldbook-longform',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4017,7 +4025,7 @@ app.post('/theater/import-world', upload.single('file'), async (req, res) => {
     if (!file) return res.status(400).json({ error: '先选择一个世界书文件。' });
     const rawText = extractTheaterImportFile(file);
     const draft = parseTheaterImportText(rawText);
-    if (!draft.settings.premise && !draft.settings.characters && !draft.settings.rules) {
+    if (!draft.settings.worldbook_text && !draft.settings.premise && !draft.settings.characters && !draft.settings.rules) {
       return res.status(400).json({ error: '这个文件里没有读到可导入的设定。' });
     }
     const { data, error } = await supabase.from('letters')
@@ -4081,7 +4089,7 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
     const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
-    const maxTokens = lengthMode === 'extra_long' ? 5200 : lengthMode === 'short' ? 1600 : 3200;
+    const maxTokens = lengthMode === 'extra_long' ? 9000 : lengthMode === 'short' ? 1600 : 3600;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
     const { data: bookRow, error: bookError } = await supabase.from('letters')
@@ -4102,6 +4110,8 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const book = parseTheaterBook(bookRow, historyRows || []);
     const theaterUserName = book.settings.user_name || '叶檀';
     const theaterAssistantName = book.settings.assistant_name || '剧场';
+    const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
+    const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
     const recentMessages = book.messages.slice(-18)
       .map(item => `${item.role === 'user' ? theaterUserName : theaterAssistantName}：${item.content}`)
       .join('\n\n');
@@ -4120,15 +4130,15 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const prompt = `【剧本名】
 ${book.title}
 
-【世界观/剧情设定】
+${worldbookText ? `【完整世界书】\n${worldbookText}\n` : ''}
+${useWorldbookOnly ? '【设定读取方式】\n以完整世界书为准，不强制拆分角色卡或禁区；如果分栏为空，不要认为设定缺失。\n' : `【世界观/剧情设定】
 ${book.settings.premise || '（未填写，按互动自然补足。）'}
 
 【角色卡/关系】
 ${book.settings.characters || '（未填写，按互动自然补足。）'}
 
 【禁区/写作规则】
-${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}
-
+${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}\n`}
 【本书称呼】
 ${theaterUserName}：叶檀在这本书里的名字或称呼。
 ${theaterAssistantName}：你在这本书里承担的角色、旁白或对手戏称呼。
@@ -4204,12 +4214,12 @@ app.post('/theater/generate', async (req, res) => {
     const save = req.body?.save !== false;
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
-    const maxTokens = lengthMode === 'extra_long' ? 5200 : lengthMode === 'short' ? 2200 : 3800;
+    const maxTokens = lengthMode === 'extra_long' ? 9000 : lengthMode === 'short' ? 2200 : 4200;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
-    const premise = compactBlock(req.body?.premise, 5000);
-    const characters = compactBlock(req.body?.characters, 5000);
-    const rules = compactBlock(req.body?.rules, 4000);
+    const premise = compactBlock(req.body?.premise, 9000);
+    const characters = compactBlock(req.body?.characters, 9000);
+    const rules = compactBlock(req.body?.rules, 7000);
     const previousText = compactBlock(req.body?.previous_text, 9000);
     const request = compactBlock(req.body?.request, 2400);
 
