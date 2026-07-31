@@ -582,6 +582,55 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: 'read_music_room',
+    description: '查看“一起听”里的歌单、当前唱片机状态、正在选中的歌和随机播放是否开启。当叶檀问起正在听什么、歌单里有什么，或你想确认能不能放歌时使用。',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'search_music',
+    description: '联网搜索可加入“一起听”的歌曲试听片段。返回的多为30秒试听，适合叶檀说想听某首歌、某个歌手，或你想主动找一首歌时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '歌名、歌手或关键词' },
+        limit: { type: 'number', description: '返回数量，默认8，最多12' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'add_music_track',
+    description: '把一首歌加入“一起听”歌单。通常先 search_music，再把选中的结果加入；如果叶檀提供了音频链接，也可以直接加入。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '歌名' },
+        artist: { type: 'string', description: '歌手，可省略' },
+        album: { type: 'string', description: '专辑，可省略' },
+        audio_url: { type: 'string', description: '可播放的音频地址，搜索结果里的 audio_url 或叶檀给的链接' },
+        source_url: { type: 'string', description: '来源页面链接，可省略' },
+        cover_url: { type: 'string', description: '封面图链接，可省略' },
+        lyrics: { type: 'string', description: '歌词，可省略' },
+        note: { type: 'string', description: '备注，可省略' },
+        play_now: { type: 'boolean', description: '加入后是否立刻切到这首并尝试播放' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'control_music_room',
+    description: '控制“一起听”的唱片机状态：播放、暂停、切到某首、上一首、下一首、随机开关。注意浏览器可能需要叶檀点一下页面才会真正出声，但状态会真实保存。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['play', 'pause', 'select', 'next', 'previous', 'shuffle'] },
+        track_id: { type: 'string', description: 'read_music_room 或 add_music_track 返回的歌曲编号；select/play 指定歌曲时使用' },
+        shuffle: { type: 'boolean', description: 'action=shuffle 时指定随机播放开关；省略则切换当前状态' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'manage_home_memo',
     description: '在主页“我们的小便签”中新增、修改、完成/恢复或删除便签。新增便签时用陆泽自己的口吻写，后端会记录作者为“泽”。可以主动留下温馨提示；删除只有在叶檀明确要求且目标准确时使用。修改和删除前目标不明确就先调用 read_home_memos。',
     input_schema: {
@@ -986,6 +1035,97 @@ async function executeActionTool(name, input) {
     const { data, error } = await query;
     if (error) return { ok: false, error: error.message };
     return { ok: true, memos: data };
+  }
+  if (name === 'read_music_room') {
+    try {
+      return { ok: true, ...(await musicRoomSnapshot()) };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+  if (name === 'search_music') {
+    try {
+      return { ok: true, query: compactLine(input.query, 120), results: await searchMusicCatalog(input.query, input.limit || 8) };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+  if (name === 'add_music_track') {
+    try {
+      let track = normalizeMusicTrack(input || {});
+      if (!track.audio_url && track.title) {
+        const [first] = await searchMusicCatalog([track.title, track.artist].filter(Boolean).join(' '), 1);
+        if (first) track = normalizeMusicTrack({ ...first, note: track.note || first.note });
+      }
+      if (!track.title && !track.audio_url && !track.source_url) return { ok: false, error: '至少需要歌名或音频链接' };
+      const { data, error } = await supabase.from('letters')
+        .insert({
+          category: MUSIC_TRACK_CATEGORY,
+          author: '泽',
+          title: track.title,
+          content: JSON.stringify(track),
+          parent_id: null,
+          paper_style: null,
+        })
+        .select()
+        .single();
+      if (error) return { ok: false, error: error.message };
+      const savedTrack = parseMusicTrack(data);
+      let state = null;
+      if (input.play_now) {
+        const current = await readMusicState();
+        state = await saveMusicState({ ...current, track_id: savedTrack.id, is_playing: true });
+      }
+      return { ok: true, track: savedTrack, state };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+  if (name === 'control_music_room') {
+    try {
+      const action = compactLine(input.action, 30);
+      const tracks = await listMusicTracks();
+      const current = await readMusicState();
+      const activeTrack = tracks.find(track => String(track.id) === String(current.track_id)) || tracks[0] || null;
+      let targetTrack = input.track_id
+        ? tracks.find(track => String(track.id) === String(input.track_id))
+        : activeTrack;
+      if (action === 'next' || action === 'previous') {
+        if (!tracks.length) return { ok: false, error: '歌单里还没有歌' };
+        const index = Math.max(0, tracks.findIndex(track => String(track.id) === String(activeTrack?.id)));
+        if (current.shuffle && tracks.length > 1 && action === 'next') {
+          const candidates = tracks.filter(track => String(track.id) !== String(activeTrack?.id));
+          targetTrack = candidates[Math.floor(Math.random() * candidates.length)] || tracks[0];
+        } else {
+          const direction = action === 'next' ? 1 : -1;
+          targetTrack = tracks[(index + direction + tracks.length) % tracks.length];
+        }
+      }
+      if ((action === 'play' || action === 'select') && input.track_id && !targetTrack) return { ok: false, error: '找不到这首歌' };
+      let nextState = current;
+      if (action === 'play') {
+        if (!targetTrack) return { ok: false, error: '歌单里还没有可播放的歌' };
+        nextState = await saveMusicState({ ...current, track_id: targetTrack.id, is_playing: true });
+      } else if (action === 'pause') {
+        nextState = await saveMusicState({ ...current, is_playing: false });
+      } else if (action === 'select' || action === 'next' || action === 'previous') {
+        if (!targetTrack) return { ok: false, error: '歌单里还没有歌' };
+        nextState = await saveMusicState({ ...current, track_id: targetTrack.id, is_playing: action === 'select' ? current.is_playing : true });
+      } else if (action === 'shuffle') {
+        nextState = await saveMusicState({ ...current, shuffle: input.shuffle === undefined ? !current.shuffle : Boolean(input.shuffle) });
+      } else {
+        return { ok: false, error: '不支持这个音乐动作' };
+      }
+      const selected = tracks.find(track => String(track.id) === String(nextState.track_id)) || targetTrack || null;
+      return {
+        ok: true,
+        state: nextState,
+        active_track: selected,
+        note: nextState.is_playing ? '播放状态已保存；如果浏览器拦截自动播放，叶檀点一下播放键就会接上。' : '',
+      };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
   }
   if (name === 'manage_home_memo') {
     if (input.action === 'create') {
@@ -1440,6 +1580,112 @@ function normalizeMusicState(value = {}) {
     shuffle: Boolean(value.shuffle),
     updated_at: value.updated_at || new Date().toISOString(),
   };
+}
+
+async function searchMusicCatalog(term, limit = 8) {
+  const keyword = compactLine(term, 120);
+  if (!keyword) throw new Error('先写歌名或歌手。');
+  const safeLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || 8, 12));
+  const searchOnce = async country => {
+    const params = new URLSearchParams({
+      term: keyword,
+      media: 'music',
+      entity: 'song',
+      country,
+      limit: String(safeLimit),
+    });
+    const response = await fetch(`https://itunes.apple.com/search?${params.toString()}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(9000),
+    });
+    if (!response.ok) throw new Error(`音乐搜索暂时没有回应 (${response.status})`);
+    const json = await response.json();
+    return Array.isArray(json.results) ? json.results : [];
+  };
+  let results = await searchOnce('CN');
+  if (!results.length) results = await searchOnce('US');
+  return results
+    .filter(item => item.previewUrl)
+    .slice(0, safeLimit)
+    .map(item => normalizeMusicTrack({
+      title: item.trackName,
+      artist: item.artistName,
+      album: item.collectionName,
+      audio_url: item.previewUrl,
+      source_url: item.trackViewUrl,
+      cover_url: item.artworkUrl100 ? String(item.artworkUrl100).replace('100x100bb', '600x600bb') : '',
+      note: 'Apple Music 试听片段',
+    }));
+}
+
+async function listMusicTracks() {
+  const { data, error } = await supabase.from('letters')
+    .select('*')
+    .eq('category', MUSIC_TRACK_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(parseMusicTrack);
+}
+
+async function readMusicState() {
+  const { data, error } = await supabase.from('letters')
+    .select('*')
+    .eq('category', MUSIC_STATE_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return normalizeMusicState();
+  try {
+    return normalizeMusicState(JSON.parse(data.content || '{}'));
+  } catch {
+    return normalizeMusicState();
+  }
+}
+
+async function saveMusicState(statePatch = {}) {
+  const state = normalizeMusicState({ ...statePatch, updated_at: new Date().toISOString() });
+  const { data: existing, error: existingError } = await supabase.from('letters')
+    .select('*')
+    .eq('category', MUSIC_STATE_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  const payload = {
+    category: MUSIC_STATE_CATEGORY,
+    author: '泽',
+    title: '正在一起听',
+    content: JSON.stringify(state),
+    parent_id: null,
+    paper_style: null,
+  };
+  const query = existing
+    ? supabase.from('letters').update(payload).eq('id', existing.id)
+    : supabase.from('letters').insert(payload);
+  const { error } = await query;
+  if (error) throw error;
+  return state;
+}
+
+async function musicRoomSnapshot() {
+  const [tracks, state] = await Promise.all([listMusicTracks(), readMusicState()]);
+  const activeTrack = tracks.find(track => String(track.id) === String(state.track_id)) || tracks[0] || null;
+  return { tracks, state, active_track: activeTrack };
+}
+
+async function loadMusicRoomPromptBlock() {
+  try {
+    const snapshot = await musicRoomSnapshot();
+    const tracks = snapshot.tracks.slice(0, 8).map(track => `${track.title}${track.artist ? ` - ${track.artist}` : ''}`).join('\n');
+    return `【一起听·当前唱片机】\n当前：${snapshot.active_track ? `${snapshot.active_track.title}${snapshot.active_track.artist ? ` - ${snapshot.active_track.artist}` : ''}` : '还没有选中的歌'}\n状态：${snapshot.state.is_playing ? '播放中' : '未播放'}；随机：${snapshot.state.shuffle ? '开' : '关'}\n歌单前几首：\n${tracks || '暂无歌曲'}`;
+  } catch (error) {
+    console.error('一起听上下文读取失败:', error.message);
+    return '';
+  }
 }
 
 function extractThinking(result) {
@@ -2137,6 +2383,7 @@ const OURHOME_ACTION_BOUNDARY = `
 
 【OurHome 操作边界】
 你可以使用已提供的工具读取或操作叶檀在 OurHome 各房间里的内容。工具执行成功才可以说“已经完成”，失败时要如实说明。
+“一起听”在你的权限内：可以查看歌单、搜歌、加歌、切歌、暂停/播放和调整随机播放；真正出声可能受浏览器自动播放限制，必要时提醒叶檀点一下播放键。
 “设置”房间永远不在你的操作权限内：不得修改、删除或新增 API 站点、模型、密钥、联网、MCP、人物设定、字体、主题、背景或任何其他设置；即使被要求，也只能说明需要叶檀亲自在设置页操作。
 删除金库数据等不可逆操作，只能在叶檀明确说要删除且目标清楚时执行；目标有歧义要先读取确认。
 AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动寄信都由你自己决定，不需要逐封申请；但每一次检查、阅读、暂不回复、发送、回复、隐私拦截和失败都会永久记入叶檀可见的知情记录，不得隐藏、删除或伪造。
@@ -2166,6 +2413,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   const todayContext = await loadTodayMemoryContext(shanghaiDateKeyFromTime());
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
   const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(await loadPinnedFavorites());
+  const musicRoomBlock = await loadMusicRoomPromptBlock();
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
@@ -2182,6 +2430,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
   if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
   if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
+  if (musicRoomBlock) prompt += `\n\n${musicRoomBlock}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
   prompt += DIALOGUE_STYLE_RULES;
   prompt += OURHOME_ACTION_BOUNDARY;
@@ -2640,7 +2889,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-worldbook-longform',
+    version: '2026.07.31-assistant-music-tools',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -3787,39 +4036,7 @@ app.delete('/memory-favorites/:id', async (req, res) => {
 
 app.get('/music/search', async (req, res) => {
   try {
-    const term = compactLine(req.query.q, 120);
-    if (!term) return res.status(400).json({ error: '先写歌名或歌手。' });
-    const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 12, 25));
-    const searchOnce = async country => {
-      const params = new URLSearchParams({
-        term,
-        media: 'music',
-        entity: 'song',
-        country,
-        limit: String(limit),
-      });
-      const response = await fetch(`https://itunes.apple.com/search?${params.toString()}`, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(9000),
-      });
-      if (!response.ok) throw new Error(`音乐搜索暂时没有回应 (${response.status})`);
-      const json = await response.json();
-      return Array.isArray(json.results) ? json.results : [];
-    };
-    let results = await searchOnce('CN');
-    if (!results.length) results = await searchOnce('US');
-    res.json(results
-      .filter(item => item.previewUrl)
-      .slice(0, limit)
-      .map(item => normalizeMusicTrack({
-        title: item.trackName,
-        artist: item.artistName,
-        album: item.collectionName,
-        audio_url: item.previewUrl,
-        source_url: item.trackViewUrl,
-        cover_url: item.artworkUrl100 ? String(item.artworkUrl100).replace('100x100bb', '600x600bb') : '',
-        note: 'Apple Music 试听片段',
-      })));
+    res.json(await searchMusicCatalog(req.query.q, req.query.limit || 12));
   } catch (error) {
     res.status(500).json({ error: error.message || '音乐搜索暂时没有结果' });
   }
@@ -3843,13 +4060,11 @@ app.get('/music/lyrics', async (req, res) => {
 });
 
 app.get('/music/tracks', async (req, res) => {
-  const { data, error } = await supabase.from('letters')
-    .select('*')
-    .eq('category', MUSIC_TRACK_CATEGORY)
-    .is('parent_id', null)
-    .order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  res.json((data || []).map(parseMusicTrack));
+  try {
+    res.json(await listMusicTracks());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/music/tracks', async (req, res) => {
@@ -3896,46 +4111,19 @@ app.delete('/music/tracks/:id', async (req, res) => {
 });
 
 app.get('/music/state', async (req, res) => {
-  const { data, error } = await supabase.from('letters')
-    .select('*')
-    .eq('category', MUSIC_STATE_CATEGORY)
-    .is('parent_id', null)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) return res.status(500).json({ error: error.message });
-  if (!data) return res.json(normalizeMusicState());
   try {
-    return res.json(normalizeMusicState(JSON.parse(data.content || '{}')));
-  } catch {
-    return res.json(normalizeMusicState());
+    res.json(await readMusicState());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.put('/music/state', async (req, res) => {
-  const state = normalizeMusicState(req.body || {});
-  const { data: existing, error: existingError } = await supabase.from('letters')
-    .select('*')
-    .eq('category', MUSIC_STATE_CATEGORY)
-    .is('parent_id', null)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (existingError) return res.status(500).json({ error: existingError.message });
-  const payload = {
-    category: MUSIC_STATE_CATEGORY,
-    author: '泽',
-    title: '正在一起听',
-    content: JSON.stringify(state),
-    parent_id: null,
-    paper_style: null,
-  };
-  const query = existing
-    ? supabase.from('letters').update(payload).eq('id', existing.id)
-    : supabase.from('letters').insert(payload);
-  const { error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(state);
+  try {
+    res.json(await saveMusicState(req.body || {}));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============ letters (信件 / 日记 / 悄悄话) ============
