@@ -1203,6 +1203,17 @@ function parseTheaterTitle(rawText, fallback) {
   return { title, content: content || text };
 }
 
+function parseTheaterOutput(rawText, fallback) {
+  const choiceSplit = String(rawText || '').split(/【可选走向】/);
+  const parsed = parseTheaterTitle(choiceSplit[0], fallback);
+  const choices = (choiceSplit[1] || '')
+    .split('\n')
+    .map(line => line.replace(/^\s*(?:[-*]|[0-9一二三四五六七八九十]+[.、：:])\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return { ...parsed, choices };
+}
+
 function extractThinking(result) {
   // 先找官方格式的thinking块
   const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
@@ -2401,7 +2412,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-room',
+    version: '2026.07.31-theater-interactive',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2424,6 +2435,7 @@ app.get('/', (req, res) => {
       memoryFavorites: true,
       theaterRoom: true,
       theaterExtras: true,
+      theaterInteractive: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -3570,6 +3582,7 @@ app.post('/theater/generate', async (req, res) => {
     const settings = await runtimeConfig.loadSettings();
     const theaterName = compactLine(req.body?.theater_name, 60) || '未命名小剧场';
     const mode = req.body?.mode === 'extra' ? 'extra' : 'main';
+    const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
     const save = req.body?.save !== false;
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
@@ -3595,13 +3608,17 @@ app.post('/theater/generate', async (req, res) => {
 - 以沉浸式正文输出为主，允许自然对白、动作、心理、场景描写。
 - 如果设定不足，可以用温柔合理的细节补足，但不要推翻叶檀给的设定。
 - 番外模式要像同一世界里的独立篇章，可以更偏日常、补完、IF 或回忆，但不要破坏主线。
-- 不写现实 OurHome 记忆，不调用工具，不保存长期记忆。`;
+- 不写现实 OurHome 记忆，不调用工具，不保存长期记忆。
+- 如果本次是互动推进，正文之后要另起一段写“【可选走向】”，给 3 个下一步走向，每个走向一句话，像剧情选择，不要解释。`;
 
     const userPrompt = `【剧场名】
 ${theaterName}
 
 【本次类型】
 ${mode === 'extra' ? '番外' : '正文续写'}
+
+【玩法】
+${playMode === 'interactive' ? '互动推进：正文后给出 3 个可选走向。' : '沉浸长文：只输出完整正文，不要给选项。'}
 
 【世界观/剧情设定】
 ${premise || '（未填写，按本次要求自然补足）'}
@@ -3618,7 +3635,7 @@ ${previousText || '（这是开篇，可以从头开始。）'}
 【这次想看的内容】
 ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着上面的剧情自然往下写。')}
 
-请直接输出作品正文。第一行可写“标题：xxx”，然后空一行进入正文。`;
+请直接输出作品正文。第一行可写“标题：xxx”，然后空一行进入正文。${playMode === 'interactive' ? '\n正文结束后再写“【可选走向】”，列 3 个下一步选择。' : ''}`;
 
     const result = await callClaude({
       settings,
@@ -3632,7 +3649,7 @@ ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着�
     if (!rawText) throw new Error('小剧场这次没有写出内容');
 
     const fallbackTitle = `${theaterName}${mode === 'extra' ? '番外' : '正文'}`;
-    const parsed = parseTheaterTitle(rawText, fallbackTitle);
+    const parsed = parseTheaterOutput(rawText, fallbackTitle);
     let saved = null;
     if (save) {
       const { data, error } = await supabase.from('letters')
@@ -3653,6 +3670,7 @@ ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着�
     res.json({
       title: parsed.title,
       content: parsed.content,
+      choices: parsed.choices,
       saved,
       input_tokens: result?.usage?.input_tokens || null,
       output_tokens: result?.usage?.output_tokens || null,
