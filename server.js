@@ -2889,7 +2889,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-length-model-chat',
+    version: '2026.07.31-theater-length-balanced',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4277,7 +4277,7 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
     const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
-    const maxTokens = lengthMode === 'extra_long' ? 12000 : lengthMode === 'short' ? 1800 : 5600;
+    const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 1400 : 3600;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
     const { data: bookRow, error: bookError } = await supabase.from('letters')
@@ -4301,10 +4301,10 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
     const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
     const lengthInstruction = lengthMode === 'extra_long'
-      ? '超长：写成一整段充分展开的沉浸长文，目标 5000-8000 汉字；铺开场景、动作、对白和心理，不要因为是 chat 就收短，不要匆匆停在几段以内。'
+      ? '超长：写成明显加长的沉浸剧情，目标 3200-5200 汉字；重点铺开关键场景、动作、对白和心理，但不要无限延展。'
       : lengthMode === 'short'
-        ? '短：保持一小段自然接戏，约 600-1200 汉字。'
-        : '长：写成完整一场戏，目标 2500-4500 汉字；要有连续推进、细节和情绪层次，不要只写几段摘要。';
+        ? '短：保持一小段自然接戏，约 400-900 汉字。'
+        : '长：写成完整一场戏，目标 1500-2600 汉字；有连续推进和细节，但不要写成超长章节。';
     const recentMessages = book.messages.slice(-18)
       .map(item => `${item.role === 'user' ? theaterUserName : theaterAssistantName}：${item.content}`)
       .join('\n\n');
@@ -4410,7 +4410,7 @@ app.post('/theater/generate', async (req, res) => {
     const save = req.body?.save !== false;
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
-    const maxTokens = lengthMode === 'extra_long' ? 12000 : lengthMode === 'short' ? 2200 : 6000;
+    const maxTokens = lengthMode === 'extra_long' ? 8800 : lengthMode === 'short' ? 1800 : 4200;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
     const premise = compactBlock(req.body?.premise, 9000);
@@ -4419,10 +4419,10 @@ app.post('/theater/generate', async (req, res) => {
     const previousText = compactBlock(req.body?.previous_text, 9000);
     const request = compactBlock(req.body?.request, 2400);
     const lengthInstruction = lengthMode === 'extra_long'
-      ? '超长：写成一篇充分展开的长文，目标 5000-9000 汉字；多写场景、动作、对白、心理和转折，不要提前收束。'
+      ? '超长：写成一篇明显加长的正文，目标 3500-6000 汉字；多写场景、动作、对白、心理和转折，但不要拖到过度冗长。'
       : lengthMode === 'short'
-        ? '短：写一段精炼正文，约 800-1500 汉字。'
-        : '长：写成完整章节感正文，目标 3000-5000 汉字，不要只写梗概。';
+        ? '短：写一段精炼正文，约 700-1200 汉字。'
+        : '长：写成完整章节感正文，目标 1800-3200 汉字，不要只写梗概，也不要写成超长。';
 
     if (!premise && !characters && !request) {
       return res.status(400).json({ error: '至少写一点设定、角色或这次想看的剧情。' });
