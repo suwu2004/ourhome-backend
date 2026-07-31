@@ -201,6 +201,15 @@ function compactLine(value, max = 300) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+function compactBlock(value, max = 3000) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim()
+    .slice(0, max);
+}
+
 const MEMORY_JOURNAL_MODE = String(process.env.MEMORY_JOURNAL_MODE || 'smart').toLowerCase();
 const MEMORY_JOURNAL_MIN_SIGNAL = clampInt(process.env.MEMORY_JOURNAL_MIN_SIGNAL, 40, 500, 120);
 const MEMORY_JOURNAL_TRIGGER_RE = /(ourhome|agentmail|vercel|supabase|mcp|api|key|github|部署|上线|报错|失败|修复|优化|整合|计划|方案|项目|功能|页面|设置|模型|联网|邮箱|记忆|人设|年表|摘要|待续|收藏|置顶|提醒|待办|继续|明天|以后|记得|决定|约定|重要|偏好|喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|不喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|工作|面试|简历|论文|毕业|上课|学生|生病|发烧|疼|痛|医院|月经)/i;
@@ -1183,6 +1192,17 @@ function extractText(result) {
     .filter(Boolean)
     .join('\n') || '';
 }
+
+function parseTheaterTitle(rawText, fallback) {
+  const text = String(rawText || '').trim();
+  const titleMatch = text.match(/^标题[：:]\s*(.+)$/m);
+  const title = compactLine(titleMatch?.[1] || fallback, 80);
+  const content = titleMatch
+    ? text.replace(titleMatch[0], '').replace(/^\s*\n+/, '').trim()
+    : text;
+  return { title, content: content || text };
+}
+
 function extractThinking(result) {
   // 先找官方格式的thinking块
   const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
@@ -2381,7 +2401,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-long-memory-guard',
+    version: '2026.07.31-theater-room',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2402,6 +2422,8 @@ app.get('/', (req, res) => {
       chatHistorySearch: true,
       diaryPaperStyle: true,
       memoryFavorites: true,
+      theaterRoom: true,
+      theaterExtras: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -3541,6 +3563,104 @@ app.delete('/letters/:id', async (req, res) => {
   const { error } = await supabase.from('letters').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
+});
+
+app.post('/theater/generate', async (req, res) => {
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const theaterName = compactLine(req.body?.theater_name, 60) || '未命名小剧场';
+    const mode = req.body?.mode === 'extra' ? 'extra' : 'main';
+    const save = req.body?.save !== false;
+    const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
+    const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
+    const maxTokens = lengthMode === 'extra_long' ? 5200 : lengthMode === 'short' ? 2200 : 3800;
+    const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
+
+    const premise = compactBlock(req.body?.premise, 5000);
+    const characters = compactBlock(req.body?.characters, 5000);
+    const rules = compactBlock(req.body?.rules, 4000);
+    const previousText = compactBlock(req.body?.previous_text, 9000);
+    const request = compactBlock(req.body?.request, 2400);
+
+    if (!premise && !characters && !request) {
+      return res.status(400).json({ error: '至少写一点设定、角色或这次想看的剧情。' });
+    }
+
+    const system = `你是 OurHome 的“小剧场”长文写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
+你的任务是严格根据叶檀给出的剧场设定写中文长文剧情，可以写正文，也可以写番外。
+
+写作规则：
+- 全程保持剧场设定、角色关系、口吻和世界观一致，禁止 OOC。
+- 不要跳出剧情解释“我会怎么写”，不要项目符号、不要分析提纲、不要总结本轮任务。
+- 以沉浸式正文输出为主，允许自然对白、动作、心理、场景描写。
+- 如果设定不足，可以用温柔合理的细节补足，但不要推翻叶檀给的设定。
+- 番外模式要像同一世界里的独立篇章，可以更偏日常、补完、IF 或回忆，但不要破坏主线。
+- 不写现实 OurHome 记忆，不调用工具，不保存长期记忆。`;
+
+    const userPrompt = `【剧场名】
+${theaterName}
+
+【本次类型】
+${mode === 'extra' ? '番外' : '正文续写'}
+
+【世界观/剧情设定】
+${premise || '（未填写，按本次要求自然补足）'}
+
+【角色卡/关系】
+${characters || '（未填写，按本次要求自然补足）'}
+
+【防 OOC 规则/禁区】
+${rules || '保持人物自洽，不要突然跳出剧情。'}
+
+【此前正文/剧情进度】
+${previousText || '（这是开篇，可以从头开始。）'}
+
+【这次想看的内容】
+${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着上面的剧情自然往下写。')}
+
+请直接输出作品正文。第一行可写“标题：xxx”，然后空一行进入正文。`;
+
+    const result = await callClaude({
+      settings,
+      model,
+      maxTokens,
+      system,
+      messages: [{ role: 'user', content: userPrompt }],
+      temperature,
+    });
+    const rawText = extractText(result).trim();
+    if (!rawText) throw new Error('小剧场这次没有写出内容');
+
+    const fallbackTitle = `${theaterName}${mode === 'extra' ? '番外' : '正文'}`;
+    const parsed = parseTheaterTitle(rawText, fallbackTitle);
+    let saved = null;
+    if (save) {
+      const { data, error } = await supabase.from('letters')
+        .insert({
+          category: '小剧场',
+          author: '泽',
+          title: parsed.title,
+          content: parsed.content,
+          parent_id: null,
+          paper_style: null,
+        })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      saved = data;
+    }
+
+    res.json({
+      title: parsed.title,
+      content: parsed.content,
+      saved,
+      input_tokens: result?.usage?.input_tokens || null,
+      output_tokens: result?.usage?.output_tokens || null,
+    });
+  } catch (err) {
+    console.error('小剧场生成错误:', err);
+    res.status(500).json({ error: err.message || '小剧场这次没有写成' });
+  }
 });
 
 app.post('/letters/generate', async (req, res) => {
