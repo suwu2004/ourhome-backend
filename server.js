@@ -1214,6 +1214,55 @@ function parseTheaterOutput(rawText, fallback) {
   return { ...parsed, choices };
 }
 
+const THEATER_BOOK_CATEGORY = '小剧本';
+const THEATER_MESSAGE_CATEGORY = '小剧场';
+
+function emptyTheaterSettings() {
+  return {
+    premise: '',
+    characters: '',
+    rules: '',
+  };
+}
+
+function normalizeTheaterSettings(value = {}) {
+  return {
+    premise: compactBlock(value.premise, 5000),
+    characters: compactBlock(value.characters, 5000),
+    rules: compactBlock(value.rules, 4000),
+  };
+}
+
+function parseTheaterBook(row, children = []) {
+  let settings = emptyTheaterSettings();
+  try {
+    const parsed = JSON.parse(row?.content || '{}');
+    settings = { ...settings, ...normalizeTheaterSettings(parsed) };
+  } catch {
+    settings.premise = compactBlock(row?.content, 5000);
+  }
+  const messages = [...children]
+    .sort((left, right) => Date.parse(left?.created_at || '') - Date.parse(right?.created_at || ''))
+    .map(item => ({
+      id: item.id,
+      role: item.author === '檀' ? 'user' : 'assistant',
+      author: item.author,
+      content: item.content || '',
+      title: item.title || null,
+      created_at: item.created_at,
+    }));
+  return {
+    id: row.id,
+    title: row.title || '未命名小剧本',
+    settings,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    message_count: messages.length,
+    last_message_at: messages[messages.length - 1]?.created_at || null,
+    messages,
+  };
+}
+
 function extractThinking(result) {
   // 先找官方格式的thinking块
   const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
@@ -2412,7 +2461,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-interactive',
+    version: '2026.07.31-theater-books-chat',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2436,6 +2485,8 @@ app.get('/', (req, res) => {
       theaterRoom: true,
       theaterExtras: true,
       theaterInteractive: true,
+      theaterBooks: true,
+      theaterChat: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -3575,6 +3626,209 @@ app.delete('/letters/:id', async (req, res) => {
   const { error } = await supabase.from('letters').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
+});
+
+app.get('/theater/books', async (req, res) => {
+  try {
+    const { data: rows, error } = await supabase.from('letters')
+      .select('*')
+      .eq('category', THEATER_BOOK_CATEGORY)
+      .is('parent_id', null)
+      .order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    const ids = (rows || []).map(row => row.id);
+    let children = [];
+    if (ids.length) {
+      const childResult = await supabase.from('letters')
+        .select('*')
+        .eq('category', THEATER_MESSAGE_CATEGORY)
+        .in('parent_id', ids)
+        .order('created_at', { ascending: true });
+      if (childResult.error) return res.status(500).json({ error: childResult.error.message });
+      children = childResult.data || [];
+    }
+    const childrenByBook = new Map();
+    children.forEach(item => {
+      const key = String(item.parent_id);
+      childrenByBook.set(key, [...(childrenByBook.get(key) || []), item]);
+    });
+    res.json((rows || []).map(row => parseTheaterBook(row, childrenByBook.get(String(row.id)) || [])));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '剧场书架没有打开' });
+  }
+});
+
+app.post('/theater/books', async (req, res) => {
+  try {
+    const title = compactLine(req.body?.title, 80) || '未命名小剧本';
+    const settings = normalizeTheaterSettings(req.body?.settings || {});
+    const { data, error } = await supabase.from('letters')
+      .insert({
+        category: THEATER_BOOK_CATEGORY,
+        author: '檀',
+        title,
+        content: JSON.stringify(settings),
+        parent_id: null,
+        paper_style: null,
+      })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(parseTheaterBook(data));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '小世界没有创建成功' });
+  }
+});
+
+app.patch('/theater/books/:id', async (req, res) => {
+  try {
+    const updates = {};
+    if (req.body?.title !== undefined) updates.title = compactLine(req.body.title, 80) || '未命名小剧本';
+    if (req.body?.settings !== undefined) updates.content = JSON.stringify(normalizeTheaterSettings(req.body.settings));
+    if (!Object.keys(updates).length) return res.status(400).json({ error: '没有需要保存的内容' });
+    const { data, error } = await supabase.from('letters')
+      .update(updates)
+      .eq('id', req.params.id)
+      .eq('category', THEATER_BOOK_CATEGORY)
+      .select()
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: '找不到这本小剧本' });
+    res.json(parseTheaterBook(data));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '小剧本没有保存成功' });
+  }
+});
+
+app.delete('/theater/books/:id', async (req, res) => {
+  await supabase.from('letters').delete().eq('parent_id', req.params.id);
+  const { data, error } = await supabase.from('letters')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('category', THEATER_BOOK_CATEGORY)
+    .select('id')
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这本小剧本' });
+  res.json({ success: true });
+});
+
+app.post('/theater/books/:id/chat', async (req, res) => {
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const bookId = req.params.id;
+    const userText = compactBlock(req.body?.message, 2400);
+    if (!userText) return res.status(400).json({ error: '先在小剧场里说一句。' });
+
+    const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
+    const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
+    const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
+    const maxTokens = lengthMode === 'extra_long' ? 5200 : lengthMode === 'short' ? 1600 : 3200;
+    const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
+
+    const { data: bookRow, error: bookError } = await supabase.from('letters')
+      .select('*')
+      .eq('id', bookId)
+      .eq('category', THEATER_BOOK_CATEGORY)
+      .maybeSingle();
+    if (bookError) return res.status(500).json({ error: bookError.message });
+    if (!bookRow) return res.status(404).json({ error: '找不到这本小剧本' });
+
+    const { data: historyRows, error: historyError } = await supabase.from('letters')
+      .select('*')
+      .eq('category', THEATER_MESSAGE_CATEGORY)
+      .eq('parent_id', bookId)
+      .order('created_at', { ascending: true });
+    if (historyError) return res.status(500).json({ error: historyError.message });
+
+    const book = parseTheaterBook(bookRow, historyRows || []);
+    const recentMessages = book.messages.slice(-18)
+      .map(item => `${item.role === 'user' ? '叶檀/导演' : '剧场'}：${item.content}`)
+      .join('\n\n');
+
+    const system = `你是 OurHome 的“小剧场”互动写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
+你的任务是陪叶檀在一个独立小世界里用 chat 方式推进剧情。
+
+互动规则：
+- 严格遵守这本小剧本的世界观、角色卡、关系、禁区和写作规则，禁止 OOC。
+- 叶檀发来的内容可能是角色台词、动作，也可能是导演指令；你要自然接住并推进。
+- 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
+- 不要跳出剧情解释“我理解了/我会这样写”，除非叶檀明确要求场外讨论。
+- 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
+- 如果是互动推进，正文后用“【可选走向】”给 3 个下一步选择，每个一句话。`;
+
+    const prompt = `【剧本名】
+${book.title}
+
+【世界观/剧情设定】
+${book.settings.premise || '（未填写，按互动自然补足。）'}
+
+【角色卡/关系】
+${book.settings.characters || '（未填写，按互动自然补足。）'}
+
+【禁区/写作规则】
+${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}
+
+【最近互动记录】
+${recentMessages || '（还没有正式开始。）'}
+
+【叶檀刚刚发来】
+${userText}
+
+【玩法】
+${playMode === 'interactive' ? '互动推进：回复正文后给 3 个可选走向。' : '沉浸长文：只回复正文，不给选项。'}
+
+请直接接着演。`;
+
+    const userInsert = await supabase.from('letters')
+      .insert({
+        category: THEATER_MESSAGE_CATEGORY,
+        author: '檀',
+        title: null,
+        content: userText,
+        parent_id: bookId,
+        paper_style: null,
+      })
+      .select()
+      .single();
+    if (userInsert.error) return res.status(500).json({ error: userInsert.error.message });
+
+    const result = await callClaude({
+      settings,
+      model,
+      maxTokens,
+      system,
+      messages: [{ role: 'user', content: prompt }],
+      temperature,
+    });
+    const rawText = extractText(result).trim();
+    if (!rawText) throw new Error('小剧场这次没有接上');
+    const parsed = parseTheaterOutput(rawText, `${book.title}续写`);
+
+    const assistantInsert = await supabase.from('letters')
+      .insert({
+        category: THEATER_MESSAGE_CATEGORY,
+        author: '泽',
+        title: parsed.title,
+        content: parsed.content,
+        parent_id: bookId,
+        paper_style: null,
+      })
+      .select()
+      .single();
+    if (assistantInsert.error) return res.status(500).json({ error: assistantInsert.error.message });
+
+    res.json({
+      user_message: parseTheaterBook(bookRow, [userInsert.data]).messages[0],
+      assistant_message: parseTheaterBook(bookRow, [assistantInsert.data]).messages[0],
+      choices: parsed.choices,
+      input_tokens: result?.usage?.input_tokens || null,
+      output_tokens: result?.usage?.output_tokens || null,
+    });
+  } catch (error) {
+    console.error('小剧场聊天错误:', error);
+    res.status(500).json({ error: error.message || '小剧场这次没有接上' });
+  }
 });
 
 app.post('/theater/generate', async (req, res) => {
