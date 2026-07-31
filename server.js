@@ -1216,6 +1216,8 @@ function parseTheaterOutput(rawText, fallback) {
 
 const THEATER_BOOK_CATEGORY = '小剧本';
 const THEATER_MESSAGE_CATEGORY = '小剧场';
+const MUSIC_TRACK_CATEGORY = '一起听';
+const MUSIC_STATE_CATEGORY = '一起听状态';
 
 function emptyTheaterSettings() {
   return {
@@ -1260,6 +1262,42 @@ function parseTheaterBook(row, children = []) {
     message_count: messages.length,
     last_message_at: messages[messages.length - 1]?.created_at || null,
     messages,
+  };
+}
+
+function normalizeMusicTrack(value = {}) {
+  return {
+    title: compactLine(value.title, 100) || '未命名歌曲',
+    artist: compactLine(value.artist, 100),
+    album: compactLine(value.album, 100),
+    audio_url: compactLine(value.audio_url, 1000),
+    source_url: compactLine(value.source_url, 1000),
+    cover_url: compactLine(value.cover_url, 1000),
+    note: compactLine(value.note, 500),
+  };
+}
+
+function parseMusicTrack(row) {
+  let payload = {};
+  try {
+    payload = JSON.parse(row?.content || '{}');
+  } catch {
+    payload = { title: row?.title || '', note: row?.content || '' };
+  }
+  const track = normalizeMusicTrack({ ...payload, title: payload.title || row?.title });
+  return {
+    id: row.id,
+    ...track,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function normalizeMusicState(value = {}) {
+  return {
+    track_id: value.track_id ? String(value.track_id) : null,
+    is_playing: Boolean(value.is_playing),
+    updated_at: value.updated_at || new Date().toISOString(),
   };
 }
 
@@ -2461,7 +2499,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-books-chat',
+    version: '2026.07.31-music-room',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -2487,6 +2525,8 @@ app.get('/', (req, res) => {
       theaterInteractive: true,
       theaterBooks: true,
       theaterChat: true,
+      musicRoom: true,
+      musicPlaylist: true,
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
@@ -3597,6 +3637,104 @@ app.delete('/memory-favorites/:id', async (req, res) => {
   const { error } = await supabase.from('memory_favorites').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
+});
+
+// ============ music room (一起听) ============
+
+app.get('/music/tracks', async (req, res) => {
+  const { data, error } = await supabase.from('letters')
+    .select('*')
+    .eq('category', MUSIC_TRACK_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json((data || []).map(parseMusicTrack));
+});
+
+app.post('/music/tracks', async (req, res) => {
+  const track = normalizeMusicTrack(req.body || {});
+  if (!track.title && !track.audio_url && !track.source_url) return res.status(400).json({ error: '至少写歌名或链接' });
+  const { data, error } = await supabase.from('letters')
+    .insert({
+      category: MUSIC_TRACK_CATEGORY,
+      author: '檀',
+      title: track.title,
+      content: JSON.stringify(track),
+      parent_id: null,
+      paper_style: null,
+    })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(parseMusicTrack(data));
+});
+
+app.patch('/music/tracks/:id', async (req, res) => {
+  const track = normalizeMusicTrack(req.body || {});
+  const { data, error } = await supabase.from('letters')
+    .update({ title: track.title, content: JSON.stringify(track) })
+    .eq('id', req.params.id)
+    .eq('category', MUSIC_TRACK_CATEGORY)
+    .select()
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这首歌' });
+  res.json(parseMusicTrack(data));
+});
+
+app.delete('/music/tracks/:id', async (req, res) => {
+  const { data, error } = await supabase.from('letters')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('category', MUSIC_TRACK_CATEGORY)
+    .select('id')
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这首歌' });
+  res.json({ success: true });
+});
+
+app.get('/music/state', async (req, res) => {
+  const { data, error } = await supabase.from('letters')
+    .select('*')
+    .eq('category', MUSIC_STATE_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.json(normalizeMusicState());
+  try {
+    return res.json(normalizeMusicState(JSON.parse(data.content || '{}')));
+  } catch {
+    return res.json(normalizeMusicState());
+  }
+});
+
+app.put('/music/state', async (req, res) => {
+  const state = normalizeMusicState(req.body || {});
+  const { data: existing, error: existingError } = await supabase.from('letters')
+    .select('*')
+    .eq('category', MUSIC_STATE_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingError) return res.status(500).json({ error: existingError.message });
+  const payload = {
+    category: MUSIC_STATE_CATEGORY,
+    author: '泽',
+    title: '正在一起听',
+    content: JSON.stringify(state),
+    parent_id: null,
+    paper_style: null,
+  };
+  const query = existing
+    ? supabase.from('letters').update(payload).eq('id', existing.id)
+    : supabase.from('letters').insert(payload);
+  const { error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(state);
 });
 
 // ============ letters (信件 / 日记 / 悄悄话) ============
