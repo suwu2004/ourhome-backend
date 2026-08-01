@@ -1583,6 +1583,33 @@ function parseTheaterBook(row, children = []) {
   };
 }
 
+function theaterSnippet(content, limit = 520) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  const edge = Math.max(120, Math.floor(limit / 2));
+  return `${text.slice(0, edge)} …… ${text.slice(-edge)}`;
+}
+
+function buildTheaterHistoryBlocks(messages, theaterUserName, theaterAssistantName) {
+  const allMessages = Array.isArray(messages) ? messages : [];
+  const recent = allMessages.slice(-18);
+  const older = allMessages.slice(0, Math.max(0, allMessages.length - recent.length)).slice(-42);
+  const labelFor = item => (item.role === 'user' ? theaterUserName : theaterAssistantName);
+  const earlierDigest = compactBlock(
+    older
+      .map((item, index) => `${index + 1}. ${labelFor(item)}：${theaterSnippet(item.content, item.role === 'user' ? 360 : 560)}`)
+      .join('\n'),
+    10000,
+  );
+  const recentMessages = compactBlock(
+    recent
+      .map(item => `${labelFor(item)}：${item.content}`)
+      .join('\n\n'),
+    18000,
+  );
+  return { earlierDigest, recentMessages };
+}
+
 async function generateTheaterChatReply({ settings, bookRow, historyRows = [], userText, model, lengthMode, playMode, temperature }) {
   const book = parseTheaterBook(bookRow, historyRows || []);
   const theaterUserName = book.settings.user_name || '叶檀';
@@ -1595,9 +1622,7 @@ async function generateTheaterChatReply({ settings, bookRow, historyRows = [], u
     : lengthMode === 'short'
       ? '短：保持一小段自然接戏，约 400-900 汉字。'
       : '长：写成完整一场戏，目标 1500-2600 汉字；有连续推进和细节，但不要写成超长章节。';
-  const recentMessages = book.messages.slice(-18)
-    .map(item => `${item.role === 'user' ? theaterUserName : theaterAssistantName}：${item.content}`)
-    .join('\n\n');
+  const { earlierDigest, recentMessages } = buildTheaterHistoryBlocks(book.messages, theaterUserName, theaterAssistantName);
 
   const system = `你是 OurHome 的“小剧场”互动写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
 你的任务是陪叶檀在一个独立小世界里用 chat 方式推进剧情。
@@ -1606,6 +1631,7 @@ async function generateTheaterChatReply({ settings, bookRow, historyRows = [], u
 - 严格遵守这本小剧本的世界观、角色卡、关系、禁区和写作规则，禁止 OOC。
 - ${theaterUserName}发来的内容可能是角色台词、动作，也可能是场外指令；你要自然接住并推进。
 - 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
+- 必须同时参考较早剧情提要和最近互动记录，保持已经发生过的称呼、地点、伤病、关系进展、承诺和剧情因果。
 - 不要跳出剧情解释“我理解了/我会这样写”，除非${theaterUserName}明确要求场外讨论。
 - 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
 - 不替${theaterUserName}预设下一步选项，不输出“【可选走向】”；剧情停在自然能继续接话的位置。`;
@@ -1626,6 +1652,7 @@ ${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}\n`}
 ${theaterUserName}：叶檀在这本书里的名字或称呼。
 ${theaterAssistantName}：你在这本书里承担的角色、旁白或对手戏称呼。
 
+${earlierDigest ? `【较早剧情提要】\n${earlierDigest}\n` : ''}
 【最近互动记录】
 ${recentMessages || '（还没有正式开始。）'}
 
@@ -3013,7 +3040,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.08.01-theater-regenerate',
+    version: '2026.08.01-theater-history-boost',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
