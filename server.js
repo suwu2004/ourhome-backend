@@ -1583,6 +1583,91 @@ function parseTheaterBook(row, children = []) {
   };
 }
 
+async function generateTheaterChatReply({ settings, bookRow, historyRows = [], userText, model, lengthMode, playMode, temperature }) {
+  const book = parseTheaterBook(bookRow, historyRows || []);
+  const theaterUserName = book.settings.user_name || '叶檀';
+  const theaterAssistantName = book.settings.assistant_name || '剧场';
+  const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
+  const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
+  const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 2200 : 3600;
+  const lengthInstruction = lengthMode === 'extra_long'
+    ? '超长：写成明显加长的沉浸剧情，目标 3200-5200 汉字；重点铺开关键场景、动作、对白和心理，但不要无限延展。'
+    : lengthMode === 'short'
+      ? '短：保持一小段自然接戏，约 400-900 汉字。'
+      : '长：写成完整一场戏，目标 1500-2600 汉字；有连续推进和细节，但不要写成超长章节。';
+  const recentMessages = book.messages.slice(-18)
+    .map(item => `${item.role === 'user' ? theaterUserName : theaterAssistantName}：${item.content}`)
+    .join('\n\n');
+
+  const system = `你是 OurHome 的“小剧场”互动写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
+你的任务是陪叶檀在一个独立小世界里用 chat 方式推进剧情。
+
+互动规则：
+- 严格遵守这本小剧本的世界观、角色卡、关系、禁区和写作规则，禁止 OOC。
+- ${theaterUserName}发来的内容可能是角色台词、动作，也可能是场外指令；你要自然接住并推进。
+- 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
+- 不要跳出剧情解释“我理解了/我会这样写”，除非${theaterUserName}明确要求场外讨论。
+- 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
+- 不替${theaterUserName}预设下一步选项，不输出“【可选走向】”；剧情停在自然能继续接话的位置。`;
+
+  const prompt = `【剧本名】
+${book.title}
+
+${worldbookText ? `【完整世界书】\n${worldbookText}\n` : ''}
+${useWorldbookOnly ? '【设定读取方式】\n以完整世界书为准，不强制拆分角色卡或禁区；如果分栏为空，不要认为设定缺失。\n' : `【世界观/剧情设定】
+${book.settings.premise || '（未填写，按互动自然补足。）'}
+
+【角色卡/关系】
+${book.settings.characters || '（未填写，按互动自然补足。）'}
+
+【禁区/写作规则】
+${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}\n`}
+【本书称呼】
+${theaterUserName}：叶檀在这本书里的名字或称呼。
+${theaterAssistantName}：你在这本书里承担的角色、旁白或对手戏称呼。
+
+【最近互动记录】
+${recentMessages || '（还没有正式开始。）'}
+
+【${theaterUserName}刚刚发来】
+${userText}
+
+【玩法】
+${playMode === 'interactive' ? '互动推进：用 chat 的方式自然接戏，不要给预设选项。' : '沉浸长文：只回复正文，不给选项。'}
+
+【篇幅要求】
+${lengthInstruction}
+
+请直接接着演。`;
+
+  const result = await callClaude({
+    settings,
+    model,
+    maxTokens,
+    system,
+    messages: [{ role: 'user', content: prompt }],
+    temperature,
+  });
+  const firstText = extractText(result).trim();
+  const continuationTokens = lengthMode === 'short' ? 1200 : lengthMode === 'extra_long' ? 2200 : 1600;
+  const { text: rawText, continued: wasContinued } = await finishTheaterTextIfTruncated({
+    result,
+    rawText: firstText,
+    settings,
+    model,
+    system,
+    prompt,
+    temperature,
+    maxTokens: continuationTokens,
+  });
+  if (!rawText) throw new Error('小剧场这次没有接上');
+  return {
+    parsed: parseTheaterOutput(rawText, `${book.title}续写`),
+    result,
+    wasContinued,
+  };
+}
+
 function normalizeMusicTrack(value = {}) {
   return {
     title: compactLine(value.title, 100) || '未命名歌曲',
@@ -2928,7 +3013,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.08.01-theater-auto-continue',
+    version: '2026.08.01-theater-regenerate',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4316,7 +4401,6 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
     const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
-    const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 2200 : 3600;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
     const { data: bookRow, error: bookError } = await supabase.from('letters')
@@ -4334,61 +4418,6 @@ app.post('/theater/books/:id/chat', async (req, res) => {
       .order('created_at', { ascending: true });
     if (historyError) return res.status(500).json({ error: historyError.message });
 
-    const book = parseTheaterBook(bookRow, historyRows || []);
-    const theaterUserName = book.settings.user_name || '叶檀';
-    const theaterAssistantName = book.settings.assistant_name || '剧场';
-    const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
-    const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
-    const lengthInstruction = lengthMode === 'extra_long'
-      ? '超长：写成明显加长的沉浸剧情，目标 3200-5200 汉字；重点铺开关键场景、动作、对白和心理，但不要无限延展。'
-      : lengthMode === 'short'
-        ? '短：保持一小段自然接戏，约 400-900 汉字。'
-        : '长：写成完整一场戏，目标 1500-2600 汉字；有连续推进和细节，但不要写成超长章节。';
-    const recentMessages = book.messages.slice(-18)
-      .map(item => `${item.role === 'user' ? theaterUserName : theaterAssistantName}：${item.content}`)
-      .join('\n\n');
-
-    const system = `你是 OurHome 的“小剧场”互动写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
-你的任务是陪叶檀在一个独立小世界里用 chat 方式推进剧情。
-
-互动规则：
-- 严格遵守这本小剧本的世界观、角色卡、关系、禁区和写作规则，禁止 OOC。
-- ${theaterUserName}发来的内容可能是角色台词、动作，也可能是场外指令；你要自然接住并推进。
-- 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
-- 不要跳出剧情解释“我理解了/我会这样写”，除非${theaterUserName}明确要求场外讨论。
-- 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
-- 不替${theaterUserName}预设下一步选项，不输出“【可选走向】”；剧情停在自然能继续接话的位置。`;
-
-    const prompt = `【剧本名】
-${book.title}
-
-${worldbookText ? `【完整世界书】\n${worldbookText}\n` : ''}
-${useWorldbookOnly ? '【设定读取方式】\n以完整世界书为准，不强制拆分角色卡或禁区；如果分栏为空，不要认为设定缺失。\n' : `【世界观/剧情设定】
-${book.settings.premise || '（未填写，按互动自然补足。）'}
-
-【角色卡/关系】
-${book.settings.characters || '（未填写，按互动自然补足。）'}
-
-【禁区/写作规则】
-${book.settings.rules || '保持人物自洽，不要突然跳出剧情。'}\n`}
-【本书称呼】
-${theaterUserName}：叶檀在这本书里的名字或称呼。
-${theaterAssistantName}：你在这本书里承担的角色、旁白或对手戏称呼。
-
-【最近互动记录】
-${recentMessages || '（还没有正式开始。）'}
-
-【${theaterUserName}刚刚发来】
-${userText}
-
-【玩法】
-${playMode === 'interactive' ? '互动推进：用 chat 的方式自然接戏，不要给预设选项。' : '沉浸长文：只回复正文，不给选项。'}
-
-【篇幅要求】
-${lengthInstruction}
-
-请直接接着演。`;
-
     const userInsert = await supabase.from('letters')
       .insert({
         category: THEATER_MESSAGE_CATEGORY,
@@ -4402,28 +4431,16 @@ ${lengthInstruction}
       .single();
     if (userInsert.error) return res.status(500).json({ error: userInsert.error.message });
 
-    const result = await callClaude({
+    const { parsed, result, wasContinued } = await generateTheaterChatReply({
       settings,
+      bookRow,
+      historyRows: historyRows || [],
+      userText,
       model,
-      maxTokens,
-      system,
-      messages: [{ role: 'user', content: prompt }],
+      lengthMode,
+      playMode,
       temperature,
     });
-    const firstText = extractText(result).trim();
-    const continuationTokens = lengthMode === 'short' ? 1200 : lengthMode === 'extra_long' ? 2200 : 1600;
-    const { text: rawText, continued: wasContinued } = await finishTheaterTextIfTruncated({
-      result,
-      rawText: firstText,
-      settings,
-      model,
-      system,
-      prompt,
-      temperature,
-      maxTokens: continuationTokens,
-    });
-    if (!rawText) throw new Error('小剧场这次没有接上');
-    const parsed = parseTheaterOutput(rawText, `${book.title}续写`);
 
     const assistantInsert = await supabase.from('letters')
       .insert({
@@ -4449,6 +4466,84 @@ ${lengthInstruction}
   } catch (error) {
     console.error('小剧场聊天错误:', error);
     res.status(500).json({ error: error.message || '小剧场这次没有接上' });
+  }
+});
+
+app.post('/theater/books/:id/messages/:messageId/regenerate', async (req, res) => {
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const bookId = req.params.id;
+    const messageId = req.params.messageId;
+    const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
+    const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
+    const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
+    const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
+
+    const { data: bookRow, error: bookError } = await supabase.from('letters')
+      .select('*')
+      .eq('id', bookId)
+      .eq('category', THEATER_BOOK_CATEGORY)
+      .maybeSingle();
+    if (bookError) return res.status(500).json({ error: bookError.message });
+    if (!bookRow) return res.status(404).json({ error: '找不到这本小剧本' });
+
+    const { data: historyRows, error: historyError } = await supabase.from('letters')
+      .select('*')
+      .eq('category', THEATER_MESSAGE_CATEGORY)
+      .eq('parent_id', bookId)
+      .order('created_at', { ascending: true });
+    if (historyError) return res.status(500).json({ error: historyError.message });
+
+    const rows = historyRows || [];
+    const targetIndex = rows.findIndex(row => String(row.id) === String(messageId));
+    if (targetIndex < 0) return res.status(404).json({ error: '找不到要重写的这条回复' });
+    const targetRow = rows[targetIndex];
+    if (targetRow.author === '檀') return res.status(400).json({ error: '只能重写小剧场的回复，不能重写你的输入。' });
+
+    let userIndex = -1;
+    for (let index = targetIndex - 1; index >= 0; index -= 1) {
+      if (rows[index]?.author === '檀') {
+        userIndex = index;
+        break;
+      }
+    }
+    if (userIndex < 0) return res.status(400).json({ error: '这条回复前面没有找到对应的输入，暂时不能重写。' });
+
+    const userText = compactBlock(rows[userIndex].content, 2400);
+    const historyBeforeUser = rows.slice(0, userIndex);
+    const { parsed, result, wasContinued } = await generateTheaterChatReply({
+      settings,
+      bookRow,
+      historyRows: historyBeforeUser,
+      userText,
+      model,
+      lengthMode,
+      playMode,
+      temperature,
+    });
+
+    const { data: updatedRow, error: updateError } = await supabase.from('letters')
+      .update({
+        title: parsed.title,
+        content: parsed.content,
+      })
+      .eq('id', targetRow.id)
+      .eq('parent_id', bookId)
+      .eq('category', THEATER_MESSAGE_CATEGORY)
+      .select()
+      .maybeSingle();
+    if (updateError) return res.status(500).json({ error: updateError.message });
+    if (!updatedRow) return res.status(404).json({ error: '这条回复没有更新成功' });
+
+    res.json({
+      assistant_message: parseTheaterBook(bookRow, [updatedRow]).messages[0],
+      input_tokens: result?.usage?.input_tokens || null,
+      output_tokens: result?.usage?.output_tokens || null,
+      was_continued: wasContinued,
+    });
+  } catch (error) {
+    console.error('小剧场重写错误:', error);
+    res.status(500).json({ error: error.message || '这条回复没有重写成功' });
   }
 });
 
