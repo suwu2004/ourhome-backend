@@ -1355,6 +1355,45 @@ function parseTheaterOutput(rawText, fallback) {
   return { ...parsed, choices };
 }
 
+function theaterTextNeedsContinuation(result, text) {
+  if (result?.stop_reason !== 'max_tokens') return false;
+  const normalized = String(text || '').trim();
+  if (!normalized) return false;
+  return !/[。！？!?」』”）)]$/.test(normalized);
+}
+
+function mergeTheaterContinuation(baseText, continuation) {
+  const first = String(baseText || '').trimEnd();
+  const second = String(continuation || '').trimStart();
+  if (!first) return second;
+  if (!second) return first;
+  return /[。！？!?」』”）)]$/.test(first) ? `${first}\n\n${second}` : `${first}${second}`;
+}
+
+async function finishTheaterTextIfTruncated({ result, rawText, settings, model, system, prompt, temperature, maxTokens }) {
+  if (!theaterTextNeedsContinuation(result, rawText)) return { text: rawText, continued: false };
+  const continuation = await callClaude({
+    settings,
+    model,
+    maxTokens,
+    system,
+    messages: [
+      { role: 'user', content: prompt },
+      { role: 'assistant', content: rawText },
+      {
+        role: 'user',
+        content: '上一段因为输出上限停在半句话里了。请只从最后断开的地方继续补完，不要重写前文，不要加标题，不要解释，最多补 300-700 字，并停在一个完整句子或完整段落处。',
+      },
+    ],
+    temperature,
+  });
+  const continuationText = extractText(continuation).trim();
+  return {
+    text: mergeTheaterContinuation(rawText, continuationText),
+    continued: Boolean(continuationText),
+  };
+}
+
 const THEATER_BOOK_CATEGORY = '小剧本';
 const THEATER_MESSAGE_CATEGORY = '小剧场';
 const MUSIC_TRACK_CATEGORY = '一起听';
@@ -2889,7 +2928,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.07.31-theater-length-balanced',
+    version: '2026.08.01-theater-auto-continue',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4277,7 +4316,7 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
     const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
-    const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 1400 : 3600;
+    const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 2200 : 3600;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
     const { data: bookRow, error: bookError } = await supabase.from('letters')
@@ -4371,7 +4410,18 @@ ${lengthInstruction}
       messages: [{ role: 'user', content: prompt }],
       temperature,
     });
-    const rawText = extractText(result).trim();
+    const firstText = extractText(result).trim();
+    const continuationTokens = lengthMode === 'short' ? 1200 : lengthMode === 'extra_long' ? 2200 : 1600;
+    const { text: rawText, continued: wasContinued } = await finishTheaterTextIfTruncated({
+      result,
+      rawText: firstText,
+      settings,
+      model,
+      system,
+      prompt,
+      temperature,
+      maxTokens: continuationTokens,
+    });
     if (!rawText) throw new Error('小剧场这次没有接上');
     const parsed = parseTheaterOutput(rawText, `${book.title}续写`);
 
@@ -4394,6 +4444,7 @@ ${lengthInstruction}
       choices: [],
       input_tokens: result?.usage?.input_tokens || null,
       output_tokens: result?.usage?.output_tokens || null,
+      was_continued: wasContinued,
     });
   } catch (error) {
     console.error('小剧场聊天错误:', error);
@@ -4410,7 +4461,7 @@ app.post('/theater/generate', async (req, res) => {
     const save = req.body?.save !== false;
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
     const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
-    const maxTokens = lengthMode === 'extra_long' ? 8800 : lengthMode === 'short' ? 1800 : 4200;
+    const maxTokens = lengthMode === 'extra_long' ? 8800 : lengthMode === 'short' ? 2400 : 4200;
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
     const premise = compactBlock(req.body?.premise, 9000);
@@ -4477,7 +4528,18 @@ ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着�
       messages: [{ role: 'user', content: userPrompt }],
       temperature,
     });
-    const rawText = extractText(result).trim();
+    const firstText = extractText(result).trim();
+    const continuationTokens = lengthMode === 'short' ? 1200 : lengthMode === 'extra_long' ? 2400 : 1800;
+    const { text: rawText, continued: wasContinued } = await finishTheaterTextIfTruncated({
+      result,
+      rawText: firstText,
+      settings,
+      model,
+      system,
+      prompt: userPrompt,
+      temperature,
+      maxTokens: continuationTokens,
+    });
     if (!rawText) throw new Error('小剧场这次没有写出内容');
 
     const fallbackTitle = `${theaterName}${mode === 'extra' ? '番外' : '正文'}`;
@@ -4506,6 +4568,7 @@ ${request || (mode === 'extra' ? '写一篇贴合设定的番外。' : '接着�
       saved,
       input_tokens: result?.usage?.input_tokens || null,
       output_tokens: result?.usage?.output_tokens || null,
+      was_continued: wasContinued,
     });
   } catch (err) {
     console.error('小剧场生成错误:', err);
