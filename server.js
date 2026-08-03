@@ -1809,10 +1809,12 @@ function parseMusicTrack(row) {
 }
 
 function normalizeMusicState(value = {}) {
+  const repeatMode = compactLine(value.repeat_mode || value.repeatMode, 30);
   return {
     track_id: value.track_id ? String(value.track_id) : null,
     is_playing: Boolean(value.is_playing),
     shuffle: Boolean(value.shuffle),
+    repeat_mode: ['list', 'one', 'shuffle', 'off'].includes(repeatMode) ? repeatMode : (value.shuffle ? 'shuffle' : 'list'),
     updated_at: value.updated_at || new Date().toISOString(),
   };
 }
