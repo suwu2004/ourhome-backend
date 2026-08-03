@@ -5081,6 +5081,71 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+// ============ backup ============
+
+const BACKUP_TABLES = [
+  { key: 'sessions', table: 'sessions', order: ['updated_at', false], limit: 2000 },
+  { key: 'messages', table: 'messages', order: ['created_at', true], limit: 20000 },
+  { key: 'memories', table: 'memories', order: ['timestamp', false], limit: 5000 },
+  { key: 'memory_favorites', table: 'memory_favorites', order: ['updated_at', false], limit: 5000 },
+  { key: 'letters', table: 'letters', order: ['created_at', true], limit: 20000 },
+  { key: 'calendar_entries', table: 'calendar_entries', order: ['date', true], limit: 10000 },
+  { key: 'schedule_events', table: 'schedule_events', order: ['remind_at', true], limit: 5000 },
+  { key: 'wishes', table: 'wishes', order: ['created_at', true], limit: 5000 },
+  { key: 'home_memos', table: 'home_memos', order: ['updated_at', false], limit: 5000 },
+  { key: 'daily_journal_runs', table: 'daily_journal_runs', order: ['run_date', false], limit: 5000 },
+];
+
+function backupMissingRelation(error) {
+  return ['42P01', 'PGRST205', 'PGRST202'].includes(error?.code);
+}
+
+async function readBackupTable({ table, order, limit = 5000 }) {
+  let query = supabase.from(table).select('*');
+  if (order) query = query.order(order[0], { ascending: order[1] });
+  if (limit) query = query.limit(limit);
+  const { data, error } = await query;
+  if (error) {
+    if (backupMissingRelation(error)) return { rows: [], unavailable: error.message };
+    throw error;
+  }
+  return { rows: data || [] };
+}
+
+app.get('/backup', async (req, res) => {
+  try {
+    const settings = await runtimeConfig.loadSettings();
+    const { api_key, ...safeSettings } = settings || {};
+    const [profiles, connections, vaultResult, ...tableResults] = await Promise.all([
+      runtimeConfig.listProfiles(),
+      runtimeConfig.listConnections(),
+      vaultStore.getState().then(data => ({ data })).catch(error => ({ error: error.message })),
+      ...BACKUP_TABLES.map(readBackupTable),
+    ]);
+    const tables = {};
+    BACKUP_TABLES.forEach((item, index) => {
+      tables[item.key] = tableResults[index];
+    });
+    const payload = {
+      version: 1,
+      exported_at: new Date().toISOString(),
+      app: 'OurHome',
+      settings: { ...safeSettings, has_api_key: Boolean(api_key) },
+      api_profiles: profiles,
+      service_connections: connections,
+      vault: vaultResult,
+      tables,
+      note: '密钥、Webhook secret 和推送订阅 endpoint 不包含在备份里。',
+    };
+    const filename = `ourhome-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.send(JSON.stringify(payload, null, 2));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '备份没有导出成功' });
+  }
+});
+
 // ============ export ============
 
 app.get('/export', async (req, res) => {
