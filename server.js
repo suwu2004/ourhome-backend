@@ -416,6 +416,19 @@ const ACTION_TOOLS = [
     },
   },
   {
+    name: 'read_photo_memories',
+    description: '查看“光影相册/照片记忆”里叶檀主动保存的照片锚点，包括她的样子、去过的地方、家里的物品、戒指、泽叽以及和你有关的东西。当她提到照片、物品、地点、样子或“你记不记得这个”时使用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        keyword: { type: 'string', description: '可选关键词，例如戒指、泽叽、家、某个地点' },
+        kind: { type: 'string', enum: ['person', 'place', 'object', 'home', 'memory'], description: '可选分类' },
+        limit: { type: 'number', description: '返回数量，默认20，最多60' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'save_favorite',
     description: '把一段消息、想法、链接、图片线索或文件线索放进收藏夹。只有叶檀明确说想收藏、保存、收起来、置顶，或明确让你记录一段值得回看的内容时使用；不要主动建议收藏。',
     input_schema: {
@@ -894,6 +907,18 @@ async function executeActionTool(name, input) {
     const { data, error } = await query;
     if (error) return { ok: false, error: error.message };
     return { ok: true, favorites: data || [] };
+  }
+  if (name === 'read_photo_memories') {
+    try {
+      const memories = await listPhotoMemories({
+        keyword: input.keyword || '',
+        kind: input.kind || '',
+        limit: Math.max(1, Math.min(Number.parseInt(input.limit, 10) || 20, 60)),
+      });
+      return { ok: true, photo_memories: memories };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
   }
   if (name === 'save_favorite') {
     try {
@@ -1396,8 +1421,11 @@ async function finishTheaterTextIfTruncated({ result, rawText, settings, model, 
 
 const THEATER_BOOK_CATEGORY = '小剧本';
 const THEATER_MESSAGE_CATEGORY = '小剧场';
+const THEATER_GLOBAL_RULES_CATEGORY = '小剧场通用规则';
 const MUSIC_TRACK_CATEGORY = '一起听';
 const MUSIC_STATE_CATEGORY = '一起听状态';
+const PHOTO_MEMORY_CATEGORY = '照片记忆';
+const PHOTO_MEMORY_KINDS = new Set(['person', 'place', 'object', 'home', 'memory']);
 
 function emptyTheaterSettings() {
   return {
@@ -1610,11 +1638,65 @@ function buildTheaterHistoryBlocks(messages, theaterUserName, theaterAssistantNa
   return { earlierDigest, recentMessages };
 }
 
+function parseTheaterGlobalRulesRow(row) {
+  if (!row) return { rules: '', updated_at: null };
+  try {
+    const parsed = JSON.parse(row.content || '{}');
+    return {
+      rules: compactBlock(parsed.rules || row.content, 20000),
+      updated_at: row.updated_at || row.created_at || null,
+    };
+  } catch {
+    return {
+      rules: compactBlock(row.content, 20000),
+      updated_at: row.updated_at || row.created_at || null,
+    };
+  }
+}
+
+async function readTheaterGlobalRules() {
+  const { data, error } = await supabase.from('letters')
+    .select('*')
+    .eq('category', THEATER_GLOBAL_RULES_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return parseTheaterGlobalRulesRow(data);
+}
+
+async function saveTheaterGlobalRules(rules) {
+  const payload = {
+    category: THEATER_GLOBAL_RULES_CATEGORY,
+    author: '檀',
+    title: '小剧场通用规则',
+    content: JSON.stringify({ rules: compactBlock(rules, 20000) }),
+    parent_id: null,
+    paper_style: null,
+  };
+  const { data: existing, error: existingError } = await supabase.from('letters')
+    .select('*')
+    .eq('category', THEATER_GLOBAL_RULES_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  const query = existing
+    ? supabase.from('letters').update(payload).eq('id', existing.id)
+    : supabase.from('letters').insert(payload);
+  const { data, error } = await query.select().single();
+  if (error) throw error;
+  return parseTheaterGlobalRulesRow(data);
+}
+
 async function generateTheaterChatReply({ settings, bookRow, historyRows = [], userText, model, lengthMode, playMode, temperature }) {
   const book = parseTheaterBook(bookRow, historyRows || []);
   const theaterUserName = book.settings.user_name || '叶檀';
   const theaterAssistantName = book.settings.assistant_name || '剧场';
   const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
+  const globalRules = compactBlock((await readTheaterGlobalRules()).rules, 20000);
   const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
   const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 2200 : 3600;
   const lengthInstruction = lengthMode === 'extra_long'
@@ -1631,6 +1713,7 @@ async function generateTheaterChatReply({ settings, bookRow, historyRows = [], u
 - 严格遵守这本小剧本的世界观、角色卡、关系、禁区和写作规则，禁止 OOC。
 - ${theaterUserName}发来的内容可能是角色台词、动作，也可能是场外指令；你要自然接住并推进。
 - 输出以沉浸式剧情为主，可以包含对白、动作、心理、场景描写，不要写成任务分析或项目符号。
+- 必须优先遵守小剧场通用规则；如果通用规则和单本规则冲突，以更严格、更具体的一条为准。
 - 必须同时参考较早剧情提要和最近互动记录，保持已经发生过的称呼、地点、伤病、关系进展、承诺和剧情因果。
 - 不要跳出剧情解释“我理解了/我会这样写”，除非${theaterUserName}明确要求场外讨论。
 - 不读取现实 OurHome 记忆，不保存长期记忆，不调用工具。
@@ -1639,6 +1722,7 @@ async function generateTheaterChatReply({ settings, bookRow, historyRows = [], u
   const prompt = `【剧本名】
 ${book.title}
 
+${globalRules ? `【小剧场通用规则】\n${globalRules}\n` : ''}
 ${worldbookText ? `【完整世界书】\n${worldbookText}\n` : ''}
 ${useWorldbookOnly ? '【设定读取方式】\n以完整世界书为准，不强制拆分角色卡或禁区；如果分栏为空，不要认为设定缺失。\n' : `【世界观/剧情设定】
 ${book.settings.premise || '（未填写，按互动自然补足。）'}
@@ -1731,6 +1815,86 @@ function normalizeMusicState(value = {}) {
     shuffle: Boolean(value.shuffle),
     updated_at: value.updated_at || new Date().toISOString(),
   };
+}
+
+function normalizePhotoMemory(value = {}) {
+  const kind = compactLine(value.kind, 30) || 'memory';
+  return {
+    title: compactLine(value.title, 120) || '未命名照片',
+    image_url: compactLine(value.image_url || value.photo_url || value.url, 1200),
+    kind: PHOTO_MEMORY_KINDS.has(kind) ? kind : 'memory',
+    date: compactLine(value.date, 40),
+    place: compactLine(value.place, 120),
+    description: compactBlock(value.description || value.note, 2200),
+    relation_to_luze: compactBlock(value.relation_to_luze, 1200),
+    tags: normalizeTags(value.tags || value.tag_text, 12),
+  };
+}
+
+function parsePhotoMemory(row) {
+  let payload = {};
+  try {
+    payload = JSON.parse(row?.content || '{}');
+  } catch {
+    payload = { title: row?.title || '', description: row?.content || '' };
+  }
+  const memory = normalizePhotoMemory({ ...payload, title: payload.title || row?.title });
+  return {
+    id: row.id,
+    ...memory,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function listPhotoMemories({ keyword = '', kind = '', limit = 60 } = {}) {
+  const safeLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || 60, 120));
+  let query = supabase.from('letters')
+    .select('*')
+    .eq('category', PHOTO_MEMORY_CATEGORY)
+    .is('parent_id', null)
+    .order('created_at', { ascending: false })
+    .limit(safeLimit);
+  const { data, error } = await query;
+  if (error) throw error;
+  const needle = compactLine(keyword, 120).toLowerCase();
+  const kindFilter = compactLine(kind, 30);
+  return (data || [])
+    .map(parsePhotoMemory)
+    .filter(item => !kindFilter || item.kind === kindFilter)
+    .filter(item => {
+      if (!needle) return true;
+      return [
+        item.title,
+        item.place,
+        item.description,
+        item.relation_to_luze,
+        ...(item.tags || []),
+      ].join('\n').toLowerCase().includes(needle);
+    });
+}
+
+async function loadPhotoMemoryPromptBlock() {
+  try {
+    const memories = await listPhotoMemories({ limit: 12 });
+    if (!memories.length) return '';
+    const kindLabels = { person: '人物', place: '地点', object: '物品', home: '家里', memory: '回忆' };
+    const lines = memories.map(item => {
+      const bits = [
+        `- [${kindLabels[item.kind] || '照片'}] ${item.title}`,
+        item.place ? `地点：${item.place}` : '',
+        item.date ? `时间：${item.date}` : '',
+        item.description ? `描述：${item.description.slice(0, 120)}` : '',
+        item.relation_to_luze ? `和陆泽有关：${item.relation_to_luze.slice(0, 80)}` : '',
+        item.tags?.length ? `标签：${item.tags.join('、')}` : '',
+      ].filter(Boolean);
+      return bits.join('；');
+    });
+    return `【光影相册·照片记忆】\n这些是叶檀主动留下的照片锚点，用来记住她的样子、生活世界、去过的地方、家里的物品和与你有关的东西。回答相关话题时自然参考，不要机械背诵。\n${lines.join('\n')}`;
+  } catch (error) {
+    console.error('照片记忆上下文读取失败:', error.message);
+    return '';
+  }
 }
 
 async function searchMusicCatalog(term, limit = 8) {
@@ -2565,6 +2729,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
   const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(await loadPinnedFavorites());
   const musicRoomBlock = await loadMusicRoomPromptBlock();
+  const photoMemoryBlock = await loadPhotoMemoryPromptBlock();
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
@@ -2581,6 +2746,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
   if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
   if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
+  if (photoMemoryBlock) prompt += `\n\n${photoMemoryBlock}`;
   if (musicRoomBlock) prompt += `\n\n${musicRoomBlock}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
   prompt += DIALOGUE_STYLE_RULES;
@@ -3040,7 +3206,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.08.01-theater-history-boost',
+    version: '2026.08.02-photo-memories',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -4057,6 +4223,82 @@ app.delete('/memories/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// ============ photo memories (光影相册 / 照片记忆) ============
+
+app.get('/photo-memories', async (req, res) => {
+  try {
+    res.json(await listPhotoMemories({
+      keyword: req.query.keyword || '',
+      kind: req.query.kind || '',
+      limit: req.query.limit || 80,
+    }));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '照片记忆暂时没有回来' });
+  }
+});
+
+app.post('/photo-memories', async (req, res) => {
+  try {
+    const raw = req.body || {};
+    if (!compactLine(raw.title) && !compactLine(raw.image_url || raw.photo_url || raw.url) && !compactBlock(raw.description || raw.note)) {
+      return res.status(400).json({ error: '至少写一点照片记忆内容' });
+    }
+    const memory = normalizePhotoMemory(raw);
+    const { data, error } = await supabase.from('letters')
+      .insert({
+        category: PHOTO_MEMORY_CATEGORY,
+        author: '檀',
+        title: memory.title,
+        content: JSON.stringify(memory),
+        parent_id: null,
+        paper_style: null,
+      })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(parsePhotoMemory(data));
+  } catch (error) {
+    res.status(400).json({ error: error.message || '照片记忆没有保存好' });
+  }
+});
+
+app.patch('/photo-memories/:id', async (req, res) => {
+  try {
+    const currentRows = await supabase.from('letters')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('category', PHOTO_MEMORY_CATEGORY)
+      .maybeSingle();
+    if (currentRows.error) return res.status(500).json({ error: currentRows.error.message });
+    if (!currentRows.data) return res.status(404).json({ error: '找不到这条照片记忆' });
+    const current = parsePhotoMemory(currentRows.data);
+    const memory = normalizePhotoMemory({ ...current, ...(req.body || {}) });
+    const { data, error } = await supabase.from('letters')
+      .update({ title: memory.title, content: JSON.stringify(memory) })
+      .eq('id', req.params.id)
+      .eq('category', PHOTO_MEMORY_CATEGORY)
+      .select()
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: '找不到这条照片记忆' });
+    res.json(parsePhotoMemory(data));
+  } catch (error) {
+    res.status(400).json({ error: error.message || '照片记忆没有保存好' });
+  }
+});
+
+app.delete('/photo-memories/:id', async (req, res) => {
+  const { data, error } = await supabase.from('letters')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('category', PHOTO_MEMORY_CATEGORY)
+    .select('id')
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: '找不到这条照片记忆' });
+  res.json({ success: true });
+});
+
 // ============ memory log (隐藏标记 / 今日摘要) ============
 
 app.get('/memory-log', async (req, res) => {
@@ -4274,6 +4516,35 @@ app.put('/music/state', async (req, res) => {
     res.json(await saveMusicState(req.body || {}));
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ theater global rules (小剧场通用规则) ============
+
+app.get('/theater/global-rules', async (req, res) => {
+  try {
+    res.json(await readTheaterGlobalRules());
+  } catch (error) {
+    res.status(500).json({ error: error.message || '小剧场通用规则没有读出来' });
+  }
+});
+
+app.put('/theater/global-rules', async (req, res) => {
+  try {
+    res.json(await saveTheaterGlobalRules(req.body?.rules || ''));
+  } catch (error) {
+    res.status(500).json({ error: error.message || '小剧场通用规则没有保存成功' });
+  }
+});
+
+app.post('/theater/global-rules/import', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '先选择一个规则文件。' });
+    const rules = extractTheaterImportFile(req.file);
+    if (!compactBlock(rules, 20000)) return res.status(400).json({ error: '这个文件里没有读到规则内容。' });
+    res.json(await saveTheaterGlobalRules(rules));
+  } catch (error) {
+    res.status(400).json({ error: error.message || '规则文件没有导入成功' });
   }
 });
 
@@ -4591,6 +4862,7 @@ app.post('/theater/generate', async (req, res) => {
     const rules = compactBlock(req.body?.rules, 7000);
     const previousText = compactBlock(req.body?.previous_text, 9000);
     const request = compactBlock(req.body?.request, 2400);
+    const globalRules = compactBlock((await readTheaterGlobalRules()).rules, 20000);
     const lengthInstruction = lengthMode === 'extra_long'
       ? '超长：写成一篇明显加长的正文，目标 3500-6000 汉字；多写场景、动作、对白、心理和转折，但不要拖到过度冗长。'
       : lengthMode === 'short'
@@ -4606,6 +4878,7 @@ app.post('/theater/generate', async (req, res) => {
 
 写作规则：
 - 全程保持剧场设定、角色关系、口吻和世界观一致，禁止 OOC。
+- 必须优先遵守小剧场通用规则；如果通用规则和单次设定冲突，以更严格、更具体的一条为准。
 - 不要跳出剧情解释“我会怎么写”，不要项目符号、不要分析提纲、不要总结本轮任务。
 - 以沉浸式正文输出为主，允许自然对白、动作、心理、场景描写。
 - 如果设定不足，可以用温柔合理的细节补足，但不要推翻叶檀给的设定。
@@ -4625,6 +4898,7 @@ ${playMode === 'interactive' ? '互动推进：自然接着写，不要给预设
 【篇幅要求】
 ${lengthInstruction}
 
+${globalRules ? `【小剧场通用规则】\n${globalRules}\n` : ''}
 【世界观/剧情设定】
 ${premise || '（未填写，按本次要求自然补足）'}
 
