@@ -5,6 +5,7 @@ const zlib = require('zlib');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+const UPLOAD_BUCKET = process.env.SUPABASE_UPLOAD_BUCKET || 'uploads';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 const webpush = require('web-push');
 const { createRuntimeConfig } = require('./runtimeConfig');
@@ -61,6 +62,22 @@ const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
 const SESSION_SUMMARY_CHUNK_CHARS = 12_000;
 const SESSION_SUMMARY_MAX_CHUNKS = 36;
+let uploadBucketReady = false;
+
+async function ensureUploadBucket() {
+  if (uploadBucketReady) return;
+  const existing = await supabase.storage.getBucket(UPLOAD_BUCKET);
+  if (existing.error) {
+    const missing = existing.error.statusCode === '404' || /not found/i.test(existing.error.message || '');
+    if (!missing) throw existing.error;
+    const created = await supabase.storage.createBucket(UPLOAD_BUCKET, {
+      public: true,
+      fileSizeLimit: MAX_UPLOAD_BYTES,
+    });
+    if (created.error) throw created.error;
+  }
+  uploadBucketReady = true;
+}
 
 async function fetchWeatherResponse(url, label) {
   let lastError;
@@ -5043,12 +5060,18 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
     const safeName = file.originalname.normalize('NFKC').replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(-120) || 'file';
     const filePath = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
-    const { error } = await supabase.storage.from('uploads').upload(filePath, file.buffer, { contentType: file.mimetype });
-    if (error) return res.status(500).json({ error: error.message });
-    const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
+    await ensureUploadBucket();
+    let { error } = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
+    if (error && /bucket|not found/i.test(error.message || '')) {
+      uploadBucketReady = false;
+      await ensureUploadBucket();
+      ({ error } = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype }));
+    }
+    if (error) return res.status(500).json({ error: `上传失败：${error.message}` });
+    const { data: urlData } = supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(filePath);
     res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: `上传服务暂时没有准备好：${err.message}` });
   }
 });
 
