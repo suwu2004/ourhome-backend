@@ -1815,6 +1815,7 @@ function normalizeMusicState(value = {}) {
     is_playing: Boolean(value.is_playing),
     shuffle: Boolean(value.shuffle),
     repeat_mode: ['list', 'one', 'shuffle', 'off'].includes(repeatMode) ? repeatMode : (value.shuffle ? 'shuffle' : 'list'),
+    background_url: compactLine(value.background_url || value.backgroundUrl, 1200),
     updated_at: value.updated_at || new Date().toISOString(),
   };
 }
