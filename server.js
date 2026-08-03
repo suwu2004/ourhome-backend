@@ -75,6 +75,12 @@ async function ensureUploadBucket() {
       fileSizeLimit: MAX_UPLOAD_BYTES,
     });
     if (created.error) throw created.error;
+  } else if (existing.data?.public === false) {
+    const updated = await supabase.storage.updateBucket(UPLOAD_BUCKET, {
+      public: true,
+      fileSizeLimit: MAX_UPLOAD_BYTES,
+    });
+    if (updated.error) throw updated.error;
   }
   uploadBucketReady = true;
 }
