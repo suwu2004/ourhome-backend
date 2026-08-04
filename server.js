@@ -3130,7 +3130,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   return {
     replyText: extractText(result).trim(),
     thinkingText: extractThinking(result),
-    modelName,
+    modelName: result?.model || modelName,
     totalInputTokens,
     totalOutputTokens,
     actionsPerformed,
@@ -3722,7 +3722,8 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
       actions: actionsPerformed,
-      model: modelName,
+      model: result?.model || modelName,
+      requestedModel: modelName,
     });
   } catch (err) {
     console.error('编辑重发错误:', err);
@@ -5559,7 +5560,7 @@ app.post('/chat/regenerate', async (req, res) => {
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: finalInputTokens, outputTokens: finalOutputTokens, actions: actionsPerformed, model: modelNameRegen, visionFallbackModel: visual.visionFallbackModel });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: finalInputTokens, outputTokens: finalOutputTokens, actions: actionsPerformed, model: result?.model || modelNameRegen, requestedModel: modelNameRegen, visionFallbackModel: visual.visionFallbackModel });
   } catch (err) {
     console.error('重新生成错误:', err);
     sendGenerationError(res, err, { model });
