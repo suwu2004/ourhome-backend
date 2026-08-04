@@ -30,6 +30,14 @@ const {
   chooseVisionModel,
   replaceImagesWithDescription,
 } = require('./modelCompatibility');
+const {
+  DEFAULT_CHAT_MIN_REPLY_CHARS,
+  DEFAULT_THEATER_MIN_REPLY_CHARS,
+  normalizeMinReplyChars,
+  buildAdaptiveReplyInstruction,
+  replyNeedsExtension,
+  mergeReplySupplement,
+} = require('./replyLength');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -1382,6 +1390,47 @@ function extractText(result) {
     .join('\n') || '';
 }
 
+async function extendReplyIfShort({ text, minChars, settings, model, system, scene = 'chat', context = '' }) {
+  const minimum = normalizeMinReplyChars(
+    minChars,
+    scene === 'theater' ? DEFAULT_THEATER_MIN_REPLY_CHARS : DEFAULT_CHAT_MIN_REPLY_CHARS,
+  );
+  const original = String(text || '').trim();
+  if (!replyNeedsExtension(original, minimum)) {
+    return { text: original, inputTokens: 0, outputTokens: 0, extended: false };
+  }
+
+  const sceneInstruction = scene === 'theater'
+    ? '只续写一小段仍在当前小世界里的自然余韵，可以是环境、角色念头或生活细节。不要跳出剧情，不要替用户角色做决定。'
+    : '只续写一小段自然补白，可以是此刻的小念头、生活碎片或不要求对方回答的松散话题。不要写“补充/题外话”，不要生硬提问。';
+  const prompt = `刚才的回复还没有达到 ${minimum} 字的最低篇幅。${sceneInstruction}\n不要重写、总结或重复已有回复，只输出要接在后面的新段落。`;
+
+  try {
+    const supplementResult = await callClaude({
+      settings,
+      model,
+      maxTokens: Math.min(1000, Math.max(260, minimum * 2)),
+      system,
+      messages: [
+        { role: 'user', content: String(context || '请自然回应。').slice(-6000) },
+        { role: 'assistant', content: original },
+        { role: 'user', content: prompt },
+      ],
+      temperature: Math.min(1, Math.max(0.72, Number(settings?.temperature) || 0.8)),
+    });
+    const supplement = extractText(supplementResult).trim();
+    return {
+      text: mergeReplySupplement(original, supplement),
+      inputTokens: supplementResult?.usage?.input_tokens || 0,
+      outputTokens: supplementResult?.usage?.output_tokens || 0,
+      extended: Boolean(supplement),
+    };
+  } catch (error) {
+    console.error('短回复自然补白失败:', error.message);
+    return { text: original, inputTokens: 0, outputTokens: 0, extended: false };
+  }
+}
+
 function parseTheaterTitle(rawText, fallback) {
   const text = String(rawText || '').trim();
   const titleMatch = text.match(/^标题[：:]\s*(.+)$/m);
@@ -1462,6 +1511,7 @@ function emptyTheaterSettings() {
     chat_background_mode: 'main',
     chat_background_color: '',
     chat_background_image_url: '',
+    min_reply_chars: DEFAULT_THEATER_MIN_REPLY_CHARS,
   };
 }
 
@@ -1480,6 +1530,7 @@ function normalizeTheaterSettings(value = {}) {
     chat_background_mode: bgMode,
     chat_background_color: compactLine(value.chat_background_color, 40),
     chat_background_image_url: compactLine(value.chat_background_image_url, 1000),
+    min_reply_chars: normalizeMinReplyChars(value.min_reply_chars, DEFAULT_THEATER_MIN_REPLY_CHARS),
   };
 }
 
@@ -1714,19 +1765,16 @@ async function saveTheaterGlobalRules(rules) {
   return parseTheaterGlobalRulesRow(data);
 }
 
-async function generateTheaterChatReply({ settings, bookRow, historyRows = [], userText, model, lengthMode, playMode, temperature }) {
+async function generateTheaterChatReply({ settings, bookRow, historyRows = [], userText, model, playMode, temperature }) {
   const book = parseTheaterBook(bookRow, historyRows || []);
   const theaterUserName = book.settings.user_name || '叶檀';
   const theaterAssistantName = book.settings.assistant_name || '剧场';
   const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
   const globalRules = compactBlock((await readTheaterGlobalRules()).rules, 20000);
   const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
-  const maxTokens = lengthMode === 'extra_long' ? 8200 : lengthMode === 'short' ? 2200 : 3600;
-  const lengthInstruction = lengthMode === 'extra_long'
-    ? '超长：写成明显加长的沉浸剧情，目标 3200-5200 汉字；重点铺开关键场景、动作、对白和心理，但不要无限延展。'
-    : lengthMode === 'short'
-      ? '短：保持一小段自然接戏，约 400-900 汉字。'
-      : '长：写成完整一场戏，目标 1500-2600 汉字；有连续推进和细节，但不要写成超长章节。';
+  const minReplyChars = normalizeMinReplyChars(book.settings.min_reply_chars, DEFAULT_THEATER_MIN_REPLY_CHARS);
+  const maxTokens = Math.min(5200, Math.max(2600, minReplyChars * 3));
+  const lengthInstruction = buildAdaptiveReplyInstruction(minReplyChars, 'theater');
   const { earlierDigest, recentMessages } = buildTheaterHistoryBlocks(book.messages, theaterUserName, theaterAssistantName);
 
   const system = `你是 OurHome 的“小剧场”互动写作引擎，不是普通聊天里的陆泽，也不要代入 OurHome 主线人格。
@@ -1783,7 +1831,6 @@ ${lengthInstruction}
     temperature,
   });
   const firstText = extractText(result).trim();
-  const continuationTokens = lengthMode === 'short' ? 1200 : lengthMode === 'extra_long' ? 2200 : 1600;
   const { text: rawText, continued: wasContinued } = await finishTheaterTextIfTruncated({
     result,
     rawText: firstText,
@@ -1792,13 +1839,24 @@ ${lengthInstruction}
     system,
     prompt,
     temperature,
-    maxTokens: continuationTokens,
+    maxTokens: 1800,
   });
   if (!rawText) throw new Error('小剧场这次没有接上');
+  const completed = await extendReplyIfShort({
+    text: rawText,
+    minChars: minReplyChars,
+    settings,
+    model,
+    system,
+    scene: 'theater',
+    context: `${theaterUserName}刚刚发来：${userText}`,
+  });
   return {
-    parsed: parseTheaterOutput(rawText, `${book.title}续写`),
+    parsed: parseTheaterOutput(completed.text, `${book.title}续写`),
     result,
-    wasContinued,
+    extraInputTokens: completed.inputTokens,
+    extraOutputTokens: completed.outputTokens,
+    wasContinued: wasContinued || completed.extended,
   };
 }
 
@@ -3105,7 +3163,8 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const gemini = isGeminiModel(modelName);
   const thinkingBuiltIn = isThinkingModel(modelName);
   const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
-  const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
+  const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
+  const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
   const thinkingBudget = 3000;
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -3119,10 +3178,22 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
     systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
   });
 
+  const completed = await extendReplyIfShort({
+    text: extractText(result),
+    minChars: minReplyChars,
+    settings,
+    model: modelName,
+    system: finalSystemPrompt,
+    scene: 'chat',
+    context: latestUserMessage,
+  });
+
   return {
-    replyText: extractText(result),
+    replyText: completed.text,
     thinkingText: extractThinking(result),
-    totalInputTokens, totalOutputTokens, actionsPerformed,
+    totalInputTokens: totalInputTokens + completed.inputTokens,
+    totalOutputTokens: totalOutputTokens + completed.outputTokens,
+    actionsPerformed,
     visionFallbackModel: visual.visionFallbackModel,
   };
 }
@@ -3795,7 +3866,7 @@ app.get('/settings', async (req, res) => {
 app.patch('/settings', async (req, res) => {
   const allowed = new Set([
     'system_prompt', 'temperature', 'max_context_rounds', 'max_context_tokens',
-    'compress_threshold', 'compress_keep_rounds', 'max_reply_tokens',
+    'compress_threshold', 'compress_keep_rounds', 'max_reply_tokens', 'min_reply_chars',
     'my_avatar_url', 'partner_avatar_url', 'bg_image_url', 'bg_color', 'dark_mode',
     'home_bg_day_image_url', 'home_bg_night_image_url',
     'home_memo_bg_image_url',
@@ -3807,6 +3878,13 @@ app.patch('/settings', async (req, res) => {
     const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.has(key)));
     if (updates.daily_journal_enabled !== undefined && typeof updates.daily_journal_enabled !== 'boolean') {
       return res.status(400).json({ error: '自动补写开关格式不正确' });
+    }
+    if (updates.min_reply_chars !== undefined) {
+      const minimum = Number(updates.min_reply_chars);
+      if (!Number.isFinite(minimum) || minimum < 0 || minimum > 1200) {
+        return res.status(400).json({ error: '最低回复长度需要在 0 到 1200 字之间' });
+      }
+      updates.min_reply_chars = Math.round(minimum);
     }
     if (updates.daily_journal_time !== undefined) {
       const match = String(updates.daily_journal_time).match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
@@ -4723,7 +4801,6 @@ app.post('/theater/books/:id/chat', async (req, res) => {
     if (!userText) return res.status(400).json({ error: '先在小剧场里说一句。' });
 
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
-    const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
     const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
@@ -4755,13 +4832,12 @@ app.post('/theater/books/:id/chat', async (req, res) => {
       .single();
     if (userInsert.error) return res.status(500).json({ error: userInsert.error.message });
 
-    const { parsed, result, wasContinued } = await generateTheaterChatReply({
+    const { parsed, result, extraInputTokens, extraOutputTokens, wasContinued } = await generateTheaterChatReply({
       settings,
       bookRow,
       historyRows: historyRows || [],
       userText,
       model,
-      lengthMode,
       playMode,
       temperature,
     });
@@ -4783,8 +4859,8 @@ app.post('/theater/books/:id/chat', async (req, res) => {
       user_message: parseTheaterBook(bookRow, [userInsert.data]).messages[0],
       assistant_message: parseTheaterBook(bookRow, [assistantInsert.data]).messages[0],
       choices: [],
-      input_tokens: result?.usage?.input_tokens || null,
-      output_tokens: result?.usage?.output_tokens || null,
+      input_tokens: (result?.usage?.input_tokens || 0) + (extraInputTokens || 0) || null,
+      output_tokens: (result?.usage?.output_tokens || 0) + (extraOutputTokens || 0) || null,
       was_continued: wasContinued,
     });
   } catch (error) {
@@ -4799,7 +4875,6 @@ app.post('/theater/books/:id/messages/:messageId/regenerate', async (req, res) =
     const bookId = req.params.id;
     const messageId = req.params.messageId;
     const model = compactLine(req.body?.model, 160) || settings?.selected_model || 'claude-sonnet-4-6';
-    const lengthMode = ['short', 'long', 'extra_long'].includes(req.body?.length_mode) ? req.body.length_mode : 'long';
     const playMode = req.body?.play_mode === 'story' ? 'story' : 'interactive';
     const temperature = Math.min(1, Math.max(0.55, Number(req.body?.temperature ?? settings?.temperature ?? 0.88)));
 
@@ -4835,13 +4910,12 @@ app.post('/theater/books/:id/messages/:messageId/regenerate', async (req, res) =
 
     const userText = compactBlock(rows[userIndex].content, 2400);
     const historyBeforeUser = rows.slice(0, userIndex);
-    const { parsed, result, wasContinued } = await generateTheaterChatReply({
+    const { parsed, result, extraInputTokens, extraOutputTokens, wasContinued } = await generateTheaterChatReply({
       settings,
       bookRow,
       historyRows: historyBeforeUser,
       userText,
       model,
-      lengthMode,
       playMode,
       temperature,
     });
@@ -4861,8 +4935,8 @@ app.post('/theater/books/:id/messages/:messageId/regenerate', async (req, res) =
 
     res.json({
       assistant_message: parseTheaterBook(bookRow, [updatedRow]).messages[0],
-      input_tokens: result?.usage?.input_tokens || null,
-      output_tokens: result?.usage?.output_tokens || null,
+      input_tokens: (result?.usage?.input_tokens || 0) + (extraInputTokens || 0) || null,
+      output_tokens: (result?.usage?.output_tokens || 0) + (extraOutputTokens || 0) || null,
       was_continued: wasContinued,
     });
   } catch (error) {
@@ -5406,7 +5480,8 @@ app.post('/chat', async (req, res) => {
     const gemini = isGeminiModel(modelName);
     const thinkingBuiltIn = isThinkingModel(modelName);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
-    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
+    const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
+    const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
 
     const firstMaxTokens = shouldThink
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -5423,11 +5498,22 @@ app.post('/chat', async (req, res) => {
     });
 
     const thinkingText = extractThinking(result);
-    const replyText = extractText(result);
+    const completed = await extendReplyIfShort({
+      text: extractText(result),
+      minChars: minReplyChars,
+      settings,
+      model: modelName,
+      system: finalSystemPrompt,
+      scene: 'chat',
+      context: latestUserMessage,
+    });
+    const replyText = completed.text;
+    const finalInputTokens = totalInputTokens + completed.inputTokens;
+    const finalOutputTokens = totalOutputTokens + completed.outputTokens;
 
     const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
-      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+      input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
     }).select('id, created_at').single();
     if (assistantInsertError) {
       return res.status(500).json({
@@ -5451,8 +5537,8 @@ app.post('/chat', async (req, res) => {
       createdAt: assistantMessage.created_at,
       userMessage: { id: userMessage.id, createdAt: userMessage.created_at },
       assistantMessage: { id: assistantMessage.id, createdAt: assistantMessage.created_at },
-      inputTokens: totalInputTokens,
-      outputTokens: totalOutputTokens,
+      inputTokens: finalInputTokens,
+      outputTokens: finalOutputTokens,
       actions: actionsPerformed,
       visionFallbackModel: visual.visionFallbackModel,
     });
@@ -5502,7 +5588,8 @@ app.post('/chat/regenerate', async (req, res) => {
     const geminiRegen = isGeminiModel(modelNameRegen);
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
-    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '');
+    const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
+    const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
     const dynamic = await integrationManager.buildDynamicTools();
     const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
     const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
@@ -5519,10 +5606,21 @@ app.post('/chat/regenerate', async (req, res) => {
     });
 
     const thinkingText = extractThinking(result);
-    const replyText = extractText(result);
+    const completed = await extendReplyIfShort({
+      text: extractText(result),
+      minChars: minReplyChars,
+      settings,
+      model: modelNameRegen,
+      system: finalSystemPrompt,
+      scene: 'chat',
+      context: lastUserMsg?.content || '',
+    });
+    const replyText = completed.text;
+    const finalInputTokens = totalInputTokens + completed.inputTokens;
+    const finalOutputTokens = totalOutputTokens + completed.outputTokens;
     const payload = {
       content: replyText, reasoning_content: thinkingText || null,
-      input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
+      input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
     };
 
     let newMsg;
@@ -5536,7 +5634,7 @@ app.post('/chat/regenerate', async (req, res) => {
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, actions: actionsPerformed, visionFallbackModel: visual.visionFallbackModel });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: finalInputTokens, outputTokens: finalOutputTokens, actions: actionsPerformed, visionFallbackModel: visual.visionFallbackModel });
   } catch (err) {
     console.error('重新生成错误:', err);
     sendGenerationError(res, err, { model });
