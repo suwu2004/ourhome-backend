@@ -102,10 +102,7 @@ function isLikelyVisionModel(model) {
   return /(claude|gemini|gpt-(4o|4\.1|5)|o[134]-vision|qwen[^/]*vl|qvq|glm-4v|pixtral|llava|internvl|minicpm-v|molmo|vision|multimodal)/i.test(name);
 }
 
-function chooseVisionModel(models = [], currentModel = '') {
-  const current = String(currentModel || '');
-  const candidates = [...new Set((models || []).map(String).filter(Boolean))]
-    .filter(model => model !== current && isLikelyVisionModel(model));
+function visionModelRank(model) {
   const priority = [
     /claude-(4|3)/i,
     /gemini-(3|2\.5|2)/i,
@@ -113,12 +110,32 @@ function chooseVisionModel(models = [], currentModel = '') {
     /qwen[^/]*vl|qvq/i,
     /glm-4v|pixtral|llava|internvl|vision|multimodal/i,
   ];
+  const rank = priority.findIndex(pattern => pattern.test(model));
+  return rank < 0 ? priority.length : rank;
+}
+
+function listVisionModels(models = [], currentModel = '') {
+  const current = String(currentModel || '');
+  const candidates = [...new Set([current, ...(models || [])].map(String).filter(Boolean))]
+    .filter(isLikelyVisionModel);
   candidates.sort((left, right) => {
-    const leftRank = priority.findIndex(pattern => pattern.test(left));
-    const rightRank = priority.findIndex(pattern => pattern.test(right));
-    return (leftRank < 0 ? priority.length : leftRank) - (rightRank < 0 ? priority.length : rightRank);
+    if (left === current) return -1;
+    if (right === current) return 1;
+    return visionModelRank(left) - visionModelRank(right);
   });
-  return candidates[0] || null;
+  return candidates;
+}
+
+function chooseVisionModel(models = [], currentModel = '') {
+  const current = String(currentModel || '');
+  return listVisionModels(models, current).find(model => model !== current) || null;
+}
+
+function parseVisionReaderOutput(value) {
+  const text = String(value || '').trim().replace(/^```(?:text)?\s*/i, '').replace(/```$/, '').trim();
+  if (/^IMAGE_UNAVAILABLE\b/i.test(text)) return '';
+  const match = text.match(/^IMAGE_OK\s*\n+([\s\S]+)$/i);
+  return match?.[1]?.trim() || '';
 }
 
 function replaceImagesWithDescription(messages = [], description, visionModel) {
@@ -143,6 +160,8 @@ module.exports = {
   isToolCompatibilityError,
   hasImageContent,
   isLikelyVisionModel,
+  listVisionModels,
   chooseVisionModel,
+  parseVisionReaderOutput,
   replaceImagesWithDescription,
 };

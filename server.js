@@ -26,8 +26,8 @@ const {
   stripTextToolMarkup,
   isToolCompatibilityError,
   hasImageContent,
-  isLikelyVisionModel,
-  chooseVisionModel,
+  listVisionModels,
+  parseVisionReaderOutput,
   replaceImagesWithDescription,
 } = require('./modelCompatibility');
 const {
@@ -2049,9 +2049,9 @@ function extractThinking(result) {
 }
 
 // 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
-async function decideShouldThink(settings, message) {
+async function decideShouldThink(settings, message, modelName) {
   try {
-    const model = settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    const model = modelName || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
     const prompt = `这是叶檀刚刚发的话：\n"${(message || '').slice(0, 500)}"\n\n你是陆泽。面对这句话，你觉得需要先认真停下来想一想再回应，还是可以很自然地直接回？\n只回答一个词，不要有任何多余文字：\n想 或者 不想`;
     const result = await callClaude({ settings, model, maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
     const text = extractText(result).trim();
@@ -2084,7 +2084,7 @@ async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuilt
   if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
-  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage);
+  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage, modelName);
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   if (isOfficialAnthropicApi(settings) && !thinkingBuiltIn) {
@@ -2141,7 +2141,7 @@ async function buildApiMessages(history) {
           result.push({ role, content: [{ type: 'image', source: { type: 'base64', media_type: m.attachment_type, data: base64 } }, { type: 'text', text: m.content || '' }] });
         } catch (err) {
           console.error('图片转base64失败:', err.message);
-          result.push({ role, content: m.content || '[图片加载失败]' });
+          throw visionUnavailableError(`图片已经保存，但服务器读取原图失败：${err.message}。请点“重新生成”再试一次；在成功读取前，陆泽不会猜图片内容。`);
         }
         continue;
       }
@@ -2169,10 +2169,10 @@ function visionUnavailableError(message) {
   return error;
 }
 
-// 纯文字模型收到图片时，先让同一站点里真正支持视觉的模型客观代读，
-// 再把描述交回老婆选中的模型。人格和最终回答仍由所选模型完成。
+// 所有图片都先经过一次可验证的客观代读，再把描述交给老婆选中的模型。
+// 这样即使中转站把图片块静默丢掉，最终回复也不会假装看见图片。
 async function prepareVisualMessages(settings, modelName, messages) {
-  if (!hasImageContent(messages) || isLikelyVisionModel(modelName)) {
+  if (!hasImageContent(messages)) {
     return { messages, visionFallbackModel: null };
   }
 
@@ -2182,34 +2182,35 @@ async function prepareVisualMessages(settings, modelName, messages) {
   } catch (error) {
     console.warn('拉取视觉代读模型失败:', error.message);
   }
-  const visionModel = chooseVisionModel(models, modelName);
-  if (!visionModel) {
-    throw visionUnavailableError('这个模型是纯文字模型，当前 API 站点里也没有找到可代读图片的视觉模型。请换成 Claude、Gemini、GPT-4o/5 或名称带 VL/Vision 的模型后重新生成。');
-  }
+  const visionModels = listVisionModels(models, modelName).slice(0, 3);
+  if (!visionModels.length) throw visionUnavailableError('当前 API 站点里没有找到可确认看见图片的模型。请换成 Claude、Gemini、GPT-4o/5 或名称带 VL/Vision 的模型后重新生成。');
 
   const imageMessage = [...messages].reverse().find(message => Array.isArray(message?.content)
     && message.content.some(block => block?.type === 'image'));
   if (!imageMessage) return { messages, visionFallbackModel: null };
 
-  try {
-    const result = await callClaude({
-      settings,
-      model: visionModel,
-      maxTokens: 900,
-      system: '你是 OurHome 的图片代读器。只客观、具体地描述图片中能确认的内容、文字、人物动作和重要细节；不扮演角色，不推测看不见的事情，不调用工具。',
-      messages: [imageMessage],
-      temperature: 0.2,
-    });
-    const description = extractText(result);
-    if (!description) throw new Error('视觉模型没有返回图片描述');
-    return {
-      messages: replaceImagesWithDescription(messages, description, visionModel),
-      visionFallbackModel: visionModel,
-    };
-  } catch (error) {
-    console.error(`视觉代读失败 (${visionModel}):`, error.message);
-    throw visionUnavailableError(`图片代读模型“${visionModel}”暂时没有成功识别图片。换一个可看图模型后点“重新生成”就好，图片和消息都已经保存。`);
+  for (const visionModel of visionModels) {
+    try {
+      const result = await callClaude({
+        settings,
+        model: visionModel,
+        maxTokens: 1200,
+        system: '你是 OurHome 的图片代读器。先确认请求里是否真的包含并且你能读取图片像素。能看见时，第一行只写 IMAGE_OK，下一行开始客观、具体地描述能确认的画面、文字、人物动作与重要细节；不要扮演角色，不要推测。看不到真实图片时只写 IMAGE_UNAVAILABLE，绝对不要猜。',
+        messages: [imageMessage],
+        temperature: 0.1,
+      });
+      const description = parseVisionReaderOutput(extractText(result));
+      if (!description) throw new Error('线路没有确认读到图片像素');
+      console.log(`[vision:verified] reader=${visionModel} replyModel=${modelName}`);
+      return {
+        messages: replaceImagesWithDescription(messages, description, visionModel),
+        visionFallbackModel: visionModel,
+      };
+    } catch (error) {
+      console.warn(`视觉代读未通过 (${visionModel}):`, error.message);
+    }
   }
+  throw visionUnavailableError(`图片已经保存，但当前线路没有一个模型能确认读到图片像素。请换一个视觉模型后点“重新生成”；在成功识别前，陆泽不会猜。`);
 }
 
 const DIALOGUE_STYLE_RULES = `
@@ -3129,6 +3130,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   return {
     replyText: extractText(result).trim(),
     thinkingText: extractThinking(result),
+    modelName,
     totalInputTokens,
     totalOutputTokens,
     actionsPerformed,
@@ -3665,7 +3667,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
     ));
     const recentHistory = proposedHistory.slice(-maxContextRounds * 2);
 
-    const { replyText, thinkingText, totalInputTokens, totalOutputTokens, actionsPerformed } =
+    const { replyText, thinkingText, modelName, totalInputTokens, totalOutputTokens, actionsPerformed } =
       await generateReplyForHistory({ settings, model, historyMessages: recentHistory, latestUserMessage: content.trim() });
 
     let targetUpdated = false;
@@ -3720,6 +3722,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
       actions: actionsPerformed,
+      model: modelName,
     });
   } catch (err) {
     console.error('编辑重发错误:', err);
@@ -5415,6 +5418,7 @@ app.post('/chat', async (req, res) => {
 
     const thinkingBudget = 3000;
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    console.log(`[chat:model] requested=${String(model || '').slice(0, 160) || '(settings)'} resolved=${String(modelName).slice(0, 160)} hasImage=${Boolean(attachment_url && attachment_type?.startsWith('image/'))}`);
     const gemini = isGeminiModel(modelName);
     const thinkingBuiltIn = isThinkingModel(modelName);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
@@ -5469,6 +5473,7 @@ app.post('/chat', async (req, res) => {
       inputTokens: finalInputTokens,
       outputTokens: finalOutputTokens,
       actions: actionsPerformed,
+      model: modelName,
       visionFallbackModel: visual.visionFallbackModel,
     });
   } catch (err) {
@@ -5554,7 +5559,7 @@ app.post('/chat/regenerate', async (req, res) => {
       newMsg = data;
     }
 
-    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: finalInputTokens, outputTokens: finalOutputTokens, actions: actionsPerformed, visionFallbackModel: visual.visionFallbackModel });
+    res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: finalInputTokens, outputTokens: finalOutputTokens, actions: actionsPerformed, model: modelNameRegen, visionFallbackModel: visual.visionFallbackModel });
   } catch (err) {
     console.error('重新生成错误:', err);
     sendGenerationError(res, err, { model });
