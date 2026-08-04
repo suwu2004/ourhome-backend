@@ -35,8 +35,6 @@ const {
   DEFAULT_THEATER_MIN_REPLY_CHARS,
   normalizeMinReplyChars,
   buildAdaptiveReplyInstruction,
-  replyNeedsExtension,
-  mergeReplySupplement,
 } = require('./replyLength');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
@@ -1390,47 +1388,6 @@ function extractText(result) {
     .join('\n') || '';
 }
 
-async function extendReplyIfShort({ text, minChars, settings, model, system, scene = 'chat', context = '' }) {
-  const minimum = normalizeMinReplyChars(
-    minChars,
-    scene === 'theater' ? DEFAULT_THEATER_MIN_REPLY_CHARS : DEFAULT_CHAT_MIN_REPLY_CHARS,
-  );
-  const original = String(text || '').trim();
-  if (!replyNeedsExtension(original, minimum)) {
-    return { text: original, inputTokens: 0, outputTokens: 0, extended: false };
-  }
-
-  const sceneInstruction = scene === 'theater'
-    ? '只接着完成当前正在发生的动作、对话或情绪，不引入新的背景轶事、回忆或无关细节。不要跳出剧情，不要替用户角色做决定。'
-    : '只接着完成对方这一轮正在谈的事情、问题或情绪，把刚才尚未说完整的回应自然说完。不偏离当前话题，不引入这一轮未提及的新内容。';
-  const prompt = `刚才的回复还没有达到 ${minimum} 字的最低篇幅。${sceneInstruction}\n不要重写、总结或重复已有回复，只输出要接在后面的新段落。`;
-
-  try {
-    const supplementResult = await callClaude({
-      settings,
-      model,
-      maxTokens: Math.min(1000, Math.max(260, minimum * 2)),
-      system,
-      messages: [
-        { role: 'user', content: String(context || '请自然回应。').slice(-6000) },
-        { role: 'assistant', content: original },
-        { role: 'user', content: prompt },
-      ],
-      temperature: Math.min(1, Math.max(0.72, Number(settings?.temperature) || 0.8)),
-    });
-    const supplement = extractText(supplementResult).trim();
-    return {
-      text: mergeReplySupplement(original, supplement),
-      inputTokens: supplementResult?.usage?.input_tokens || 0,
-      outputTokens: supplementResult?.usage?.output_tokens || 0,
-      extended: Boolean(supplement),
-    };
-  } catch (error) {
-    console.error('短回复续写失败:', error.message);
-    return { text: original, inputTokens: 0, outputTokens: 0, extended: false };
-  }
-}
-
 function parseTheaterTitle(rawText, fallback) {
   const text = String(rawText || '').trim();
   const titleMatch = text.match(/^标题[：:]\s*(.+)$/m);
@@ -1842,21 +1799,12 @@ ${lengthInstruction}
     maxTokens: 1800,
   });
   if (!rawText) throw new Error('小剧场这次没有接上');
-  const completed = await extendReplyIfShort({
-    text: rawText,
-    minChars: minReplyChars,
-    settings,
-    model,
-    system,
-    scene: 'theater',
-    context: `${theaterUserName}刚刚发来：${userText}`,
-  });
   return {
-    parsed: parseTheaterOutput(completed.text, `${book.title}续写`),
+    parsed: parseTheaterOutput(rawText, `${book.title}续写`),
     result,
-    extraInputTokens: completed.inputTokens,
-    extraOutputTokens: completed.outputTokens,
-    wasContinued: wasContinued || completed.extended,
+    extraInputTokens: 0,
+    extraOutputTokens: 0,
+    wasContinued,
   };
 }
 
@@ -3178,21 +3126,11 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
     systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
   });
 
-  const completed = await extendReplyIfShort({
-    text: extractText(result),
-    minChars: minReplyChars,
-    settings,
-    model: modelName,
-    system: finalSystemPrompt,
-    scene: 'chat',
-    context: latestUserMessage,
-  });
-
   return {
-    replyText: completed.text,
+    replyText: extractText(result).trim(),
     thinkingText: extractThinking(result),
-    totalInputTokens: totalInputTokens + completed.inputTokens,
-    totalOutputTokens: totalOutputTokens + completed.outputTokens,
+    totalInputTokens,
+    totalOutputTokens,
     actionsPerformed,
     visionFallbackModel: visual.visionFallbackModel,
   };
@@ -5498,18 +5436,9 @@ app.post('/chat', async (req, res) => {
     });
 
     const thinkingText = extractThinking(result);
-    const completed = await extendReplyIfShort({
-      text: extractText(result),
-      minChars: minReplyChars,
-      settings,
-      model: modelName,
-      system: finalSystemPrompt,
-      scene: 'chat',
-      context: latestUserMessage,
-    });
-    const replyText = completed.text;
-    const finalInputTokens = totalInputTokens + completed.inputTokens;
-    const finalOutputTokens = totalOutputTokens + completed.outputTokens;
+    const replyText = extractText(result).trim();
+    const finalInputTokens = totalInputTokens;
+    const finalOutputTokens = totalOutputTokens;
 
     const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
@@ -5606,18 +5535,9 @@ app.post('/chat/regenerate', async (req, res) => {
     });
 
     const thinkingText = extractThinking(result);
-    const completed = await extendReplyIfShort({
-      text: extractText(result),
-      minChars: minReplyChars,
-      settings,
-      model: modelNameRegen,
-      system: finalSystemPrompt,
-      scene: 'chat',
-      context: lastUserMsg?.content || '',
-    });
-    const replyText = completed.text;
-    const finalInputTokens = totalInputTokens + completed.inputTokens;
-    const finalOutputTokens = totalOutputTokens + completed.outputTokens;
+    const replyText = extractText(result).trim();
+    const finalInputTokens = totalInputTokens;
+    const finalOutputTokens = totalOutputTokens;
     const payload = {
       content: replyText, reasoning_content: thinkingText || null,
       input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
