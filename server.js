@@ -1401,8 +1401,8 @@ async function extendReplyIfShort({ text, minChars, settings, model, system, sce
   }
 
   const sceneInstruction = scene === 'theater'
-    ? '只续写一小段仍在当前小世界里的自然余韵，可以是环境、角色念头或生活细节。不要跳出剧情，不要替用户角色做决定。'
-    : '只续写一小段自然补白，可以是此刻的小念头、生活碎片或不要求对方回答的松散话题。不要写“补充/题外话”，不要生硬提问。';
+    ? '只接着完成当前正在发生的动作、对话或情绪，不引入新的背景轶事、回忆或无关细节。不要跳出剧情，不要替用户角色做决定。'
+    : '只接着完成对方这一轮正在谈的事情、问题或情绪，把刚才尚未说完整的回应自然说完。不偏离当前话题，不引入这一轮未提及的新内容。';
   const prompt = `刚才的回复还没有达到 ${minimum} 字的最低篇幅。${sceneInstruction}\n不要重写、总结或重复已有回复，只输出要接在后面的新段落。`;
 
   try {
@@ -1426,7 +1426,7 @@ async function extendReplyIfShort({ text, minChars, settings, model, system, sce
       extended: Boolean(supplement),
     };
   } catch (error) {
-    console.error('短回复自然补白失败:', error.message);
+    console.error('短回复续写失败:', error.message);
     return { text: original, inputTokens: 0, outputTokens: 0, extended: false };
   }
 }
