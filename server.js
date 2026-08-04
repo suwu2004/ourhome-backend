@@ -3243,7 +3243,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.08.02-photo-memories',
+    version: '2026.08.04-chat-model-routing-v2',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -5419,7 +5419,7 @@ app.post('/chat', async (req, res) => {
 
     const thinkingBudget = 3000;
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
-    console.log(`[chat:model] requested=${String(model || '').slice(0, 160) || '(settings)'} resolved=${String(modelName).slice(0, 160)} hasImage=${Boolean(attachment_url && attachment_type?.startsWith('image/'))}`);
+    console.log(`[chat:model] profile=${String(settings?.active_api_profile_name || '(legacy)').slice(0, 80)} requested=${String(model || '').slice(0, 160) || '(settings)'} resolved=${String(modelName).slice(0, 160)} hasImage=${Boolean(attachment_url && attachment_type?.startsWith('image/'))}`);
     const gemini = isGeminiModel(modelName);
     const thinkingBuiltIn = isThinkingModel(modelName);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
@@ -5474,7 +5474,9 @@ app.post('/chat', async (req, res) => {
       inputTokens: finalInputTokens,
       outputTokens: finalOutputTokens,
       actions: actionsPerformed,
-      model: modelName,
+      requestedModel: modelName,
+      model: result?.model || modelName,
+      activeApiProfile: settings?.active_api_profile_name || null,
       visionFallbackModel: visual.visionFallbackModel,
     });
   } catch (err) {
