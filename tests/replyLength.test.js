@@ -21,13 +21,17 @@ test('字数统计忽略空白并支持中文', () => {
   assert.equal(replyNeedsExtension('晚安呀，我在这里。', 8), false);
 });
 
-test('聊天与小剧场使用不同的自然补白规则', () => {
+test('聊天与小剧场都只延续当前内容，不用无关内容凑字', () => {
   const chat = buildAdaptiveReplyInstruction(80, 'chat');
   const theater = buildAdaptiveReplyInstruction(120, 'theater');
-  assert.match(chat, /生活碎片/);
+  assert.match(chat, /只把对方这一轮/);
+  assert.match(chat, /不偏离当前话题/);
+  assert.match(chat, /不引入这一轮未提及/);
   assert.match(chat, /不是……而是/);
-  assert.match(theater, /世界内/);
-  assert.match(theater, /不要跳出小世界/);
+  assert.match(theater, /当前正在发生/);
+  assert.match(theater, /不要为了凑字数/);
+  assert.doesNotMatch(chat, /松散话题|题外话/);
+  assert.doesNotMatch(theater, /环境余响/);
 });
 
 test('补白会以新段落接在原回复后且避免重复', () => {
