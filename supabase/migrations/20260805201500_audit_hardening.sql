@@ -10,6 +10,13 @@ create index if not exists reading_ai_runs_chapter_id_idx
 create index if not exists phone_calls_summary_message_id_idx
   on public.phone_calls (summary_message_id);
 
+-- The backend compatibility layer signs historical object URLs on demand. Apply
+-- this only after that backend revision is healthy, so old chat images never go dark.
+update storage.buckets
+set public = false,
+    file_size_limit = 12582912
+where id = 'uploads';
+
 -- The web app never talks to PostgREST directly; all data access goes through the
 -- authenticated OurHome backend. Keep browser database roles deny-by-default even
 -- if a future table is accidentally created without an RLS policy.
