@@ -7,13 +7,13 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check runtimeConfig.js && node --check integrations.js && node --check mcpSchema.js && node --check modelCompatibility.js && node --check replyLength.js && node --check promptRules.js && node --check attachmentContext.js && node --check readingStore.js && node --check readingAnnotations.js && node --check vaultStore.js && node --check agentMail.js && node --check agentMailService.js && node --check agentMailDecision.js && node --check agentMailContext.js && node --check emailPrivacy.js",
+    "check": "node --check server.js && node --check runtimeConfig.js && node --check integrations.js && node --check mcpSchema.js && node --check modelCompatibility.js && node --check replyLength.js && node --check promptRules.js && node --check attachmentContext.js && node --check readingStore.js && node --check readingAnnotations.js && node --check theaterRuleStore.js && node --check vaultStore.js && node --check agentMail.js && node --check agentMailService.js && node --check agentMailDecision.js && node --check agentMailContext.js && node --check emailPrivacy.js",
     "test": "node --test tests/*.test.js",
     "postinstall": "npm run check && npm test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "cors": "^2.8.5",
+    "cors": "^4.18.2",
     "express": "^4.18.2",
     "multer": "2.2.0",
     "svix": "^1.99.1",
