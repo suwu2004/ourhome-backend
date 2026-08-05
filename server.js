@@ -36,6 +36,7 @@ const {
   normalizeMinReplyChars,
   buildAdaptiveReplyInstruction,
 } = require('./replyLength');
+const { registerReadingRoutes } = require('./readingStore');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -3237,13 +3238,15 @@ app.use((req, res, next) => {
   next();
 });
 
+registerReadingRoutes(app, { supabase, upload });
+
 // ============ 基础 ============
 
 app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.08.04-chat-model-routing-v2',
+    version: '2026.08.05-reading-room-phase1',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -3277,6 +3280,9 @@ app.get('/', (req, res) => {
       agentMail: true,
       agentMailAutonomy: true,
       agentMailFullDisclosure: true,
+      sharedReading: true,
+      readingTxtImport: true,
+      readingProgress: true,
       settingsAssistantAccess: false,
     },
   });
@@ -5109,6 +5115,9 @@ const BACKUP_TABLES = [
   { key: 'schedule_events', table: 'schedule_events', order: ['remind_at', true], limit: 5000 },
   { key: 'wishes', table: 'wishes', order: ['created_at', true], limit: 5000 },
   { key: 'home_memos', table: 'home_memos', order: ['updated_at', false], limit: 5000 },
+  { key: 'reading_books', table: 'reading_books', order: ['updated_at', false], limit: 2000 },
+  { key: 'reading_chapters', table: 'reading_chapters', order: ['chapter_index', true], limit: 20000 },
+  { key: 'reading_progress', table: 'reading_progress', order: ['updated_at', false], limit: 5000 },
   { key: 'daily_journal_runs', table: 'daily_journal_runs', order: ['run_date', false], limit: 5000 },
 ];
 
