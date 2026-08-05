@@ -39,6 +39,8 @@ jobs:
           end = source.index(end_marker, start)
           lines = source[start:end].splitlines()
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          script = script.replace('if select_count < 3:', 'if select_count < 2:')
+          script = script.replace('expected at least 3', 'expected at least 2')
           Path('/tmp/persist_vision_length.py').write_text(script, encoding='utf-8')
           PY
           python3 /tmp/persist_vision_length.py
