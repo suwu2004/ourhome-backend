@@ -1,5 +1,6 @@
 const { registerReadingAnnotationRoutes } = require('./readingAnnotations');
 const { registerTheaterRuleRoutes } = require('./theaterRuleStore');
+const { registerBackupEnrichment } = require('./backupEnrichment');
 const { normalizeMultipartFilename } = require('./uploadFilename');
 const DATE_HEADING_RE = /^\s*(20\d{2})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*(?:日)?(?:\s*[/／-]?\s*.*)?$/;
 const CHAPTER_HEADING_RE = /^\s*(?:第[零〇一二三四五六七八九十百千万\d]+[章节卷部篇回](?:(?:\s+|[：:、.．-]\s*).{1,36})?|卷[零〇一二三四五六七八九十百千万\d]+(?:(?:\s+|[：:、.．-]\s*).{1,36})?|\d{1,4}\s*[.．、]\s*(?![^\n]*[：:])\S.{0,34})\s*$/;
@@ -241,6 +242,7 @@ function createReadingStore(supabase) {
 
 function registerReadingRoutes(app, { supabase, upload }) {
   const store = createReadingStore(supabase);
+  registerBackupEnrichment(app, { supabase });
   registerReadingAnnotationRoutes(app, { supabase });
   registerTheaterRuleRoutes(app, { supabase });
 
