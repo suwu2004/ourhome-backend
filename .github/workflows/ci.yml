@@ -28,6 +28,7 @@ jobs:
     steps:
       - name: Wait for Render and check health
         run: |
+          # Render may still be finishing the GitHub-triggered deployment.
           curl --fail --silent --show-error \
             --retry 24 --retry-delay 10 --retry-all-errors \
             --max-time 20 \
