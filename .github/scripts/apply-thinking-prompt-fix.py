@@ -7,7 +7,7 @@ server = path.read_text(encoding='utf-8')
 
 
 def sub_checked(pattern, replacement, text, label, expected=1, flags=0):
-    updated, count = re.subn(pattern, replacement, text, flags=flags)
+    updated, count = re.subn(pattern, lambda _match: replacement, text, flags=flags)
     if count != expected:
         raise SystemExit(f'{label}: expected {expected}, found {count}')
     return updated
