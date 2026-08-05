@@ -259,8 +259,9 @@ function createIntegrationManager(runtimeConfig) {
   }
 
   async function buildDynamicTools() {
-    const tools = [];
-    const handlers = new Map();
+    const localReading = runtimeConfig.getReadingAssistantBridge?.() || {};
+    const tools = Array.isArray(localReading.tools) ? [...localReading.tools] : [];
+    const handlers = localReading.handlers instanceof Map ? new Map(localReading.handlers) : new Map();
     let connections = [];
     try { connections = await runtimeConfig.listEnabledConnectionRuntimes(); }
     catch (error) { console.error('读取联网配置失败:', error.message); }
