@@ -56,6 +56,8 @@ test('纯文字模型可以选择视觉模型代读图片', () => {
   assert.equal(chooseVisionModel(['deepseek-r1', 'gpt-4o-mini', 'claude-4-sonnet'], 'deepseek-r1'), 'claude-4-sonnet');
   assert.deepEqual(listVisionModels(['gemini-2.5-flash', 'claude-4-sonnet'], 'claude-4-opus'), ['claude-4-opus', 'claude-4-sonnet', 'gemini-2.5-flash']);
   assert.equal(parseVisionReaderOutput('IMAGE_OK\n一只趴着的小猫。'), '一只趴着的小猫。');
+  assert.equal(parseVisionReaderOutput('**IMAGE_OK**： 一只趴着的小猫。'), '一只趴着的小猫。');
+  assert.equal(parseVisionReaderOutput('- IMAGE OK\n画面里有一封信。'), '画面里有一封信。');
   assert.equal(parseVisionReaderOutput('IMAGE_UNAVAILABLE'), '');
   assert.equal(parseVisionReaderOutput('我猜是一只猫。'), '');
   const bridged = replaceImagesWithDescription(messages, '一只趴着的小猫。', 'claude-4-sonnet');
