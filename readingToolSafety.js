@@ -2,6 +2,15 @@ function compactLine(value, max = 240) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+function compactBlock(value, max = 8000) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim()
+    .slice(0, max);
+}
+
 function clampInt(value, min, max, fallback = min) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -97,10 +106,10 @@ function createReadingToolSafety({ supabase, bridge }) {
     }
   }
 
-  const noteTool = tools.find(tool => tool.name === 'generate_reading_chapter_notes');
-  if (noteTool) {
-    noteTool.description = `${noteTool.description} 默认只生成叶檀当前阅读进度以内的笔记，不能偷偷预读后文；只有她明确允许剧透或要求整本预读时，才把 allow_spoilers 设为 true。`;
-    noteTool.input_schema.properties.allow_spoilers = {
+  const chapterNoteTool = tools.find(tool => tool.name === 'generate_reading_chapter_notes');
+  if (chapterNoteTool) {
+    chapterNoteTool.description = `${chapterNoteTool.description} 默认只生成叶檀当前阅读进度以内的笔记，不能偷偷预读后文；只有她明确允许剧透或要求整本预读时，才把 allow_spoilers 设为 true。`;
+    chapterNoteTool.input_schema.properties.allow_spoilers = {
       type: 'boolean',
       description: '默认 false。只有叶檀明确允许预读后文时才能设为 true。',
     };
@@ -135,6 +144,10 @@ function createReadingToolSafety({ supabase, bridge }) {
 
   const annotationTool = tools.find(tool => tool.name === 'manage_reading_annotation');
   if (annotationTool) {
+    annotationTool.input_schema.properties.color = {
+      type: 'string',
+      enum: ['honey', 'blush', 'mint', 'sky', 'lavender'],
+    };
     annotationTool.input_schema.properties.confirmed = {
       type: 'boolean',
       description: '仅删除时使用；必须在叶檀明确确认目标后才能设为 true。',
@@ -142,7 +155,7 @@ function createReadingToolSafety({ supabase, bridge }) {
     annotationTool.description = `${annotationTool.description} 删除操作在后端也会检查 confirmed=true，不能只凭模型自己判断。`;
     const original = handlers.get('manage_reading_annotation');
     if (original) {
-      handlers.set('manage_reading_annotation', input => {
+      handlers.set('manage_reading_annotation', async input => {
         const value = { ...(input || {}) };
         if (value.color === 'rose') value.color = 'blush';
         if (value.action === 'delete' && value.confirmed !== true) {
@@ -151,6 +164,25 @@ function createReadingToolSafety({ supabase, bridge }) {
             confirmation_required: true,
             error: '删除这条划线和批注需要叶檀明确确认。确认目标后再把 confirmed 设为 true。',
           };
+        }
+        if (value.action === 'update') {
+          const annotationId = compactLine(value.annotation_id, 80);
+          if (!annotationId) return { ok: false, error: '缺少批注编号' };
+          const updates = { updated_at: new Date().toISOString() };
+          if (value.note !== undefined) updates.note = compactBlock(value.note, 4000);
+          if (value.color !== undefined) {
+            const colors = new Set(['honey', 'blush', 'mint', 'sky', 'lavender']);
+            if (!colors.has(value.color)) return { ok: false, error: '批注颜色不正确' };
+            updates.color = value.color;
+          }
+          if (Object.keys(updates).length === 1) return { ok: false, error: '没有需要修改的内容' };
+          const { data, error } = await supabase.from('reading_annotations')
+            .update(updates)
+            .eq('id', annotationId)
+            .select()
+            .maybeSingle();
+          if (error) throw error;
+          return data ? { ok: true, annotation: data } : { ok: false, error: '找不到这条批注' };
         }
         return original(value);
       });
