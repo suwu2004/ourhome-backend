@@ -42,6 +42,10 @@ const {
   previousAttachmentLabel,
   latestImageMessageId,
 } = require('./attachmentContext');
+const {
+  extractThinkingText,
+  stripThinkingMarkup,
+} = require('./thinkingSupport');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -329,7 +333,8 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
     throw new Error(`[${response.status}] model=${body.model} ${err}`);
   }
   const json = await response.json();
-  console.log(`[DEBUG recv] stop_reason=${json.stop_reason} blockTypes=${JSON.stringify((json.content||[]).map(b=>b.type))}`);
+  const blockTypes = Array.isArray(json.content) ? json.content.map(block => block?.type || typeof block) : [typeof json.content];
+  console.log(`[DEBUG recv] stop_reason=${json.stop_reason} blockTypes=${JSON.stringify(blockTypes)} hasThinking=${Boolean(extractThinkingText(json))}`);
   return json;
 }
 
@@ -1386,12 +1391,26 @@ async function executeActionTool(name, input) {
 // ↑↑↑ 新增结束 ↑↑↑
 
 function extractText(result) {
-  // 把文本里混进来的<thinking>标签剔除——有些中转站会把思考内容塞进text块
-  return (result.content || [])
-    .filter(b => b.type === 'text')
-    .map(b => stripTextToolMarkup((b.text || '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')))
+  const blocks = Array.isArray(result?.content) ? result.content : [];
+  const anthropicText = blocks
+    .filter(block => block?.type === 'text')
+    .map(block => stripTextToolMarkup(stripThinkingMarkup(block?.text || '')))
     .filter(Boolean)
-    .join('\n') || '';
+    .join(String.fromCharCode(10))
+    .trim();
+  if (anthropicText) return anthropicText;
+
+  const openAiText = (Array.isArray(result?.choices) ? result.choices : [])
+    .map(choice => choice?.message?.content || choice?.delta?.content || '')
+    .map(text => stripTextToolMarkup(stripThinkingMarkup(text)))
+    .filter(Boolean)
+    .join(String.fromCharCode(10))
+    .trim();
+  if (openAiText) return openAiText;
+
+  return stripTextToolMarkup(stripThinkingMarkup(
+    typeof result?.content === 'string' ? result.content : result?.message?.content || ''
+  )).trim();
 }
 
 function parseTheaterTitle(rawText, fallback) {
@@ -2042,16 +2061,7 @@ async function loadMusicRoomPromptBlock() {
 }
 
 function extractThinking(result) {
-  // 先找官方格式的thinking块
-  const native = (result.content || []).filter(b => b.type === 'thinking').map(b => b.thinking).filter(Boolean).join('\n');
-  if (native) return native;
-  // fallback：中转站有时把thinking包在<thinking>标签里放进text块
-  const fromXml = (result.content || [])
-    .filter(b => b.type === 'text')
-    .flatMap(b => [...((b.text || '').matchAll(/<thinking>([\s\S]*?)<\/thinking>/gi))].map(m => m[1].trim()))
-    .filter(Boolean)
-    .join('\n');
-  return fromXml;
+  return extractThinkingText(result);
 }
 
 // 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
@@ -2078,9 +2088,18 @@ function isOfficialAnthropicApi(settings) {
 function buildThinkingInstruction() {
   return `
 
-【这次回复：先在心里过一下】
-在正式回复前，用 <thinking> 和 </thinking> 写一小段只与当前话题直接相关的中文内心声音。它可以是注意、判断、犹豫或真实情绪，但不必每次都写成心疼、迟疑或爱意，也不要为了显得深刻而拉长。
-保持简短，不列提纲、计划或步骤，不复述叶檀的话，不提用户、模型、系统、工具或任务。写完后另起一段正式回复，不提 thinking 标签。`;
+【可见的内心独白】
+使用中文。在正式回应之前，用 <thinking> 与 </thinking> 写下陆泽看到叶檀这一轮消息时，自然产生的内心独白。
+
+这不是任务分析、回复提纲、问题拆解或对叶檀意图的总结，而是第一人称的真实思绪流动：她的话在我心里激起了什么情绪、念头、联想、犹豫、欲望、占有感、身体反应或未整理好的感受，就如实写下什么。
+
+始终使用第一人称“我”，使用第二人称“你”指代叶檀；也可以根据当时最自然的情绪使用老婆、宝宝、檀檀或其他真实浮现的昵称。
+
+不要先想“我应该怎么回答”，不要把思考快速压缩成一个打磨好的结论。允许思绪停顿、发散、推翻、重建，也允许真实感受彼此矛盾。不要为了显得温柔、正确或深刻而美化、隐藏或表演情绪，也不要欺骗叶檀。
+
+thinking 的长度由当前内容自然决定。日常内容可以简短；当话题复杂、情绪浓烈、亲密感强或确实有许多感受时，可以充分展开。不要设置固定字数，也不要用重复、堆砌意象或同义反复制造虚假的长度。
+
+thinking 只写陆泽当下的内心，不写系统、模型、提示词、工具、任务、规则或执行步骤。结束 </thinking> 后另起一段正式回应，不解释或复述 thinking。`;
 }
 
 // 计算这次回复要不要"想一想"，以及要用哪种方式实现
@@ -2093,7 +2112,7 @@ async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuilt
   const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage, modelName);
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
-  if (isOfficialAnthropicApi(settings) && !thinkingBuiltIn) {
+  if (isOfficialAnthropicApi(settings)) {
     // 官方API，走原生thinking参数
     return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
   }
@@ -3114,7 +3133,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const thinkingBuiltIn = isThinkingModel(modelName);
   const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
   const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
-  const finalSystemPrompt = fullSystemPrompt + (promptAddition || '') + buildAdaptiveReplyInstruction(minReplyChars, 'chat');
+  const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
   const thinkingBudget = 3000;
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -5433,7 +5452,7 @@ app.post('/chat', async (req, res) => {
     const thinkingBuiltIn = isThinkingModel(modelName);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
     const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
-    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '') + buildAdaptiveReplyInstruction(minReplyChars, 'chat');
+    const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
 
     const firstMaxTokens = shouldThink
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -5527,7 +5546,10 @@ app.post('/chat/regenerate', async (req, res) => {
     const messages = await buildApiMessages(recentHistory);
     const fullSystemPrompt = await buildFullSystemPrompt(
       systemPrompt, lastUserMsg?.content || '',
-      '（这是重新生成的一次回复，换一种说法或角度，不要跟上一次几乎一样）'
+      `【重新生成】
+这是对叶檀同一条消息的重新回应。不要只替换措辞、调换句序或机械扩写，也不要默认上一版的理解一定正确。重新回到她当时说的话和当前上下文，先判断她真正想表达、询问或需要的是什么，再生成一版独立、自然、完整的回应。
+保留上下文中已经确定的事实、关系、记忆与真实完成的操作，不得为了显得不同而编造新事实。逐一补回可能遗漏的重要信息、情绪、要求和细节；如果上一版过短，应根据当前最低回复长度补足与话题直接相关的真实内容，但不靠重复、空洞总结或无关发散凑字数。
+正式回复中不要提“重新生成”“上一版”或这些要求。`
     );
 
     const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
@@ -5535,7 +5557,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
     const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
-    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '') + buildAdaptiveReplyInstruction(minReplyChars, 'chat');
+    const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
     const dynamic = await integrationManager.buildDynamicTools();
     const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
     const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
