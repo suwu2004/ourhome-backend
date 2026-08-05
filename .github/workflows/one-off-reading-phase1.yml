@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/reading-room-phase1-20260805
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
