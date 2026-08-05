@@ -97,14 +97,14 @@ function createRuntimeConfig(supabase) {
   }
 
   async function activateProfile(id) {
-    const { data, error } = await supabase.rpc('ourhome_activate_api_profile', { p_profile_id: id });
+    const { data, error } = await supabase.rpc('ourhome_activate_api_profile', { p_id: id });
     if (error) throw error;
     const profile = unwrap(data);
     return profile ? { ...profile, has_api_key: Boolean(profile.api_key_secret_id), api_key_secret_id: undefined } : null;
   }
 
   async function deleteProfile(id) {
-    const { error } = await supabase.rpc('ourhome_delete_api_profile', { p_profile_id: id });
+    const { error } = await supabase.rpc('ourhome_delete_api_profile', { p_id: id });
     if (error) throw error;
   }
 
@@ -205,7 +205,7 @@ function createRuntimeConfig(supabase) {
   }
 
   async function deleteConnection(id) {
-    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_connection_id: id });
+    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_id: id });
     if (error) throw error;
   }
 
