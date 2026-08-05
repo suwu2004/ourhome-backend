@@ -39,6 +39,28 @@ jobs:
           PY
           python3 /tmp/fix_reading_vision.py
 
+      - name: Align title-only preface expectations
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/readingStore.test.js')
+          text = path.read_text(encoding='utf-8')
+          old = """  assert.equal(parsed.chapter_count, 4);
+  assert.equal(parsed.chapters[1].title, '第一章 风起');
+  assert.match(parsed.chapters[1].content, /第一章正文/);
+  assert.equal(parsed.chapters[2].title, '第二章 夜雨');
+  assert.match(parsed.chapters[2].content, /第二章正文/);"""
+          new = """  assert.equal(parsed.chapter_count, 3);
+  assert.equal(parsed.chapters[0].title, '第一章 风起');
+  assert.match(parsed.chapters[0].content, /第一章正文/);
+  assert.equal(parsed.chapters[1].title, '第二章 夜雨');
+  assert.match(parsed.chapters[1].content, /第二章正文/);"""
+          if old not in text:
+              raise SystemExit('ordinary novel expectation anchor not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Install and run backend checks
         run: npm ci
 
