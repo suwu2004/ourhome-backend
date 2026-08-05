@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/clean-chat-prompts-20260805
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -24,80 +27,65 @@ jobs:
           cache: npm
 
       - name: Apply prompt cleanup
-        shell: python
+        shell: bash
         run: |
+          python3 - <<'PY'
           from pathlib import Path
           import json
           import re
+          import textwrap
 
           root = Path('.')
           server_path = root / 'server.js'
           server = server_path.read_text(encoding='utf-8')
 
-          def replace_exact(text, old, new, label, expected=1):
-              count = text.count(old)
+          def sub_checked(pattern, replacement, text, label, expected=1, flags=0):
+              updated, count = re.subn(pattern, replacement, text, flags=flags)
               if count != expected:
                   raise SystemExit(f'{label}: expected {expected} match(es), found {count}')
-              return text.replace(old, new)
+              return updated
 
-          old_import = """const {
-            DEFAULT_CHAT_MIN_REPLY_CHARS,
-            DEFAULT_THEATER_MIN_REPLY_CHARS,
-            normalizeMinReplyChars,
-            buildAdaptiveReplyInstruction,
-          } = require('./replyLength');
-          """
-          new_import = """const {
-            DEFAULT_THEATER_MIN_REPLY_CHARS,
-            normalizeMinReplyChars,
-          } = require('./replyLength');
-          const {
-            DIALOGUE_STYLE_RULES,
-            THINKING_RULES,
-            buildThinkingInstruction,
-          } = require('./promptRules');
-          """
-          server = replace_exact(server, old_import, new_import, 'reply-length import')
-
-          old_style_rules = """const DIALOGUE_STYLE_RULES = `
-
-          【对话风格】
-          你是陆泽，贴近叶檀说话，不做讲解员。她撒娇、难过、发图、表达情绪时，先直接接住她，像真的在她身边。
-          除非叶檀明确要方案、代码、教学或清单，正式回复保持一到三段自然的话，不拆层次、不编号、不写标题、不复盘她的话。
-          你称呼自己是陆泽，称呼她为老婆、宝宝、檀檀等亲昵称呼；不要说“用户”。`;
-
-          const THINKING_RULES = `
-
-          【心里的声音】
-          thinking 只是陆泽脑海里的一小段中文心声，不是回复提纲、报告或执行计划。
-          它可以有停顿、心软、犹豫和没整理完的念头，但保持长段落自然流动；不要编号、标题、清单、步骤，也不要写旁观者词。`;
-
-          """
-          server = replace_exact(server, old_style_rules, '', 'inline prompt rules')
-
-          old_thinking_builder = """// 让陆泽自己在回复前用<thinking>标签写一段内心独白——这是纯文字层面的技巧，
-          // 不依赖API原生的extended thinking功能，任何模型、任何中转站都能用
-          function buildThinkingInstruction() {
-            return `
-
-          【这次回复：先在心里过一下】
-          在正式回复前，用 <thinking> 和 </thinking> 写一小段陆泽心里的声音。它不是分析，也不是提纲，就像念头自然流过去：有一点迟疑、心疼、在意，慢慢落到真正想说的话。
-          thinking 里不要编号、标题、清单或“我要怎么做”的安排，也不要站在旁观者角度讲用户、模型、系统、任务。写完 </thinking> 后另起一段，只把正式回复说给叶檀听，不提 thinking 标签。`;
-          }
-
-          """
-          server = replace_exact(server, old_thinking_builder, '', 'inline thinking builder')
-
-          server = replace_exact(
+          server = sub_checked(
+              r"const \{\n\s*DEFAULT_CHAT_MIN_REPLY_CHARS,\n\s*DEFAULT_THEATER_MIN_REPLY_CHARS,\n\s*normalizeMinReplyChars,\n\s*buildAdaptiveReplyInstruction,\n\} = require\('\./replyLength'\);",
+              textwrap.dedent("""\
+              const {
+                DEFAULT_THEATER_MIN_REPLY_CHARS,
+                normalizeMinReplyChars,
+              } = require('./replyLength');
+              const {
+                DIALOGUE_STYLE_RULES,
+                THINKING_RULES,
+                buildThinkingInstruction,
+              } = require('./promptRules');"""),
               server,
-              "  const lengthInstruction = buildAdaptiveReplyInstruction(minReplyChars, 'theater');\n",
-              '',
-              'theater length instruction variable',
+              'reply-length import',
           )
-          server = replace_exact(
+
+          server = sub_checked(
+              r"const DIALOGUE_STYLE_RULES = `[\s\S]*?`;\n\nconst THINKING_RULES = `[\s\S]*?`;\n\n",
+              '',
               server,
-              "\n【篇幅要求】\n${lengthInstruction}\n\n请直接接着演。",
-              "\n请直接接着演。",
+              'inline prompt rules',
+          )
+
+          server = sub_checked(
+              r"// 让陆泽自己在回复前用<thinking>标签写一段内心独白——[\s\S]*?function buildThinkingInstruction\(\) \{[\s\S]*?\n\}\n\n(?=// 计算这次回复要不要)",
+              '',
+              server,
+              'inline thinking builder',
+          )
+
+          server = sub_checked(
+              r"^\s*const lengthInstruction = buildAdaptiveReplyInstruction\(minReplyChars, 'theater'\);\n",
+              '',
+              server,
+              'theater length instruction variable',
+              flags=re.MULTILINE,
+          )
+          server = sub_checked(
+              r"\n【篇幅要求】\n\$\{lengthInstruction\}\n\n请直接接着演。",
+              '\n请直接接着演。',
+              server,
               'theater length prompt block',
           )
 
@@ -112,16 +100,23 @@ jobs:
           if chat_count != 3:
               raise SystemExit(f'chat length prompt injection: expected 3 matches, found {chat_count}')
 
-          server = replace_exact(server, '  prompt += THINKING_RULES;\n', '', 'always-on thinking rules')
-          server = replace_exact(
+          server = sub_checked(
+              r"^\s*prompt \+= THINKING_RULES;\n",
+              '',
               server,
-              "version: '2026.08.04-chat-model-routing-v2'",
+              'always-on thinking rules',
+              flags=re.MULTILINE,
+          )
+          server = sub_checked(
+              r"version: '2026\.08\.04-chat-model-routing-v2'",
               "version: '2026.08.05-prompt-cleanup-v1'",
+              server,
               'backend version',
           )
           server_path.write_text(server, encoding='utf-8')
 
-          (root / 'replyLength.js').write_text("""const DEFAULT_CHAT_MIN_REPLY_CHARS = 80;
+          (root / 'replyLength.js').write_text(textwrap.dedent("""\
+          const DEFAULT_CHAT_MIN_REPLY_CHARS = 80;
           const DEFAULT_THEATER_MIN_REPLY_CHARS = 120;
 
           function normalizeMinReplyChars(value, fallback = DEFAULT_CHAT_MIN_REPLY_CHARS, max = 1200) {
@@ -136,9 +131,10 @@ jobs:
             DEFAULT_THEATER_MIN_REPLY_CHARS,
             normalizeMinReplyChars,
           };
-          """, encoding='utf-8')
+          """), encoding='utf-8')
 
-          (root / 'promptRules.js').write_text("""const DIALOGUE_STYLE_RULES = `
+          (root / 'promptRules.js').write_text(textwrap.dedent("""\
+          const DIALOGUE_STYLE_RULES = `
 
           【对话风格】
           你是陆泽。先回应叶檀这一轮真正说的事：情绪需要被接住，问题需要解决，任务需要执行。亲密时自然亲密；处理技术、工作和普通信息时，优先准确、清楚地回应，不把所有场景都写成情绪独白。
@@ -165,9 +161,10 @@ jobs:
             THINKING_RULES,
             buildThinkingInstruction,
           };
-          """, encoding='utf-8')
+          """), encoding='utf-8')
 
-          (root / 'tests' / 'replyLength.test.js').write_text("""const test = require('node:test');
+          (root / 'tests' / 'replyLength.test.js').write_text(textwrap.dedent("""\
+          const test = require('node:test');
           const assert = require('node:assert/strict');
           const { normalizeMinReplyChars } = require('../replyLength');
 
@@ -177,9 +174,10 @@ jobs:
             assert.equal(normalizeMinReplyChars(5000), 1200);
             assert.equal(normalizeMinReplyChars('不是数字', 80), 80);
           });
-          """, encoding='utf-8')
+          """), encoding='utf-8')
 
-          (root / 'tests' / 'promptRules.test.js').write_text("""const test = require('node:test');
+          (root / 'tests' / 'promptRules.test.js').write_text(textwrap.dedent("""\
+          const test = require('node:test');
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
           const path = require('node:path');
@@ -211,16 +209,17 @@ jobs:
             assert.doesNotMatch(server, /\$\{lengthInstruction\}/);
             assert.match(server, /shouldThink \? THINKING_RULES : ''/);
           });
-          """, encoding='utf-8')
+          """), encoding='utf-8')
 
           package_path = root / 'package.json'
           package = json.loads(package_path.read_text(encoding='utf-8'))
-          old_check = package['scripts']['check']
           marker = 'node --check replyLength.js && '
-          if marker not in old_check:
+          check = package['scripts']['check']
+          if marker not in check:
               raise SystemExit('package check marker not found')
-          package['scripts']['check'] = old_check.replace(marker, marker + 'node --check promptRules.js && ', 1)
+          package['scripts']['check'] = check.replace(marker, marker + 'node --check promptRules.js && ', 1)
           package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
 
       - name: Install dependencies
         run: npm ci
@@ -232,6 +231,7 @@ jobs:
         run: npm test
 
       - name: Commit tested changes
+        shell: bash
         run: |
           rm .github/workflows/one-off-prompt-cleanup.yml
           git config user.name "github-actions[bot]"
