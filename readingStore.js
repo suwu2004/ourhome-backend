@@ -30,6 +30,21 @@ function detectBookTitle(text, sourceName) {
   return fallback;
 }
 
+function normalizeTitleKey(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[《》〈〉「」『』【】()（）\[\]{}\s·•:：,，。.!！?？_\-—]+/g, '')
+    .toLowerCase();
+}
+
+function isRedundantTitlePreface(preface, fallbackTitle) {
+  const lines = String(preface || '').split('\n').map(line => line.trim()).filter(Boolean);
+  if (lines.length !== 1) return false;
+  const prefaceKey = normalizeTitleKey(lines[0]);
+  const titleKey = normalizeTitleKey(fallbackTitle);
+  return Boolean(prefaceKey && titleKey && prefaceKey === titleKey);
+}
+
 function headingIndexes(lines, pattern) {
   const indexes = [];
   lines.forEach((line, index) => {
@@ -49,7 +64,9 @@ function chaptersFromIndexes(lines, indexes, fallbackTitle) {
   const chapters = [];
   if (indexes[0] > 0) {
     const preface = lines.slice(0, indexes[0]).join('\n').trim();
-    if (preface) chapters.push({ title: '写在前面', content: preface });
+    if (preface && !isRedundantTitlePreface(preface, fallbackTitle)) {
+      chapters.push({ title: '写在前面', content: preface });
+    }
   }
 
   indexes.forEach((start, position) => {
