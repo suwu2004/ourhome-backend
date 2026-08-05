@@ -74,4 +74,4 @@ jobs:
           git commit -m "Fix redundant reading prefaces and vision markers"
           git push origin HEAD:agent/fix-reading-preface-and-vision-20260805
 
-# retry after updating the title-only preface expectation
+# trigger after the branch CI workflow became active
