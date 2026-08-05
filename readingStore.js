@@ -1,6 +1,7 @@
 const { registerReadingAnnotationRoutes } = require('./readingAnnotations');
 const { registerTheaterRuleRoutes } = require('./theaterRuleStore');
 const { registerBackupEnrichment } = require('./backupEnrichment');
+const { registerPrivateUploadCompatibility } = require('./privateUploads');
 const {
   normalizeMultipartFilename,
   wrapMulterFilenameNormalization,
@@ -244,6 +245,7 @@ function createReadingStore(supabase) {
 }
 
 function registerReadingRoutes(app, { supabase, upload }) {
+  registerPrivateUploadCompatibility(app, { supabase });
   wrapMulterFilenameNormalization(upload);
   const store = createReadingStore(supabase);
   registerBackupEnrichment(app, { supabase });
