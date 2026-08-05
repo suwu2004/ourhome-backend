@@ -208,7 +208,7 @@ function createRuntimeConfig(supabase) {
   }
 
   async function deleteConnection(id) {
-    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_connection_id: id });
+    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_id: id });
     if (error) throw error;
   }
 
