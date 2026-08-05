@@ -1,5 +1,6 @@
 const { registerReadingAnnotationRoutes } = require('./readingAnnotations');
 const { registerTheaterRuleRoutes } = require('./theaterRuleStore');
+const { normalizeMultipartFilename } = require('./uploadFilename');
 const DATE_HEADING_RE = /^\s*(20\d{2})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*(?:日)?(?:\s*[/／-]?\s*.*)?$/;
 const CHAPTER_HEADING_RE = /^\s*(?:第[零〇一二三四五六七八九十百千万\d]+[章节卷部篇回](?:(?:\s+|[：:、.．-]\s*).{1,36})?|卷[零〇一二三四五六七八九十百千万\d]+(?:(?:\s+|[：:、.．-]\s*).{1,36})?|\d{1,4}\s*[.．、]\s*(?![^\n]*[：:])\S.{0,34})\s*$/;
 const MAX_READING_CHAPTERS = 2000;
@@ -94,8 +95,9 @@ function splitReadingText(rawText, sourceName = '未命名书籍.txt') {
   if (!text) throw new Error('这个文件里没有读到文字。');
   if (text.length > MAX_READING_CHARS) throw new Error('这本书太大了，先拆成几本再导入会更稳。');
 
+  const safeSourceName = normalizeMultipartFilename(sourceName, '未命名书籍.txt');
   const lines = text.split('\n');
-  const title = detectBookTitle(text, sourceName);
+  const title = detectBookTitle(text, safeSourceName);
   const dateIndexes = headingIndexes(lines, DATE_HEADING_RE);
   const chapterIndexes = headingIndexes(lines, CHAPTER_HEADING_RE);
   const mode = dateIndexes.length >= 2 ? 'date' : chapterIndexes.length >= 2 ? 'chapter' : 'single';
@@ -104,7 +106,7 @@ function splitReadingText(rawText, sourceName = '未命名书籍.txt') {
 
   return {
     title,
-    source_name: String(sourceName || '').slice(0, 240) || `${title}.txt`,
+    source_name: safeSourceName.slice(0, 240) || `${title}.txt`,
     source_kind: 'txt',
     split_mode: mode,
     total_chars: text.length,
@@ -173,7 +175,7 @@ function createReadingStore(supabase) {
   }
 
   async function importBook(file) {
-    const name = String(file?.originalname || '未命名书籍.txt');
+    const name = normalizeMultipartFilename(file?.originalname, '未命名书籍.txt');
     const lowerName = name.toLowerCase();
     const mime = String(file?.mimetype || '').toLowerCase();
     if (!lowerName.endsWith('.txt') && !lowerName.endsWith('.md') && !mime.startsWith('text/')) {
