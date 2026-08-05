@@ -34,7 +34,7 @@ function extractText(result) {
     .filter(block => block?.type === 'text')
     .map(block => stripTextToolMarkup(stripThinkingMarkup(block?.text || '')))
     .filter(Boolean)
-    .join('\n')
+    .join(String.fromCharCode(10))
     .trim();
   if (anthropicText) return anthropicText;
 
@@ -42,7 +42,7 @@ function extractText(result) {
     .map(choice => choice?.message?.content || choice?.delta?.content || '')
     .map(text => stripTextToolMarkup(stripThinkingMarkup(text)))
     .filter(Boolean)
-    .join('\n')
+    .join(String.fromCharCode(10))
     .trim();
   if (openAiText) return openAiText;
 
