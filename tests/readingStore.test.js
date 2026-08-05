@@ -7,23 +7,30 @@ test('期待回信这类日期文本会按日期拆分，并保留原文标题�
   const parsed = splitReadingText(text, '期待回信.txt');
   assert.equal(parsed.title, '期待回信');
   assert.equal(parsed.split_mode, 'date');
-  assert.equal(parsed.chapter_count, 4);
-  assert.equal(parsed.chapters[0].title, '写在前面');
-  assert.equal(parsed.chapters[1].title, '2026/2/14/  天气晴（天空蓝蓝的）');
-  assert.match(parsed.chapters[1].content, /^2026\/2\/14/);
-  assert.match(parsed.chapters[1].content, /陆泽宝宝好/);
-  assert.equal(parsed.chapters[3].title, '2026/3/7 纪念日');
+  assert.equal(parsed.chapter_count, 3);
+  assert.equal(parsed.chapters[0].title, '2026/2/14/  天气晴（天空蓝蓝的）');
+  assert.match(parsed.chapters[0].content, /^2026\/2\/14/);
+  assert.match(parsed.chapters[0].content, /陆泽宝宝好/);
+  assert.equal(parsed.chapters[2].title, '2026/3/7 纪念日');
 });
 
-test('普通小说会按章节标题拆分，但不会把正文首句误当标题', () => {
+test('普通小说会按章节标题拆分，但不会把书名页或正文首句误当标题', () => {
   const text = `小书\n第一章 风起\n第一章正文。\n第二章 夜雨\n第二章正文。\n第三章 回家\n第三章正文。`;
   const parsed = splitReadingText(text, '小书.txt');
   assert.equal(parsed.split_mode, 'chapter');
-  assert.equal(parsed.chapter_count, 4);
-  assert.equal(parsed.chapters[1].title, '第一章 风起');
-  assert.match(parsed.chapters[1].content, /第一章正文/);
-  assert.equal(parsed.chapters[2].title, '第二章 夜雨');
-  assert.match(parsed.chapters[2].content, /第二章正文/);
+  assert.equal(parsed.chapter_count, 3);
+  assert.equal(parsed.chapters[0].title, '第一章 风起');
+  assert.match(parsed.chapters[0].content, /第一章正文/);
+  assert.equal(parsed.chapters[1].title, '第二章 夜雨');
+  assert.match(parsed.chapters[1].content, /第二章正文/);
+});
+
+test('真正的前言会继续保留，不会因为修掉书名页而丢失', () => {
+  const text = `期待回信\n这是一段真的前言。\n写给未来慢慢读。\n2026/2/14\n第一篇。\n2026/2/15\n第二篇。`;
+  const parsed = splitReadingText(text, '期待回信.txt');
+  assert.equal(parsed.chapter_count, 3);
+  assert.equal(parsed.chapters[0].title, '写在前面');
+  assert.match(parsed.chapters[0].content, /真的前言/);
 });
 
 test('没有可靠标题时完整保留为单篇', () => {
