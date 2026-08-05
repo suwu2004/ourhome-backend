@@ -132,10 +132,18 @@ function chooseVisionModel(models = [], currentModel = '') {
 }
 
 function parseVisionReaderOutput(value) {
-  const text = String(value || '').trim().replace(/^```(?:text)?\s*/i, '').replace(/```$/, '').trim();
-  if (/^IMAGE_UNAVAILABLE\b/i.test(text)) return '';
-  const match = text.match(/^IMAGE_OK\s*\n+([\s\S]+)$/i);
-  return match?.[1]?.trim() || '';
+  const text = String(value || '')
+    .trim()
+    .replace(/^```(?:text)?\s*/i, '')
+    .replace(/```$/, '')
+    .trim();
+  const lead = text.slice(0, 240);
+  if (/IMAGE[ _-]*UNAVAILABLE\b/i.test(lead)) return '';
+
+  const marker = text.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?IMAGE[ _-]*OK(?:\*\*)?\s*(?:[:：-]\s*)?(?:\n|\s+)([\s\S]+)$/i);
+  const description = marker?.[1]?.trim() || '';
+  if (!description || /^IMAGE[ _-]*(?:OK|UNAVAILABLE)\b/i.test(description)) return '';
+  return description;
 }
 
 function replaceImagesWithDescription(messages = [], description, visionModel) {
