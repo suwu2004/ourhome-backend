@@ -4,13 +4,16 @@ on:
   push:
     branches:
       - agent/fix-thinking-prompts-20260805
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   patch-test-commit:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.head_ref == 'agent/fix-thinking-prompts-20260805' || github.ref_name == 'agent/fix-thinking-prompts-20260805')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
