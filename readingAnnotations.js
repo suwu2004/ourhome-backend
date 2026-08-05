@@ -1,5 +1,6 @@
 const { createReadingAssistant } = require('./readingAssistant');
 const { registerReadingNoteRoutes } = require('./readingNotes');
+const { createReadingToolSafety } = require('./readingToolSafety');
 
 const MAX_QUOTE_CHARS = 1200;
 const MAX_NOTE_CHARS = 4000;
@@ -142,6 +143,8 @@ function createReadingAnnotationStore(supabase) {
 function registerReadingAnnotationRoutes(app, { supabase }) {
   const store = createReadingAnnotationStore(supabase);
   const assistant = createReadingAssistant({ supabase });
+  const safeAssistant = createReadingToolSafety({ supabase, bridge: assistant.getToolBridge() });
+  const generateSafeChapterNotes = safeAssistant.handlers.get('generate_reading_chapter_notes');
   registerReadingNoteRoutes(app, { supabase });
 
   app.get('/reading/books/:bookId/annotations', async (req, res) => {
@@ -231,10 +234,15 @@ function registerReadingAnnotationRoutes(app, { supabase }) {
 
   app.post('/reading/books/:bookId/chapter-notes/generate', async (req, res) => {
     try {
-      res.json(await assistant.generateBookNotes(req.params.bookId, {
-        chapterIndex: req.body?.chapter_index,
+      const result = await generateSafeChapterNotes({
+        book_id: req.params.bookId,
+        chapter_index: req.body?.chapter_index,
         force: Boolean(req.body?.force),
-      }));
+        allow_spoilers: req.body?.allow_spoilers === true,
+      });
+      if (result?.spoiler_blocked) return res.status(403).json(result);
+      if (result?.ok === false) return res.status(400).json(result);
+      res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message || '章节预读笔记没有生成成功' });
     }
