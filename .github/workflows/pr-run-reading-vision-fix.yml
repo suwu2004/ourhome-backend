@@ -73,3 +73,5 @@ jobs:
           git add readingStore.js modelCompatibility.js tests/readingStore.test.js tests/modelCompatibility.test.js .github/workflows
           git commit -m "Fix redundant reading prefaces and vision markers"
           git push origin HEAD:agent/fix-reading-preface-and-vision-20260805
+
+# retry after updating the title-only preface expectation
