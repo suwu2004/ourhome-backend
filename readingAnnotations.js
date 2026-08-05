@@ -1,11 +1,20 @@
 const { createReadingAssistant } = require('./readingAssistant');
+const { registerReadingNoteRoutes } = require('./readingNotes');
+const { createReadingToolSafety } = require('./readingToolSafety');
 
 const MAX_QUOTE_CHARS = 1200;
 const MAX_NOTE_CHARS = 4000;
 const MAX_CONTEXT_CHARS = 500;
+const ANNOTATION_COLORS = new Set(['honey', 'blush', 'mint', 'sky', 'lavender']);
 
 function cleanText(value, max) {
   return String(value || '').replace(/\r\n?/g, '\n').trim().slice(0, max);
+}
+
+function normalizeColor(value) {
+  const color = String(value || '').trim().toLowerCase();
+  if (color === 'rose') return 'blush';
+  return ANNOTATION_COLORS.has(color) ? color : 'honey';
 }
 
 function splitReadingParagraphs(content) {
@@ -29,7 +38,7 @@ function normalizeAnnotationInput(value = {}) {
     prefix: cleanText(value.prefix, MAX_CONTEXT_CHARS),
     suffix: cleanText(value.suffix, MAX_CONTEXT_CHARS),
     note: cleanText(value.note, MAX_NOTE_CHARS),
-    color: ['honey', 'blush', 'mint'].includes(value.color) ? value.color : 'honey',
+    color: normalizeColor(value.color),
   };
 }
 
@@ -106,7 +115,7 @@ function createReadingAnnotationStore(supabase) {
       note: cleanText(rawValue?.note, MAX_NOTE_CHARS),
       updated_at: new Date().toISOString(),
     };
-    if (['honey', 'blush', 'mint'].includes(rawValue?.color)) patch.color = rawValue.color;
+    if (rawValue?.color !== undefined) patch.color = normalizeColor(rawValue.color);
     const { data, error } = await supabase
       .from('reading_annotations')
       .update(patch)
@@ -134,6 +143,9 @@ function createReadingAnnotationStore(supabase) {
 function registerReadingAnnotationRoutes(app, { supabase }) {
   const store = createReadingAnnotationStore(supabase);
   const assistant = createReadingAssistant({ supabase });
+  const safeAssistant = createReadingToolSafety({ supabase, bridge: assistant.getToolBridge() });
+  const generateSafeChapterNotes = safeAssistant.handlers.get('generate_reading_chapter_notes');
+  registerReadingNoteRoutes(app, { supabase });
 
   app.get('/reading/books/:bookId/annotations', async (req, res) => {
     try {
@@ -222,10 +234,15 @@ function registerReadingAnnotationRoutes(app, { supabase }) {
 
   app.post('/reading/books/:bookId/chapter-notes/generate', async (req, res) => {
     try {
-      res.json(await assistant.generateBookNotes(req.params.bookId, {
-        chapterIndex: req.body?.chapter_index,
+      const result = await generateSafeChapterNotes({
+        book_id: req.params.bookId,
+        chapter_index: req.body?.chapter_index,
         force: Boolean(req.body?.force),
-      }));
+        allow_spoilers: req.body?.allow_spoilers === true,
+      });
+      if (result?.spoiler_blocked) return res.status(403).json(result);
+      if (result?.ok === false) return res.status(400).json(result);
+      res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message || '章节预读笔记没有生成成功' });
     }
@@ -248,6 +265,7 @@ function registerReadingAnnotationRoutes(app, { supabase }) {
 module.exports = {
   MAX_QUOTE_CHARS,
   MAX_NOTE_CHARS,
+  ANNOTATION_COLORS,
   splitReadingParagraphs,
   normalizeAnnotationInput,
   createReadingAnnotationStore,
