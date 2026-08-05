@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeReadingText, splitReadingText, normalizeProgress } = require('../readingStore');
+const { decodeMojibakeFilename, normalizeMultipartFilename } = require('../uploadFilename');
 
 test('期待回信这类日期文本会按日期拆分，并保留原文标题行', () => {
   const text = `期待回信\n2026/2/14/  天气晴（天空蓝蓝的）\n陆泽宝宝好～\n今天是情人节。\n2026/2/15\n今天也写一点。\n2026/3/7 纪念日\n第三篇。`;
@@ -57,6 +58,22 @@ test('没有可靠标题时完整保留为单篇', () => {
   assert.equal(parsed.split_mode, 'single');
   assert.equal(parsed.chapter_count, 1);
   assert.equal(parsed.chapters[0].content, '只有一段文字。\n没有章节标题。');
+});
+
+test('乱码的中文 multipart 文件名会恢复，正常文件名不会被误改', () => {
+  const mojibake = Buffer.from('期待回信.txt', 'utf8').toString('latin1');
+  assert.equal(decodeMojibakeFilename(mojibake), '期待回信.txt');
+  assert.equal(normalizeMultipartFilename('已经正常的中文.txt'), '已经正常的中文.txt');
+  assert.equal(normalizeMultipartFilename('café.txt'), 'café.txt');
+  assert.equal(normalizeMultipartFilename('notes.txt'), 'notes.txt');
+});
+
+test('正文第一行是日期时，会用恢复后的中文文件名作为书名', () => {
+  const mojibake = Buffer.from('檀檀日记.txt', 'utf8').toString('latin1');
+  const parsed = splitReadingText('2026/8/1\n第一篇。\n2026/8/2\n第二篇。', mojibake);
+  assert.equal(parsed.title, '檀檀日记');
+  assert.equal(parsed.source_name, '檀檀日记.txt');
+  assert.equal(parsed.split_mode, 'date');
 });
 
 test('文本规范化只清理编码痕迹，不改写正文', () => {
