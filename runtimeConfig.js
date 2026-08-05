@@ -1,6 +1,9 @@
+const { createReadingAssistant } = require('./readingAssistant');
+
 function createRuntimeConfig(supabase) {
   const missingRelation = error => ['42P01', 'PGRST205', 'PGRST202'].includes(error?.code);
   const unwrap = data => Array.isArray(data) ? (data[0] || null) : data;
+  const readingAssistant = createReadingAssistant({ supabase });
 
   async function getBaseSettings() {
     const { data, error } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
@@ -94,14 +97,14 @@ function createRuntimeConfig(supabase) {
   }
 
   async function activateProfile(id) {
-    const { data, error } = await supabase.rpc('ourhome_activate_api_profile', { p_id: id });
+    const { data, error } = await supabase.rpc('ourhome_activate_api_profile', { p_profile_id: id });
     if (error) throw error;
     const profile = unwrap(data);
     return profile ? { ...profile, has_api_key: Boolean(profile.api_key_secret_id), api_key_secret_id: undefined } : null;
   }
 
   async function deleteProfile(id) {
-    const { error } = await supabase.rpc('ourhome_delete_api_profile', { p_id: id });
+    const { error } = await supabase.rpc('ourhome_delete_api_profile', { p_profile_id: id });
     if (error) throw error;
   }
 
@@ -202,7 +205,7 @@ function createRuntimeConfig(supabase) {
   }
 
   async function deleteConnection(id) {
-    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_id: id });
+    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_connection_id: id });
     if (error) throw error;
   }
 
@@ -216,6 +219,10 @@ function createRuntimeConfig(supabase) {
     const { data, error } = await supabase.rpc('ourhome_get_daily_automation_token');
     if (error) throw error;
     return unwrap(data) || null;
+  }
+
+  function getReadingAssistantBridge() {
+    return readingAssistant.getToolBridge();
   }
 
   return {
@@ -236,6 +243,7 @@ function createRuntimeConfig(supabase) {
     deleteConnection,
     getOrCreateVapidKeys,
     getDailyAutomationToken,
+    getReadingAssistantBridge,
   };
 }
 
