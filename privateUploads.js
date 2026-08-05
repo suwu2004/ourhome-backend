@@ -1,5 +1,6 @@
 const DEFAULT_BUCKET = 'uploads';
 const DEFAULT_SIGNED_SECONDS = 60 * 60;
+const DEFAULT_EXPORT_SIGNED_SECONDS = 30 * 24 * 60 * 60;
 const SIGNED_CACHE_SAFETY_MS = 5 * 60 * 1000;
 const UPLOAD_URL_RE = /https?:\/\/[^\s"'<>\\]+\/storage\/v1\/object\/(?:public|sign)\/uploads\/[^\s"'<>\\]+/g;
 
@@ -171,18 +172,31 @@ function installSignedUploadFetch({ signer, bucket = DEFAULT_BUCKET }) {
   globalThis.__ourhomeSignedUploadFetch = true;
 }
 
-function createPrivateUploadMiddleware({ signer, bucket = DEFAULT_BUCKET }) {
+function requestPath(req) {
+  return String(req?.originalUrl || req?.url || req?.path || '').split('?')[0];
+}
+
+function createPrivateUploadMiddleware({ signer, exportSigner = signer, bucket = DEFAULT_BUCKET }) {
   return function privateUploadMiddleware(req, res, next) {
     if (req.body && typeof req.body === 'object') canonicalizeUploadReferences(req.body, bucket);
 
+    const path = requestPath(req);
+    const keepStableReferences = path === '/backup' || path.startsWith('/backup/');
+    const responseSigner = path === '/export' || path.startsWith('/export/') ? exportSigner : signer;
     const originalSend = res.send.bind(res);
     let sending = false;
     res.send = function sendWithSignedUploads(body) {
-      if (sending || res.statusCode >= 400 || typeof body !== 'string' || !body.includes('/storage/v1/object/')) {
+      if (
+        sending
+        || keepStableReferences
+        || res.statusCode >= 400
+        || typeof body !== 'string'
+        || !body.includes('/storage/v1/object/')
+      ) {
         return originalSend(body);
       }
       sending = true;
-      signer.signText(body)
+      responseSigner.signText(body)
         .then(originalSend)
         .catch(error => {
           console.error('附件临时链接生成失败，继续返回原始引用:', error.message);
@@ -198,17 +212,21 @@ function registerPrivateUploadCompatibility(app, {
   supabase,
   bucket = DEFAULT_BUCKET,
   expiresIn = DEFAULT_SIGNED_SECONDS,
+  exportExpiresIn = DEFAULT_EXPORT_SIGNED_SECONDS,
   installFetch = true,
 } = {}) {
   installPrivateBucketGuard(supabase, bucket);
   const signer = createUploadSigner({ supabase, bucket, expiresIn });
+  const exportSigner = createUploadSigner({ supabase, bucket, expiresIn: exportExpiresIn });
   if (installFetch) installSignedUploadFetch({ signer, bucket });
-  app.use(createPrivateUploadMiddleware({ signer, bucket }));
+  app.use(createPrivateUploadMiddleware({ signer, exportSigner, bucket }));
   return signer;
 }
 
 module.exports = {
   DEFAULT_BUCKET,
+  DEFAULT_SIGNED_SECONDS,
+  DEFAULT_EXPORT_SIGNED_SECONDS,
   parseUploadObjectUrl,
   canonicalUploadUrl,
   canonicalizeUploadReferences,
