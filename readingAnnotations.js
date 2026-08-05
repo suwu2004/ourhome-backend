@@ -1,3 +1,5 @@
+const { createReadingAssistant } = require('./readingAssistant');
+
 const MAX_QUOTE_CHARS = 1200;
 const MAX_NOTE_CHARS = 4000;
 const MAX_CONTEXT_CHARS = 500;
@@ -131,6 +133,7 @@ function createReadingAnnotationStore(supabase) {
 
 function registerReadingAnnotationRoutes(app, { supabase }) {
   const store = createReadingAnnotationStore(supabase);
+  const assistant = createReadingAssistant({ supabase });
 
   app.get('/reading/books/:bookId/annotations', async (req, res) => {
     try {
@@ -168,7 +171,78 @@ function registerReadingAnnotationRoutes(app, { supabase }) {
     }
   });
 
-  return store;
+  app.post('/reading/annotations/:id/luze-reply', async (req, res) => {
+    try {
+      const annotation = await assistant.generateAnnotationReply(req.params.id, {
+        instruction: req.body?.instruction,
+        model: req.body?.model,
+        source: 'reading_room_button',
+      });
+      res.json(annotation);
+    } catch (error) {
+      res.status(500).json({ error: error.message || '陆泽这次没有接上批注' });
+    }
+  });
+
+  app.put('/reading/annotations/:id/luze-reply', async (req, res) => {
+    try {
+      const result = await assistant.replyReadingAnnotation({
+        annotation_id: req.params.id,
+        reply: req.body?.reply,
+        model: req.body?.model || '陆泽·手写回复',
+      });
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      res.json(result.annotation);
+    } catch (error) {
+      res.status(500).json({ error: error.message || '陆泽的回复没有保存成功' });
+    }
+  });
+
+  app.delete('/reading/annotations/:id/luze-reply', async (req, res) => {
+    try {
+      const result = await assistant.manageReadingAnnotation({
+        action: 'clear_luze_reply',
+        annotation_id: req.params.id,
+      });
+      if (!result.ok) return res.status(404).json({ error: result.error });
+      res.json(result.annotation);
+    } catch (error) {
+      res.status(500).json({ error: error.message || '陆泽的旧回复没有清除成功' });
+    }
+  });
+
+  app.get('/reading/books/:bookId/chapter-notes', async (req, res) => {
+    try {
+      const result = await assistant.readWorkbench({ book_id: req.params.bookId, limit: req.query.limit || 100 });
+      res.json(result.chapter_notes);
+    } catch (error) {
+      res.status(500).json({ error: error.message || '章节预读笔记暂时没有打开' });
+    }
+  });
+
+  app.post('/reading/books/:bookId/chapter-notes/generate', async (req, res) => {
+    try {
+      res.json(await assistant.generateBookNotes(req.params.bookId, {
+        chapterIndex: req.body?.chapter_index,
+        force: Boolean(req.body?.force),
+      }));
+    } catch (error) {
+      res.status(500).json({ error: error.message || '章节预读笔记没有生成成功' });
+    }
+  });
+
+  app.get('/reading/workbench', async (req, res) => {
+    try {
+      res.json(await assistant.readWorkbench({
+        book_id: req.query.book_id,
+        limit: req.query.limit || 60,
+      }));
+    } catch (error) {
+      res.status(500).json({ error: error.message || '共读工作台暂时没有打开' });
+    }
+  });
+
+  return { ...store, assistant };
 }
 
 module.exports = {
