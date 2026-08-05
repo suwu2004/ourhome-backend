@@ -172,3 +172,5 @@ jobs:
           git add server.js promptRules.js attachmentContext.js package.json tests .github/workflows/one-off-persist-vision-length.yml
           git commit -m "Persist verified image context and honor reply floors"
           git push origin HEAD:agent/persist-vision-and-length-20260805
+
+# synchronized after PR creation so the patch workflow runs before final review
