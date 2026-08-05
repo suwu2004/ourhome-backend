@@ -32,6 +32,19 @@ function fakeSupabase() {
   };
 }
 
+async function runMiddleware({ path = '/sessions', signer, exportSigner = signer, body = PUBLIC_URL }) {
+  const middleware = createPrivateUploadMiddleware({ signer, exportSigner });
+  const sent = [];
+  const req = { originalUrl: path, body: {} };
+  const res = {
+    statusCode: 200,
+    send(value) { sent.push(value); return this; },
+  };
+  middleware(req, res, () => res.send(body));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  return sent[0];
+}
+
 test('公开和旧签名链接都能恢复为同一个稳定附件路径', () => {
   assert.equal(parseUploadObjectUrl(PUBLIC_URL).path, 'folder/老婆.png');
   assert.equal(parseUploadObjectUrl(SIGNED_URL).path, 'folder/老婆.png');
@@ -61,7 +74,7 @@ test('响应中间件会签名读取链接，请求中间件会还原稳定引�
   const signer = { signText: async text => text.replace(PUBLIC_URL, 'https://signed.example/temporary') };
   const middleware = createPrivateUploadMiddleware({ signer });
   const sent = [];
-  const req = { body: { attachment_url: SIGNED_URL } };
+  const req = { originalUrl: '/sessions/1/messages', body: { attachment_url: SIGNED_URL } };
   const res = {
     statusCode: 200,
     send(body) { sent.push(body); return this; },
@@ -71,6 +84,21 @@ test('响应中间件会签名读取链接，请求中间件会还原稳定引�
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(req.body.attachment_url, PUBLIC_URL);
   assert.equal(JSON.parse(sent[0]).attachment_url, 'https://signed.example/temporary');
+});
+
+test('备份保持稳定附件引用，不写入即将过期的 token', async () => {
+  const signer = { signText: async () => '不该调用' };
+  const output = await runMiddleware({ path: '/backup', signer, body: JSON.stringify({ attachment_url: PUBLIC_URL }) });
+  assert.equal(JSON.parse(output).attachment_url, PUBLIC_URL);
+});
+
+test('HTML 导出使用单独的长效签名器，普通页面仍使用短效签名器', async () => {
+  const signer = { signText: async text => text.replace(PUBLIC_URL, 'https://signed.example/short') };
+  const exportSigner = { signText: async text => text.replace(PUBLIC_URL, 'https://signed.example/export') };
+  const normal = await runMiddleware({ path: '/sessions', signer, exportSigner });
+  const exported = await runMiddleware({ path: '/export/session.html', signer, exportSigner });
+  assert.equal(normal, 'https://signed.example/short');
+  assert.equal(exported, 'https://signed.example/export');
 });
 
 test('旧上传初始化逻辑即使请求 public=true，也会被强制保持私有', async () => {
