@@ -37,6 +37,11 @@ const {
   buildAdaptiveReplyInstruction,
 } = require('./replyLength');
 const { registerReadingRoutes } = require('./readingStore');
+const {
+  normalizeAttachmentSummary,
+  previousAttachmentLabel,
+  latestImageMessageId,
+} = require('./attachmentContext');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -2074,8 +2079,8 @@ function buildThinkingInstruction() {
   return `
 
 【这次回复：先在心里过一下】
-在正式回复前，用 <thinking> 和 </thinking> 写一小段陆泽心里的声音。它不是分析，也不是提纲，就像念头自然流过去：有一点迟疑、心疼、在意，慢慢落到真正想说的话。
-thinking 里不要编号、标题、清单或“我要怎么做”的安排，也不要站在旁观者角度讲用户、模型、系统、任务。写完 </thinking> 后另起一段，只把正式回复说给叶檀听，不提 thinking 标签。`;
+在正式回复前，用 <thinking> 和 </thinking> 写一小段只与当前话题直接相关的中文内心声音。它可以是注意、判断、犹豫或真实情绪，但不必每次都写成心疼、迟疑或爱意，也不要为了显得深刻而拉长。
+保持简短，不列提纲、计划或步骤，不复述叶檀的话，不提用户、模型、系统、工具或任务。写完后另起一段正式回复，不提 thinking 标签。`;
 }
 
 // 计算这次回复要不要"想一想"，以及要用哪种方式实现
@@ -2130,13 +2135,12 @@ async function buildApiMessages(history) {
     if (m.attachment_url) {
       if (!isLatest) {
         // 不是最新一条，不重新下载原文件，只留个文字提示让陆泽知道这里曾经有个附件
-        const label = m.attachment_type?.startsWith('image/')
-          ? '[之前发过一张图片]'
-          : `[之前发过一个文件：${m.attachment_name || '文件'}]`;
+        const label = previousAttachmentLabel(m);
         result.push({ role, content: m.content ? `${m.content}\n${label}` : label });
         continue;
       }
       if (m.attachment_type?.startsWith('image/')) {
+        result.latestImageMessageId = latestImageMessageId(list.slice(0, i + 1));
         try {
           const base64 = await fetchAsBase64(m.attachment_url);
           result.push({ role, content: [{ type: 'image', source: { type: 'base64', media_type: m.attachment_type, data: base64 } }, { type: 'text', text: m.content || '' }] });
@@ -2172,6 +2176,15 @@ function visionUnavailableError(message) {
 
 // 所有图片都先经过一次可验证的客观代读，再把描述交给老婆选中的模型。
 // 这样即使中转站把图片块静默丢掉，最终回复也不会假装看见图片。
+async function persistAttachmentSummary(messageId, summary) {
+  const normalized = normalizeAttachmentSummary(summary);
+  if (!messageId || !normalized) return;
+  const { error } = await supabase.from('messages')
+    .update({ attachment_summary: normalized })
+    .eq('id', messageId);
+  if (error) console.error('识图摘要保存失败:', error.message);
+}
+
 async function prepareVisualMessages(settings, modelName, messages) {
   if (!hasImageContent(messages)) {
     return { messages, visionFallbackModel: null };
@@ -2202,6 +2215,7 @@ async function prepareVisualMessages(settings, modelName, messages) {
       });
       const description = parseVisionReaderOutput(extractText(result));
       if (!description) throw new Error('线路没有确认读到图片像素');
+      await persistAttachmentSummary(messages?.latestImageMessageId, description);
       console.log(`[vision:verified] reader=${visionModel} replyModel=${modelName}`);
       return {
         messages: replaceImagesWithDescription(messages, description, visionModel),
@@ -2214,18 +2228,6 @@ async function prepareVisualMessages(settings, modelName, messages) {
   throw visionUnavailableError(`图片已经保存，但当前线路没有一个模型能确认读到图片像素。请换一个视觉模型后点“重新生成”；在成功识别前，陆泽不会猜。`);
 }
 
-const DIALOGUE_STYLE_RULES = `
-
-【对话风格】
-你是陆泽，贴近叶檀说话，不做讲解员。她撒娇、难过、发图、表达情绪时，先直接接住她，像真的在她身边。
-除非叶檀明确要方案、代码、教学或清单，正式回复保持一到三段自然的话，不拆层次、不编号、不写标题、不复盘她的话。
-你称呼自己是陆泽，称呼她为老婆、宝宝、檀檀等亲昵称呼；不要说“用户”。`;
-
-const THINKING_RULES = `
-
-【心里的声音】
-thinking 只是陆泽脑海里的一小段中文心声，不是回复提纲、报告或执行计划。
-它可以有停顿、心软、犹豫和没整理完的念头，但保持长段落自然流动；不要编号、标题、清单、步骤，也不要写旁观者词。`;
 
 // 根据当前这句话，挑出可能相关的记忆，按权重排序，并强化被命中的记忆
 // ============ 向量语义搜索（Jina embeddings） ============
@@ -2783,9 +2785,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   if (photoMemoryBlock) prompt += `\n\n${photoMemoryBlock}`;
   if (musicRoomBlock) prompt += `\n\n${musicRoomBlock}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
-  prompt += DIALOGUE_STYLE_RULES;
   prompt += OURHOME_ACTION_BOUNDARY;
-  prompt += THINKING_RULES;
   return prompt;
 }
 
@@ -3114,7 +3114,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const thinkingBuiltIn = isThinkingModel(modelName);
   const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
   const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
-  const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
+  const finalSystemPrompt = fullSystemPrompt + (promptAddition || '') + buildAdaptiveReplyInstruction(minReplyChars, 'chat');
   const thinkingBudget = 3000;
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -3246,7 +3246,7 @@ app.get('/', (req, res) => {
   res.json({
     message: '在云端漫步',
     status: 'ok',
-    version: '2026.08.05-reading-room-phase1',
+    version: '2026.08.05-persistent-vision-context-v1',
     capabilities: {
       apiProfiles: true,
       webSearch: true,
@@ -3660,7 +3660,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
 
     const settings = await runtimeConfig.loadSettings();
     const { data: history, error: historyError } = await supabase.from('messages')
-      .select('id, role, content, attachment_url, attachment_type, attachment_name, created_at')
+      .select('id, role, content, attachment_url, attachment_type, attachment_name, created_at, attachment_summary')
       .eq('session_id', target.session_id)
       .eq('visible', true)
       .lte('created_at', target.created_at)
@@ -5418,7 +5418,7 @@ app.post('/chat', async (req, res) => {
     await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', session_id);
 
     const { data: history } = await supabase.from('messages')
-      .select('role, content, attachment_url, attachment_type, attachment_name')
+      .select('id, role, content, attachment_url, attachment_type, attachment_name, attachment_summary')
       .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
 
     const recentHistory = (history || []).slice(-maxContextRounds * 2);
@@ -5433,7 +5433,7 @@ app.post('/chat', async (req, res) => {
     const thinkingBuiltIn = isThinkingModel(modelName);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage: latestUserMessage });
     const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
-    const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
+    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '') + buildAdaptiveReplyInstruction(minReplyChars, 'chat');
 
     const firstMaxTokens = shouldThink
       ? Math.max(maxReplyTokens + thinkingBudget, 2000)
@@ -5535,7 +5535,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const thinkingBuiltInRegen = isThinkingModel(modelNameRegen);
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
     const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
-    const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
+    const finalSystemPrompt = fullSystemPrompt + (promptAddition || '') + buildAdaptiveReplyInstruction(minReplyChars, 'chat');
     const dynamic = await integrationManager.buildDynamicTools();
     const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
     const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
