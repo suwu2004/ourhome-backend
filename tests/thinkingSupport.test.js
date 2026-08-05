@@ -1,3 +1,4 @@
+// 回归测试：确保不同 API 站点返回的可见 thinking 都能被 OurHome 保存和展示。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
