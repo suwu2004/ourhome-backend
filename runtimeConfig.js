@@ -1,6 +1,9 @@
+const { createReadingAssistant } = require('./readingAssistant');
+
 function createRuntimeConfig(supabase) {
   const missingRelation = error => ['42P01', 'PGRST205', 'PGRST202'].includes(error?.code);
   const unwrap = data => Array.isArray(data) ? (data[0] || null) : data;
+  const readingAssistant = createReadingAssistant({ supabase });
 
   async function getBaseSettings() {
     const { data, error } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
@@ -218,6 +221,10 @@ function createRuntimeConfig(supabase) {
     return unwrap(data) || null;
   }
 
+  function getReadingAssistantBridge() {
+    return readingAssistant.getToolBridge();
+  }
+
   return {
     getBaseSettings,
     loadSettings,
@@ -236,6 +243,7 @@ function createRuntimeConfig(supabase) {
     deleteConnection,
     getOrCreateVapidKeys,
     getDailyAutomationToken,
+    getReadingAssistantBridge,
   };
 }
 
