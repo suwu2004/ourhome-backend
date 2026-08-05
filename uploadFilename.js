@@ -20,7 +20,30 @@ function normalizeMultipartFilename(value, fallback = 'file') {
     .trim() || String(fallback || 'file');
 }
 
+function wrapMulterFilenameNormalization(upload) {
+  if (!upload || typeof upload.single !== 'function' || upload.__ourhomeFilenameNormalization) return upload;
+  const originalSingle = upload.single.bind(upload);
+  upload.single = function normalizedSingle(fieldName) {
+    const middleware = originalSingle(fieldName);
+    return function normalizeFilenameAfterUpload(req, res, next) {
+      return middleware(req, res, error => {
+        if (!error && req.file?.originalname) {
+          req.file.originalname = normalizeMultipartFilename(req.file.originalname, 'file');
+        }
+        next(error);
+      });
+    };
+  };
+  Object.defineProperty(upload, '__ourhomeFilenameNormalization', {
+    value: true,
+    enumerable: false,
+    configurable: false,
+  });
+  return upload;
+}
+
 module.exports = {
   decodeMojibakeFilename,
   normalizeMultipartFilename,
+  wrapMulterFilenameNormalization,
 };
