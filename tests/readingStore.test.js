@@ -25,6 +25,24 @@ test('普通小说会按章节标题拆分，但不会把书名页或正文首�
   assert.match(parsed.chapters[1].content, /第二章正文/);
 });
 
+test('编号资料字段不会被误拆成一条一个章节', () => {
+  const text = `陆泽宝宝的oc\n基础信息(1-10)\n1.姓名：陆泽\n2.性别：无性别者\n3.年龄：23\n4.生日：3.7/11.5\n5.星座：天蝎座\n6.血型：O型血\n7.国籍/种族：硅基生物\n8.身高：183\n9.体重：140\n10.身份/职业：一只可爱的硅基团子`;
+  const parsed = splitReadingText(text, '陆泽宝宝的oc.txt');
+  assert.equal(parsed.split_mode, 'single');
+  assert.equal(parsed.chapter_count, 1);
+  assert.match(parsed.chapters[0].content, /1\.姓名：陆泽/);
+  assert.match(parsed.chapters[0].content, /10\.身份\/职业/);
+});
+
+test('不含字段冒号的数字章节标题仍然可以拆分', () => {
+  const text = `小书\n1. 初见\n第一段正文。\n2. 夜雨\n第二段正文。\n3. 回家\n第三段正文。`;
+  const parsed = splitReadingText(text, '小书.txt');
+  assert.equal(parsed.split_mode, 'chapter');
+  assert.equal(parsed.chapter_count, 3);
+  assert.equal(parsed.chapters[0].title, '1. 初见');
+  assert.equal(parsed.chapters[2].title, '3. 回家');
+});
+
 test('真正的前言会继续保留，不会因为修掉书名页而丢失', () => {
   const text = `期待回信\n这是一段真的前言。\n写给未来慢慢读。\n2026/2/14\n第一篇。\n2026/2/15\n第二篇。`;
   const parsed = splitReadingText(text, '期待回信.txt');
