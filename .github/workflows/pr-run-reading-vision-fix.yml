@@ -1,0 +1,53 @@
+name: Apply reading and vision fixes
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    if: github.head_ref == 'agent/fix-reading-preface-and-vision-20260805' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-reading-preface-and-vision-20260805
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Extract and run the prepared patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('.github/workflows/one-off-fix-reading-preface-vision.yml').read_text(encoding='utf-8')
+          start_marker = "          python3 - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = source.index(start_marker) + len(start_marker)
+          end = source.index(end_marker, start)
+          lines = source[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          Path('/tmp/fix_reading_vision.py').write_text(script, encoding='utf-8')
+          PY
+          python3 /tmp/fix_reading_vision.py
+
+      - name: Install and run backend checks
+        run: npm ci
+
+      - name: Commit tested fixes
+        shell: bash
+        run: |
+          rm .github/workflows/one-off-fix-reading-preface-vision.yml .github/workflows/pr-run-reading-vision-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add readingStore.js modelCompatibility.js tests/readingStore.test.js tests/modelCompatibility.test.js .github/workflows
+          git commit -m "Fix redundant reading prefaces and vision markers"
+          git push origin HEAD:agent/fix-reading-preface-and-vision-20260805
