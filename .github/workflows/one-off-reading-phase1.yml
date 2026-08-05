@@ -26,11 +26,21 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Wire reading routes into server
+      - name: Tighten chapter detection and wire routes
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
+          store_path = Path('readingStore.js')
+          store = store_path.read_text(encoding='utf-8')
+          old_regex = "const CHAPTER_HEADING_RE = /^\\s*(?:第[零〇一二三四五六七八九十百千万\\d]+[章节卷部篇回](?:\\s*[：:、.．-]?\\s*.{0,36})?|卷[零〇一二三四五六七八九十百千万\\d]+(?:\\s*[：:、.．-]?\\s*.{0,36})?|\\d{1,4}\\s*[.．、]\\s*\\S.{0,34})\\s*$/;"
+          new_regex = "const CHAPTER_HEADING_RE = /^\\s*(?:第[零〇一二三四五六七八九十百千万\\d]+[章节卷部篇回](?:(?:\\s+|[：:、.．-]\\s*).{1,36})?|卷[零〇一二三四五六七八九十百千万\\d]+(?:(?:\\s+|[：:、.．-]\\s*).{1,36})?|\\d{1,4}\\s*[.．、]\\s*\\S.{0,34})\\s*$/;"
+          if old_regex in store:
+              store = store.replace(old_regex, new_regex, 1)
+          elif new_regex not in store:
+              raise SystemExit('chapter regex anchor not found')
+          store_path.write_text(store, encoding='utf-8')
 
           path = Path('server.js')
           text = path.read_text(encoding='utf-8')
