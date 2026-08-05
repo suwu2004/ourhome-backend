@@ -1,16 +1,16 @@
 name: One-off persist vision and reply floor
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/persist-vision-and-length-20260805
+      - main
 
 permissions:
   contents: write
 
 jobs:
   patch-test-commit:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'agent/persist-vision-and-length-20260805' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,12 +33,6 @@ jobs:
 
           path = Path('server.js')
           server = path.read_text(encoding='utf-8')
-
-          def replace_checked(old, new, label, expected=1):
-              count = server.count(old)
-              if count != expected:
-                  raise SystemExit(f'{label}: expected {expected}, found {count}')
-              return server.replace(old, new)
 
           def sub_checked(pattern, replacement, text, label, expected=1, flags=0):
               updated, count = re.subn(pattern, replacement, text, flags=flags)
@@ -74,7 +68,7 @@ jobs:
           保持简短，不列提纲、计划或步骤，不复述叶檀的话，不提用户、模型、系统、工具或任务。写完后另起一段正式回复，不提 thinking 标签。`;
           }
 
-          // 计算这次回复要不要"想一想"，以及要用哪种方式实现""" )
+          // 计算这次回复要不要"想一想"，以及要用哪种方式实现""")
           server = sub_checked(
               r"function buildThinkingInstruction\(\) \{[\s\S]*?\n\}\n\n// 计算这次回复要不要\"想一想\"，以及要用哪种方式实现",
               new_thinking,
