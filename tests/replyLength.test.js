@@ -39,6 +39,6 @@ test('小剧场也把最低长度当作柔性下限', () => {
   const theater = buildAdaptiveReplyInstruction(120, 'theater');
   assert.match(theater, /最低长度为约 120 字/);
   assert.match(theater, /不为篇幅添加无关背景、回忆、轶事或新话题/);
-  assert.match(theater, /不替叶檀决定/);
+  assert.match(theater, /不要替叶檀决定/);
   assert.match(theater, /剧情停在自然能继续接话的位置/);
 });
