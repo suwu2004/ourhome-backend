@@ -3,6 +3,7 @@
 // stay at 32K and explicitly marked PX/CX routes may use 64K.
 
 const { clampRequestedOutputTokens, outputTokenCapForModel } = require('./modelTokenLimits');
+const { raiseRoomOutputLimit } = require('./roomOutputLimits');
 
 const originalFetch = globalThis.fetch;
 
@@ -19,13 +20,19 @@ if (typeof originalFetch === 'function') {
 
     if (typeof init?.body === 'string') {
       try {
-        const body = JSON.parse(init.body);
+        let body = JSON.parse(init.body);
         if (isModelMessageRequest(url, body)) {
+          const roomLimit = raiseRoomOutputLimit(body);
+          body = roomLimit.body;
+
           const requested = Number(body.max_tokens) || 0;
           const cap = outputTokenCapForModel(body.model);
           const effective = clampRequestedOutputTokens(body.model, requested);
           body.max_tokens = effective;
 
+          if (roomLimit.scene && roomLimit.requested !== roomLimit.raisedTo) {
+            console.log(`[tokens:room] scene=${roomLimit.scene} model=${body.model} requested=${roomLimit.requested || 'auto'} raised=${roomLimit.raisedTo}`);
+          }
           if (requested !== effective) {
             console.log(`[tokens:output] model=${body.model} requested=${requested || 'auto'} effective=${effective} cap=${cap}`);
           }
