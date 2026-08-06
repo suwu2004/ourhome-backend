@@ -13,7 +13,7 @@ function buildMinimumLengthRule(minChars, scene = 'chat') {
   }
 
   const noun = scene === 'theater' ? '本次小剧场回复' : '本轮正式回复正文';
-  return `${noun}当前设置的最低长度约为 ${minimum} 个中文字符。该数字只是防止回复过短的柔性下限，不是目标字数、固定篇幅或上限。根据当前话题、情绪和交流节奏自主决定长度，可以自然超过该下限；当内容已经完整表达时可以停止。不要为了满足长度机械扩写，不要通过复述、同义反复、空洞总结或无关发散增加篇幅。`;
+  return `${noun}当前设置的最低长度约为 ${minimum} 个中文字符。该数字只是防止回复过短的柔性下限，不是目标字数、固定篇幅或上限；thinking 内心独白不计入正文长度。根据当前话题、情绪和交流节奏自主决定长度，可以自然超过该下限；当内容已经完整表达时可以停止。叶檀明确要求“简短”“一句话”或“只回答结论”时，可以自然低于该下限。不要为了满足长度机械扩写，不要通过复述、同义反复、空洞总结或无关发散增加篇幅。`;
 }
 
 function buildConversationStyleRule() {
@@ -79,7 +79,7 @@ function buildChatResponseRules(minChars) {
 }
 
 function buildTheaterResponseRules(minChars) {
-  return `\n\n【小剧场自然推进规则】\n根据当前动作、对话、情绪和剧情节奏自然决定篇幅。只推进当前内容，不添加无关背景，不替叶檀决定尚未写出的感受或选择。\n${buildMinimumLengthRule(minChars, 'theater')}`;
+  return `\n\n【小剧场自然推进规则】\n根据当前动作、对话、情绪和剧情节奏自然决定篇幅。只推进当前内容，不添加无关背景，不替叶檀决定尚未写出的感受或选择，让剧情停在自然能够继续接话的位置。\n${buildMinimumLengthRule(minChars, 'theater')}`;
 }
 
 function buildAdaptiveReplyInstruction(minChars, scene = 'chat') {
