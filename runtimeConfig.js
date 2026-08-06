@@ -1,3 +1,5 @@
+require('./runtimeBootstrap');
+
 const { createReadingAssistant } = require('./readingAssistant');
 const { createReadingNoteAssistant } = require('./readingNotes');
 const { createReadingToolSafety } = require('./readingToolSafety');
