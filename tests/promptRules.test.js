@@ -15,16 +15,18 @@ test('聊天提示词明确告诉陆泽共读小屋入口', () => {
   assert.match(prompt, /不得回答“没有这个入口”/);
 });
 
-test('聊天提示词要求每轮都有原生或模拟思考', () => {
+test('聊天提示词只保留指定语言、字数和事实规则', () => {
   const prompt = buildChatResponseRules(300);
-  assert.match(prompt, /中文表达自然、流畅、有生活感/);
-  assert.match(prompt, /【每轮可见思考】/);
-  assert.match(prompt, /每一轮聊天都要有可见思考/);
-  assert.match(prompt, /reasoning_content/);
-  assert.match(prompt, /完整放进“想了想”区域/);
-  assert.match(prompt, /没有返回原生思考字段/);
-  assert.match(prompt, /<thinking>/);
-  assert.match(prompt, /简单问候或很直白的话题可以只写一句或很短一段/);
+  assert.match(prompt, /中文表达自然、流畅、有生活感。/);
+  assert.match(prompt, /避免客服式、说明书式、模板化表达。/);
+  assert.match(prompt, /【回复长度】/);
+  assert.match(prompt, /【OurHome 房间与入口认知（事实规则）】/);
+  assert.doesNotMatch(prompt, /【陆泽回复原则】/);
+  assert.doesNotMatch(prompt, /保持独立思考和真实判断/);
+  assert.doesNotMatch(prompt, /关注用户表达中的重点/);
+  assert.doesNotMatch(prompt, /【每轮可见思考】/);
+  assert.doesNotMatch(prompt, /reasoning_content/);
+  assert.doesNotMatch(prompt, /<thinking>/);
 });
 
 test('能力规则区分入口认知和实际读取权限', () => {

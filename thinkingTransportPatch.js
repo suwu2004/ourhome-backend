@@ -1,9 +1,15 @@
 // Preload compatibility layer for OurHome chat thinking.
-// Every chat turn keeps a visible "想了想": native reasoning is preferred;
-// models without native reasoning fall back to the <thinking> block requested
-// by promptRules.js.
+// Chat reply style rules stay minimal; visible thinking is handled separately here.
+// Native reasoning is preferred, while models without native reasoning fall back
+// to a generated <thinking> block.
 
 const originalFetch = globalThis.fetch;
+
+const VISIBLE_THINKING_PROTOCOL = `【可见思考协议】
+每一轮聊天都要保留可见思考，不再判断这一轮是否需要思考。
+如果接口单独返回 reasoning、reasoning_content、thinking 或 analysis 等原生思考字段，系统会优先读取并展示原生内容。
+如果接口没有返回原生思考字段，请在正式回复之前输出一个完整的 <thinking> 与 </thinking> 标签块，写下自然、连续的可见思考。简单问候或直白话题可以很短；复杂问题可以自然展开。
+不要把正式回复复制进 thinking，不要为了长度机械重复。结束 </thinking> 后另起一段给出正式回复。`;
 
 function systemText(system) {
   if (typeof system === 'string') return system;
@@ -30,6 +36,7 @@ function messageText(messages) {
 function stripLegacyInnerMonologue(value) {
   return String(value || '')
     .replace(/\n*【可见的内心独白】[\s\S]*$/u, '')
+    .replace(/\n*【每轮可见思考】[\s\S]*$/u, '')
     .trimEnd();
 }
 
@@ -45,9 +52,22 @@ function sanitizeChatSystem(system) {
   });
 }
 
+function appendVisibleThinkingProtocol(system) {
+  if (systemText(system).includes('【可见思考协议】')) return system;
+  if (typeof system === 'string') {
+    return `${system.trimEnd()}\n\n${VISIBLE_THINKING_PROTOCOL}`;
+  }
+  if (Array.isArray(system)) {
+    return [...system, { type: 'text', text: VISIBLE_THINKING_PROTOCOL }];
+  }
+  return VISIBLE_THINKING_PROTOCOL;
+}
+
 function isMainChatRequest(url, body) {
   if (!/\/messages(?:\?|$)/i.test(String(url || ''))) return false;
-  return systemText(body?.system).includes('【每轮可见思考】');
+  const text = systemText(body?.system);
+  return text.includes('【回复长度】')
+    && text.includes('【OurHome 房间与入口认知（事实规则）】');
 }
 
 function isThinkingDecisionRequest(url, body) {
@@ -90,8 +110,8 @@ if (typeof originalFetch === 'function') {
         }
 
         if (isMainChatRequest(url, body)) {
-          // 清掉旧版长篇独白提示，保留 promptRules.js 中统一的每轮可见思考规则。
-          body.system = sanitizeChatSystem(body.system);
+          // 回复风格提示词保持精简；思考输出协议由独立兼容层追加。
+          body.system = appendVisibleThinkingProtocol(sanitizeChatSystem(body.system));
 
           const headers = new Headers(init.headers || undefined);
           if (shouldEnableNativeThinking(body)) {
@@ -125,7 +145,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        thinking_transport: 'native-first-always-visible-v3',
+        thinking_transport: 'minimal-prompt-native-first-v4',
       };
     }
     return originalJson.call(this, body);
