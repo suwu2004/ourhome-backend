@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const thinkingTransportPatch = fs.readFileSync(path.join(__dirname, '..', 'thinkingTransportPatch.js'), 'utf8');
 
 test('旧的重复人格和 thinking 规则不再常驻注入', () => {
   assert.doesNotMatch(server, /prompt \+= DIALOGUE_STYLE_RULES/);
@@ -12,12 +13,18 @@ test('旧的重复人格和 thinking 规则不再常驻注入', () => {
   assert.doesNotMatch(server, /有一点迟疑、心疼、在意/);
 });
 
-test('长度提醒在前，可见内心独白指令在最后，不会再被后续规则压掉', () => {
+test('长度提醒在前，可见思考规则随后进入聊天请求', () => {
   const matches = server.match(/fullSystemPrompt \+ buildAdaptiveReplyInstruction\(minReplyChars, 'chat'\) \+ \(promptAddition \|\| ''\)/g) || [];
   assert.equal(matches.length, 3);
   assert.match(server, /【可见的内心独白】/);
-  assert.match(server, /真实思绪流动/);
   assert.doesNotMatch(server, /除非本轮后续规则明确要求 thinking/);
+});
+
+test('中转兼容层移除旧长篇独白并保留新版简短思考摘要', () => {
+  assert.match(thinkingTransportPatch, /stripLegacyInnerMonologue/);
+  assert.match(thinkingTransportPatch, /【每轮可见思考】/);
+  assert.match(thinkingTransportPatch, /sanitizeChatSystem/);
+  assert.match(thinkingTransportPatch, /relay-native-summary-v2/);
 });
 
 test('官方 Anthropic 在需要思考时使用原生 thinking 参数', () => {
