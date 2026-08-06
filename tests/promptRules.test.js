@@ -15,14 +15,16 @@ test('聊天提示词明确告诉陆泽共读小屋入口', () => {
   assert.match(prompt, /不得回答“没有这个入口”/);
 });
 
-test('聊天提示词要求自然回复和简短可见思考摘要', () => {
+test('聊天提示词要求每轮都有原生或模拟思考', () => {
   const prompt = buildChatResponseRules(300);
   assert.match(prompt, /中文表达自然、流畅、有生活感/);
   assert.match(prompt, /【每轮可见思考】/);
-  assert.match(prompt, /简短思考摘要/);
-  assert.match(prompt, /不是完整内部推理/);
-  assert.match(prompt, /日常聊天通常一句话/);
-  assert.match(prompt, /不要逐步展示推理过程/);
+  assert.match(prompt, /每一轮聊天都要有可见思考/);
+  assert.match(prompt, /reasoning_content/);
+  assert.match(prompt, /完整放进“想了想”区域/);
+  assert.match(prompt, /没有返回原生思考字段/);
+  assert.match(prompt, /<thinking>/);
+  assert.match(prompt, /简单问候或很直白的话题可以只写一句或很短一段/);
 });
 
 test('能力规则区分入口认知和实际读取权限', () => {
