@@ -54,3 +54,21 @@ if (typeof originalFetch === 'function') {
     return originalFetch(input, init);
   };
 }
+
+// Add a harmless readiness marker to the existing public health response so
+// deployments can be verified without exposing settings or credentials.
+try {
+  const express = require('express');
+  const originalJson = express.response.json;
+  express.response.json = function patchedJson(body) {
+    if (body?.message === '在云端漫步' && body?.status === 'ok') {
+      body = {
+        ...body,
+        thinking_transport: 'relay-native-v1',
+      };
+    }
+    return originalJson.call(this, body);
+  };
+} catch (error) {
+  console.warn('[thinking:relay] health marker unavailable:', error.message);
+}
