@@ -16,6 +16,12 @@ const NATIVE_THINKING_FIELD_NAMES = [
   'summary_text',
 ];
 const MAX_THINKING_CHARS = 24_000;
+const BRACKETED_THINKING_LABEL = '(?:思考链|思考过程|思考记录|可见思考|想了想|thinking|reasoning|analysis)';
+const BRACKETED_THINKING_PATTERNS = [
+  new RegExp(`\\[\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*\\]`, 'gi'),
+  new RegExp(`［\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*］`, 'gi'),
+  new RegExp(`【\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*】`, 'gi'),
+];
 
 function normalizeThinkingText(value) {
   if (value == null) return '';
@@ -65,11 +71,28 @@ function extractTaggedThinking(value) {
   return results;
 }
 
+function extractBracketedThinking(value) {
+  const text = String(value || '');
+  const results = [];
+  for (const pattern of BRACKETED_THINKING_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const candidate = normalizeThinkingText(match[1]);
+      if (candidate) results.push(candidate);
+    }
+  }
+  return results;
+}
+
 function stripThinkingMarkup(value) {
-  return String(value || '')
+  let text = String(value || '')
     .replace(/<(thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<\/?(?:thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>/gi, '')
-    .trim();
+    .replace(/<\/?(?:thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>/gi, '');
+  for (const pattern of BRACKETED_THINKING_PATTERNS) {
+    pattern.lastIndex = 0;
+    text = text.replace(pattern, '');
+  }
+  return text.replace(/^\s+/, '').trim();
 }
 
 function uniqueThinking(candidates) {
@@ -82,6 +105,11 @@ function uniqueThinking(candidates) {
     unique.push(normalized);
   }
   return unique.join('\n').slice(0, MAX_THINKING_CHARS);
+}
+
+function collectVisibleThinking(value, target) {
+  target.push(...extractTaggedThinking(value));
+  target.push(...extractBracketedThinking(value));
 }
 
 function extractThinkingText(result = {}) {
@@ -99,23 +127,20 @@ function extractThinkingText(result = {}) {
   for (const block of contentBlocks) {
     const type = String(block?.type || '').toLowerCase();
     if (NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block);
-    if (type === 'text') simulatedCandidates.push(...extractTaggedThinking(block?.text));
+    if (type === 'text' || type === 'output_text' || !type) collectVisibleThinking(block?.text || block?.content, simulatedCandidates);
   }
 
-  if (typeof result?.content === 'string') {
-    simulatedCandidates.push(...extractTaggedThinking(result.content));
-  }
+  if (typeof result?.content === 'string') collectVisibleThinking(result.content, simulatedCandidates);
+  collectVisibleThinking(result?.text || result?.output_text, simulatedCandidates);
 
   for (const choice of Array.isArray(result?.choices) ? result.choices : []) {
     const message = choice?.message || choice?.delta || {};
     for (const field of NATIVE_THINKING_FIELD_NAMES) addNative(message?.[field]);
-    if (typeof message?.content === 'string') {
-      simulatedCandidates.push(...extractTaggedThinking(message.content));
-    }
+    collectVisibleThinking(message?.content || choice?.text, simulatedCandidates);
   }
 
   // 模型或中转站明确返回原生 reasoning/thinking 时，完整展示它；
-  // 只有原生思考为空时，才退回模型在正文里生成的 <thinking> 可见思考。
+  // 只有原生思考为空时，才退回模型在正文里生成的可见思考标记。
   return uniqueThinking(nativeCandidates) || uniqueThinking(simulatedCandidates);
 }
 
@@ -123,6 +148,7 @@ module.exports = {
   MAX_THINKING_CHARS,
   normalizeThinkingText,
   extractTaggedThinking,
+  extractBracketedThinking,
   stripThinkingMarkup,
   extractThinkingText,
 };
