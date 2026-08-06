@@ -12,15 +12,15 @@ test('最低回复长度设置仍会被安全规范化', () => {
   assert.equal(normalizeMinReplyChars('不是数字', 80), 80);
 });
 
-test('聊天追加自然交流原则、可见思考摘要和柔性长度规则', () => {
+test('聊天追加自然交流原则、每轮可见思考和柔性长度规则', () => {
   const chat = buildAdaptiveReplyInstruction(300, 'chat');
   assert.match(chat, /【陆泽回复原则】/);
   assert.match(chat, /保持独立思考和真实判断/);
   assert.match(chat, /不要虚构不存在的经历、记忆或事实/);
   assert.match(chat, /【每轮可见思考】/);
+  assert.match(chat, /每一轮聊天都要有可见思考/);
+  assert.match(chat, /原生思考/);
   assert.match(chat, /<thinking>/);
-  assert.match(chat, /简短思考摘要/);
-  assert.match(chat, /不是完整内部推理/);
   assert.match(chat, /【回复长度】/);
   assert.match(chat, /最低长度约为 300 个中文字符/);
   assert.match(chat, /柔性下限，不是目标字数或固定篇幅/);
