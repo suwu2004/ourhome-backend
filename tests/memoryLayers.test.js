@@ -1,0 +1,70 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const {
+  MEMORY_TIERS,
+  ACTIVE_MEMORY_TIERS,
+  isMemoryTableRead,
+  addActiveMemoryFilters,
+  filteredMemoryInput,
+  layerLabel,
+} = require('../memoryLayers');
+
+const migration = fs.readFileSync(
+  path.join(__dirname, '..', 'supabase', 'migrations', '20260806153000_layered_memory_system.sql'),
+  'utf8',
+);
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+
+test('记忆层级固定为临时、阶段、核心和归档', () => {
+  assert.deepEqual(MEMORY_TIERS, ['temporary', 'episodic', 'core', 'archived']);
+  assert.deepEqual(ACTIVE_MEMORY_TIERS, ['temporary', 'episodic', 'core']);
+  assert.equal(layerLabel('core'), '核心记忆');
+  assert.equal(layerLabel('temporary'), '临时记忆');
+  assert.equal(layerLabel('episodic'), '阶段记忆');
+});
+
+test('普通 memories 查询会排除归档与已过期内容', () => {
+  const source = 'https://example.supabase.co/rest/v1/memories?select=*&order=weight.desc&limit=200';
+  assert.equal(isMemoryTableRead(source, { method: 'GET' }), true);
+  const filtered = new URL(addActiveMemoryFilters(source, new Date('2026-08-06T15:30:00.000Z')));
+  assert.equal(filtered.searchParams.get('memory_tier'), 'neq.archived');
+  assert.equal(filtered.searchParams.get('or'), '(expires_at.is.null,expires_at.gt.2026-08-06T15:30:00.000Z)');
+});
+
+test('写入、RPC 与其他表请求不会被记忆读取过滤器改写', () => {
+  const insertUrl = 'https://example.supabase.co/rest/v1/memories';
+  assert.equal(isMemoryTableRead(insertUrl, { method: 'POST' }), false);
+  assert.equal(filteredMemoryInput(insertUrl, { method: 'POST' }), insertUrl);
+
+  const rpcUrl = 'https://example.supabase.co/rest/v1/rpc/ourhome_consolidate_memory_layers';
+  assert.equal(isMemoryTableRead(rpcUrl, { method: 'POST' }), false);
+});
+
+test('已有查询条件不会被重复覆盖', () => {
+  const source = 'https://example.supabase.co/rest/v1/memories?select=*&memory_tier=eq.core&or=(expires_at.is.null,expires_at.gt.2026-08-01T00%3A00%3A00Z)';
+  const filtered = new URL(addActiveMemoryFilters(source, new Date('2026-08-06T15:30:00.000Z')));
+  assert.equal(filtered.searchParams.get('memory_tier'), 'eq.core');
+  assert.equal(filtered.searchParams.getAll('or').length, 1);
+});
+
+test('迁移保留旧记忆并提供提炼、过期和审计机制', () => {
+  assert.match(migration, /memory_tier text not null default 'episodic'/);
+  assert.match(migration, /memory_kind text not null default 'general'/);
+  assert.match(migration, /reinforcement_count integer not null default 0/);
+  assert.match(migration, /memory_consolidations/);
+  assert.match(migration, /ourhome_consolidate_memory_layers/);
+  assert.match(migration, /memory_tier = 'core'/);
+  assert.match(migration, /memory_tier = 'archived'/);
+  assert.match(migration, /status = 'expired'/);
+  assert.doesNotMatch(migration, /delete\s+from\s+public\.memories/i);
+  assert.doesNotMatch(migration, /delete\s+from\s+public\.memory_marks/i);
+});
+
+test('生产启动时先加载记忆分层，再加载 token 与思考兼容层', () => {
+  assert.equal(
+    packageJson.scripts.start,
+    'node -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js server.js',
+  );
+});
