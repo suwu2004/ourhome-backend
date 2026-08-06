@@ -1,6 +1,7 @@
-// Preload compatibility layer for Claude-style relay endpoints.
-// It keeps native reasoning available for reply quality while the chat UI only
-// receives the concise, explicitly generated <thinking> summary.
+// Preload compatibility layer for OurHome chat thinking.
+// Every chat turn keeps a visible "想了想": native reasoning is preferred;
+// models without native reasoning fall back to the <thinking> block requested
+// by promptRules.js.
 
 const originalFetch = globalThis.fetch;
 
@@ -10,6 +11,19 @@ function systemText(system) {
   return system
     .map(block => typeof block === 'string' ? block : block?.text || block?.content || '')
     .filter(Boolean)
+    .join('\n');
+}
+
+function messageText(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map(message => {
+      if (typeof message?.content === 'string') return message.content;
+      if (!Array.isArray(message?.content)) return '';
+      return message.content
+        .map(block => typeof block === 'string' ? block : block?.text || '')
+        .filter(Boolean)
+        .join('\n');
+    })
     .join('\n');
 }
 
@@ -36,9 +50,30 @@ function isMainChatRequest(url, body) {
   return systemText(body?.system).includes('【每轮可见思考】');
 }
 
+function isThinkingDecisionRequest(url, body) {
+  if (!/\/messages(?:\?|$)/i.test(String(url || ''))) return false;
+  const text = messageText(body?.messages);
+  return Number(body?.max_tokens || 0) <= 20
+    && text.includes('只回答一个词')
+    && text.includes('想 或者 不想');
+}
+
 function shouldEnableNativeThinking(body) {
   const model = String(body?.model || '').toLowerCase();
   return model.includes('claude') && model.includes('thinking');
+}
+
+function fixedThinkResponse() {
+  return new Response(JSON.stringify({
+    id: 'ourhome-always-think',
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'text', text: '想' }],
+    stop_reason: 'end_turn',
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 if (typeof originalFetch === 'function') {
@@ -47,16 +82,21 @@ if (typeof originalFetch === 'function') {
     if (typeof init?.body === 'string') {
       try {
         const body = JSON.parse(init.body);
+
+        // server.js 旧代码仍保留一次“想/不想”判断。这里直接固定为“想”，
+        // 不再请求上游，也不再让某一轮因为判断结果而没有思考。
+        if (isThinkingDecisionRequest(url, body)) {
+          return fixedThinkResponse();
+        }
+
         if (isMainChatRequest(url, body)) {
-          // The main server still appends an older long-form inner-monologue
-          // fallback for relays. The newer prompt already requests a concise,
-          // user-facing summary, so remove the conflicting legacy block.
+          // 清掉旧版长篇独白提示，保留 promptRules.js 中统一的每轮可见思考规则。
           body.system = sanitizeChatSystem(body.system);
 
           const headers = new Headers(init.headers || undefined);
           if (shouldEnableNativeThinking(body)) {
             const maxTokens = Number(body.max_tokens) || 0;
-            const safeBudget = Math.max(1024, Math.min(3000, maxTokens > 1200 ? maxTokens - 800 : 1024));
+            const safeBudget = Math.max(1024, Math.min(6000, maxTokens > 1400 ? maxTokens - 800 : 1024));
             body.thinking = { type: 'enabled', budget_tokens: safeBudget };
             body.temperature = 1;
             headers.set('anthropic-beta', 'interleaved-thinking-2025-05-14');
@@ -77,8 +117,7 @@ if (typeof originalFetch === 'function') {
   };
 }
 
-// A public readiness marker makes it possible to verify that Render is running
-// the current thinking transport without exposing settings or credentials.
+// Public marker for confirming which thinking transport is live on Render.
 try {
   const express = require('express');
   const originalJson = express.response.json;
@@ -86,7 +125,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        thinking_transport: 'relay-native-summary-v2',
+        thinking_transport: 'native-first-always-visible-v3',
       };
     }
     return originalJson.call(this, body);
