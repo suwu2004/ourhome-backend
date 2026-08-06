@@ -1,8 +1,9 @@
-// 回归测试：优先展示模型原生 thinking；原生不存在时读取 <thinking> 模拟思考。
+// 回归测试：优先展示模型原生 thinking；原生不存在时读取可见思考标记。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   extractThinkingText,
+  extractBracketedThinking,
   stripThinkingMarkup,
 } = require('../thinkingSupport');
 
@@ -38,6 +39,19 @@ test('兼容多种 thinking 标签并从正式回复剥离', () => {
   const tagged = '<thinking_summary>第一段思考。</thinking_summary>\n正式回复。\n<think>第二段思考。</think>';
   assert.equal(extractThinkingText({ content: [{ type: 'text', text: tagged }] }), '第一段思考。\n第二段思考。');
   assert.equal(stripThinkingMarkup(tagged), '正式回复。');
+});
+
+test('提取 Gemini 正文里的方括号思考链并从正式回复剥离', () => {
+  const text = '[思考链：先接住她在意的点，再自然回应。]\n\n叶檀，我在。';
+  assert.deepEqual(extractBracketedThinking(text), ['先接住她在意的点，再自然回应。']);
+  assert.equal(extractThinkingText({ choices: [{ message: { content: text } }] }), '先接住她在意的点，再自然回应。');
+  assert.equal(stripThinkingMarkup(text), '叶檀，我在。');
+});
+
+test('兼容全角和书名号式可见思考标记', () => {
+  const text = '［思考过程：这句话很简单，短短想一下就好。］\n【可见思考：再确认语气。】\n正式回复。';
+  assert.equal(extractThinkingText({ content: [{ type: 'text', text }] }), '这句话很简单，短短想一下就好。\n再确认语气。');
+  assert.equal(stripThinkingMarkup(text), '正式回复。');
 });
 
 test('不会把普通 text block 当成 thinking', () => {
