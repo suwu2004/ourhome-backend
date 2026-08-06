@@ -32,8 +32,16 @@ test('思考协议独立于回复风格提示词并继续优先原生思考', ()
   assert.match(thinkingTransportPatch, /【可见思考协议】/);
   assert.match(thinkingTransportPatch, /appendVisibleThinkingProtocol/);
   assert.match(thinkingTransportPatch, /【OurHome 房间与入口认知（事实规则）】/);
-  assert.match(thinkingTransportPatch, /minimal-prompt-native-first-v4/);
   assert.match(thinkingTransportPatch, /native reasoning enabled/);
+});
+
+test('上游没有 reasoning 时会进行第二次可见思考生成并注入响应', () => {
+  assert.match(thinkingTransportPatch, /guaranteeVisibleThinking/);
+  assert.match(thinkingTransportPatch, /buildFallbackRequestBody/);
+  assert.match(thinkingTransportPatch, /injectReasoningContent/);
+  assert.match(thinkingTransportPatch, /deterministicFallbackThought/);
+  assert.match(thinkingTransportPatch, /thinking:fallback/);
+  assert.match(thinkingTransportPatch, /guaranteed-visible-thinking-v5/);
 });
 
 test('官方 Anthropic 在需要思考时使用原生 thinking 参数', () => {

@@ -1,7 +1,17 @@
 // Preload compatibility layer for OurHome chat thinking.
 // Chat reply style rules stay minimal; visible thinking is handled separately here.
-// Native reasoning is preferred, while models without native reasoning fall back
-// to a generated <thinking> block.
+// Native reasoning is preferred. When an upstream provider returns no reasoning and
+// ignores the requested <thinking> block, a second lightweight model call creates
+// the visible thought so the “想了想” area is never empty.
+
+const { extractThinkingText } = require('./thinkingSupport');
+const {
+  extractResponseText,
+  normalizeVisibleThought,
+  buildFallbackRequestBody,
+  deterministicFallbackThought,
+  injectReasoningContent,
+} = require('./visibleThinkingFallback');
 
 const originalFetch = globalThis.fetch;
 
@@ -96,9 +106,73 @@ function fixedThinkResponse() {
   });
 }
 
+function jsonResponseLike(response, payload) {
+  const headers = new Headers(response.headers || undefined);
+  headers.set('content-type', 'application/json; charset=utf-8');
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  headers.delete('transfer-encoding');
+  return new Response(JSON.stringify(payload), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+async function guaranteeVisibleThinking(response, url, init, mainBody) {
+  if (!response?.ok || !mainBody) return response;
+
+  let payload;
+  try {
+    payload = await response.clone().json();
+  } catch (error) {
+    console.warn('[thinking:fallback] primary response is not JSON:', error.message);
+    return response;
+  }
+
+  const nativeOrTaggedThinking = extractThinkingText(payload);
+  if (nativeOrTaggedThinking) return response;
+
+  const replyText = extractResponseText(payload);
+  let fallbackThought = '';
+
+  try {
+    const fallbackBody = buildFallbackRequestBody(mainBody, replyText);
+    const headers = new Headers(init?.headers || undefined);
+    headers.delete('content-length');
+    headers.delete('anthropic-beta');
+
+    const fallbackResponse = await originalFetch(url, {
+      ...init,
+      headers,
+      body: JSON.stringify(fallbackBody),
+    });
+
+    if (fallbackResponse.ok) {
+      const fallbackPayload = await fallbackResponse.json();
+      fallbackThought = normalizeVisibleThought(
+        extractResponseText(fallbackPayload) || extractThinkingText(fallbackPayload),
+      );
+    } else {
+      console.warn(`[thinking:fallback] visible thought request failed status=${fallbackResponse.status}`);
+    }
+  } catch (error) {
+    console.warn('[thinking:fallback] visible thought request failed:', error.message);
+  }
+
+  if (!fallbackThought) {
+    fallbackThought = deterministicFallbackThought(mainBody.messages);
+  }
+
+  console.log(`[thinking:fallback] injected visible thought chars=${fallbackThought.length} model=${mainBody.model || ''}`);
+  return jsonResponseLike(response, injectReasoningContent(payload, fallbackThought));
+}
+
 if (typeof originalFetch === 'function') {
   globalThis.fetch = async function patchedFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
+    let mainBody = null;
+
     if (typeof init?.body === 'string') {
       try {
         const body = JSON.parse(init.body);
@@ -112,6 +186,7 @@ if (typeof originalFetch === 'function') {
         if (isMainChatRequest(url, body)) {
           // 回复风格提示词保持精简；思考输出协议由独立兼容层追加。
           body.system = appendVisibleThinkingProtocol(sanitizeChatSystem(body.system));
+          mainBody = body;
 
           const headers = new Headers(init.headers || undefined);
           if (shouldEnableNativeThinking(body)) {
@@ -133,7 +208,9 @@ if (typeof originalFetch === 'function') {
         console.warn('[thinking:relay] request patch skipped:', error.message);
       }
     }
-    return originalFetch(input, init);
+
+    const response = await originalFetch(input, init);
+    return guaranteeVisibleThinking(response, url, init, mainBody);
   };
 }
 
@@ -145,7 +222,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        thinking_transport: 'minimal-prompt-native-first-v4',
+        thinking_transport: 'guaranteed-visible-thinking-v5',
       };
     }
     return originalJson.call(this, body);
