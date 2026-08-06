@@ -23,7 +23,8 @@ test('运行时不再向上游询问这一轮要不要思考', () => {
   assert.match(thinkingTransportPatch, /isThinkingDecisionRequest/);
   assert.match(thinkingTransportPatch, /fixedThinkResponse/);
   assert.match(thinkingTransportPatch, /text: '想'/);
-  assert.match(thinkingTransportPatch, /每轮都想/);
+  assert.match(thinkingTransportPatch, /不再请求上游/);
+  assert.match(thinkingTransportPatch, /return fixedThinkResponse\(\)/);
 });
 
 test('中转兼容层优先原生思考并保留模拟思考兜底', () => {
