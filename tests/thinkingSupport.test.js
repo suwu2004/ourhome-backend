@@ -1,4 +1,4 @@
-// 回归测试：聊天只展示模型明确给出的可见思考摘要，不保存完整内部推理。
+// 回归测试：优先展示模型原生 thinking；原生不存在时读取 <thinking> 模拟思考。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -6,29 +6,37 @@ const {
   stripThinkingMarkup,
 } = require('../thinkingSupport');
 
-test('提取文本中的可见 thinking 摘要', () => {
+test('提取文本中的模拟 thinking', () => {
   const result = { content: [{ type: 'text', text: '<thinking>我先确认一下最关键的点。</thinking>\n正式回复。' }] };
   assert.equal(extractThinkingText(result), '我先确认一下最关键的点。');
 });
 
-test('提取 API 明确返回的 reasoning_summary', () => {
-  const result = { reasoning_summary: '先核对事实，再给出判断。', content: [{ type: 'text', text: '正式回复。' }] };
+test('提取 API 返回的 reasoning_content', () => {
+  const result = { reasoning_content: '先核对事实，再给出判断。', content: [{ type: 'text', text: '正式回复。' }] };
   assert.equal(extractThinkingText(result), '先核对事实，再给出判断。');
 });
 
-test('不会把原生完整 reasoning_content 当作可见摘要', () => {
-  const result = { reasoning_content: '这里可能是模型完整的内部推理。', content: [{ type: 'text', text: '正式回复。' }] };
-  assert.equal(extractThinkingText(result), '');
+test('提取 Anthropic 原生 thinking block', () => {
+  const result = { content: [{ type: 'thinking', thinking: '这里是模型原生思考。' }, { type: 'text', text: '正式回复。' }] };
+  assert.equal(extractThinkingText(result), '这里是模型原生思考。');
 });
 
-test('不会直接展示 Anthropic 原生 thinking block', () => {
-  const result = { content: [{ type: 'thinking', thinking: '完整内部推理。' }, { type: 'text', text: '正式回复。' }] };
-  assert.equal(extractThinkingText(result), '');
+test('原生 thinking 优先于正文里的模拟 thinking', () => {
+  const result = {
+    reasoning_content: '这是原生思考。',
+    content: [{ type: 'text', text: '<thinking>这是模拟思考。</thinking>\n正式回复。' }],
+  };
+  assert.equal(extractThinkingText(result), '这是原生思考。');
 });
 
-test('兼容多种摘要标签并从正式回复剥离', () => {
-  const tagged = '<thinking_summary>第一段摘要。</thinking_summary>\n正式回复。\n<think>第二段摘要。</think>';
-  assert.equal(extractThinkingText({ content: [{ type: 'text', text: tagged }] }), '第一段摘要。\n第二段摘要。');
+test('兼容 OpenAI choices 中的 reasoning 字段', () => {
+  const result = { choices: [{ message: { content: '正式回复。', reasoning: '我正在权衡两种做法。' } }] };
+  assert.equal(extractThinkingText(result), '我正在权衡两种做法。');
+});
+
+test('兼容多种 thinking 标签并从正式回复剥离', () => {
+  const tagged = '<thinking_summary>第一段思考。</thinking_summary>\n正式回复。\n<think>第二段思考。</think>';
+  assert.equal(extractThinkingText({ content: [{ type: 'text', text: tagged }] }), '第一段思考。\n第二段思考。');
   assert.equal(stripThinkingMarkup(tagged), '正式回复。');
 });
 
