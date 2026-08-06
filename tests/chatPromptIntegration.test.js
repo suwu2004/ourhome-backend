@@ -13,18 +13,25 @@ test('旧的重复人格和 thinking 规则不再常驻注入', () => {
   assert.doesNotMatch(server, /有一点迟疑、心疼、在意/);
 });
 
-test('长度提醒在前，可见思考规则随后进入聊天请求', () => {
+test('每条聊天请求都会带入统一的可见思考规则', () => {
   const matches = server.match(/fullSystemPrompt \+ buildAdaptiveReplyInstruction\(minReplyChars, 'chat'\) \+ \(promptAddition \|\| ''\)/g) || [];
   assert.equal(matches.length, 3);
-  assert.match(server, /【可见的内心独白】/);
   assert.doesNotMatch(server, /除非本轮后续规则明确要求 thinking/);
 });
 
-test('中转兼容层移除旧长篇独白并保留新版简短思考摘要', () => {
+test('运行时不再向上游询问这一轮要不要思考', () => {
+  assert.match(thinkingTransportPatch, /isThinkingDecisionRequest/);
+  assert.match(thinkingTransportPatch, /fixedThinkResponse/);
+  assert.match(thinkingTransportPatch, /text: '想'/);
+  assert.match(thinkingTransportPatch, /每轮都想/);
+});
+
+test('中转兼容层优先原生思考并保留模拟思考兜底', () => {
   assert.match(thinkingTransportPatch, /stripLegacyInnerMonologue/);
   assert.match(thinkingTransportPatch, /【每轮可见思考】/);
   assert.match(thinkingTransportPatch, /sanitizeChatSystem/);
-  assert.match(thinkingTransportPatch, /relay-native-summary-v2/);
+  assert.match(thinkingTransportPatch, /native-first-always-visible-v3/);
+  assert.match(thinkingTransportPatch, /native reasoning enabled/);
 });
 
 test('官方 Anthropic 在需要思考时使用原生 thinking 参数', () => {
