@@ -1,6 +1,6 @@
-const THINKING_BLOCK_TYPES = new Set(['thinking', 'reasoning', 'analysis']);
-const THINKING_FIELD_NAMES = ['reasoning_content', 'reasoning', 'thinking', 'analysis'];
-const MAX_THINKING_CHARS = 24_000;
+const SUMMARY_BLOCK_TYPES = new Set(['thinking_summary', 'reasoning_summary', 'summary']);
+const SUMMARY_FIELD_NAMES = ['thinking_summary', 'reasoning_summary', 'summary_text'];
+const MAX_THINKING_CHARS = 4_000;
 
 function normalizeThinkingText(value) {
   if (value == null) return '';
@@ -16,7 +16,7 @@ function normalizeThinkingText(value) {
     return value.map(normalizeThinkingText).filter(Boolean).join('\n').slice(0, MAX_THINKING_CHARS);
   }
   if (typeof value === 'object') {
-    for (const key of ['thinking', 'reasoning_content', 'reasoning', 'analysis', 'text', 'content']) {
+    for (const key of ['thinking_summary', 'reasoning_summary', 'summary_text', 'summary', 'text', 'content']) {
       const text = normalizeThinkingText(value[key]);
       if (text) return text;
     }
@@ -27,7 +27,7 @@ function normalizeThinkingText(value) {
 function extractTaggedThinking(value) {
   const text = String(value || '');
   const results = [];
-  const pattern = /<(thinking|think|analysis)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  const pattern = /<(thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>([\s\S]*?)<\/\1>/gi;
   for (const match of text.matchAll(pattern)) {
     const candidate = normalizeThinkingText(match[2]);
     if (candidate) results.push(candidate);
@@ -37,8 +37,8 @@ function extractTaggedThinking(value) {
 
 function stripThinkingMarkup(value) {
   return String(value || '')
-    .replace(/<(thinking|think|analysis)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<\/?(?:thinking|think|analysis)\b[^>]*>/gi, '')
+    .replace(/<(thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/?(?:thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>/gi, '')
     .trim();
 }
 
@@ -49,13 +49,15 @@ function extractThinkingText(result = {}) {
     if (text) candidates.push(text);
   };
 
-  for (const field of THINKING_FIELD_NAMES) add(result?.[field]);
-  for (const field of THINKING_FIELD_NAMES) add(result?.message?.[field]);
+  // 只读取明确标记为“摘要”的字段。reasoning_content / thinking / analysis
+  // 可能包含模型的完整内部推理，不作为可见聊天内容保存或展示。
+  for (const field of SUMMARY_FIELD_NAMES) add(result?.[field]);
+  for (const field of SUMMARY_FIELD_NAMES) add(result?.message?.[field]);
 
   const contentBlocks = Array.isArray(result?.content) ? result.content : [];
   for (const block of contentBlocks) {
     const type = String(block?.type || '').toLowerCase();
-    if (THINKING_BLOCK_TYPES.has(type)) add(block);
+    if (SUMMARY_BLOCK_TYPES.has(type)) add(block);
     if (type === 'text') candidates.push(...extractTaggedThinking(block?.text));
   }
 
@@ -65,7 +67,7 @@ function extractThinkingText(result = {}) {
 
   for (const choice of Array.isArray(result?.choices) ? result.choices : []) {
     const message = choice?.message || choice?.delta || {};
-    for (const field of THINKING_FIELD_NAMES) add(message?.[field]);
+    for (const field of SUMMARY_FIELD_NAMES) add(message?.[field]);
     if (typeof message?.content === 'string') candidates.push(...extractTaggedThinking(message.content));
   }
 
