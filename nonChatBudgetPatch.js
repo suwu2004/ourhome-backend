@@ -5,9 +5,9 @@ const { isMainChatRequest } = require('./intimacyFlowSupport');
 const { isLikelyVisionModel } = require('./modelCompatibility');
 
 // Loaded after apiUsageAuditPatch and before backgroundAiCostGuardPatch.
-// Chat keeps the exact model chosen by the user. Toy Bear keeps its own existing
-// budget selector. Every other paid model request is rewritten to the cheapest
-// suitable model exposed by the currently active API profile.
+// Chat and Theater keep the exact model chosen by the user. Toy Bear keeps its
+// own existing budget selector. Every other paid model request is rewritten to
+// the cheapest suitable model exposed by the currently active API profile.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const modelCache = new Map();
@@ -59,6 +59,11 @@ function isModelRequest(url, body) {
 function isToyboxRequest(body) {
   const text = `${systemText(body?.system)}\n${messageText(body?.messages)}`;
   return text.includes('【玩具箱】') || text.includes('【玩具熊】');
+}
+
+function isTheaterRequest(body) {
+  const text = `${systemText(body?.system)}\n${messageText(body?.messages)}`;
+  return /小剧场|互动写作引擎|剧本名/.test(text);
 }
 
 function isVisionReaderRequest(body) {
@@ -185,7 +190,7 @@ function inferPurpose(body) {
   if (/隐藏接续账本|滚动账本/.test(text)) return 'context-ledger';
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
   if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return 'session-summary';
-  if (/小剧场|互动写作引擎|剧本名/.test(text)) return 'theater';
+  if (isTheaterRequest(body)) return 'theater';
   if (/幸福日记|心情日历/.test(text)) return 'daily-writing';
   return 'non-chat-budget';
 }
@@ -211,8 +216,8 @@ if (typeof providerFetch === 'function') {
     try { body = JSON.parse(init.body); } catch { return providerFetch(input, init); }
     if (!isModelRequest(url, body)) return providerFetch(input, init);
 
-    // The only model that follows the user's manual selector is the main Chat.
-    if (isMainChatRequest(url, body) || isToyboxRequest(body)) return providerFetch(input, init);
+    // Interactive Chat, Toy Bear, and Theater keep their own selected model.
+    if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body)) return providerFetch(input, init);
 
     const vision = isVisionReaderRequest(body);
     const model = await cheapestModel({ vision });
@@ -235,7 +240,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function budgetModelHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, non_chat_model_policy: 'cheapest-except-chat-and-toybear-v1' };
+      body = { ...body, non_chat_model_policy: 'cheapest-except-chat-toybear-theater-v2' };
     }
     return originalJson.call(this, body);
   };
@@ -247,6 +252,7 @@ module.exports = {
   budgetScore,
   pickBudgetModel,
   isToyboxRequest,
+  isTheaterRequest,
   isVisionReaderRequest,
   inferPurpose,
 };
