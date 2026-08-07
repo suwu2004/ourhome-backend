@@ -12,11 +12,14 @@ require('./thinkingTransportPatch');
 require('./contextLedgerPatch');
 // Adjust ambiguous intimacy cues before intimacyFlowPatch captures the exports.
 require('./intimacyFlowAutonomyPatch');
+// Remove old response-shaping instructions that conflict with the compact
+// persona-first rules stored in settings. This changes prompt wording only.
+require('./chatPromptCleanupPatch');
 // Keep intimacy last: it becomes the outer transport boundary and sanitizes any
 // hidden control after normal text/thinking/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, thinking, context ledger, autonomy and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, thinking, context ledger, autonomy, persona-first cleanup and intimacy patches loaded');
 
 try {
   const express = require('express');
