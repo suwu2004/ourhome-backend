@@ -118,7 +118,7 @@ test('climax schedules one review and review ends without explicit continue', ()
   assert.equal(nextGuide(cfg, null, review, 's3', 1200), null);
 });
 
-test('review continue starts a new process cycle and clears fixed draws', () => {
+test('review continue starts a new process cycle and rebuilds cycle draws', () => {
   const cfg = config();
   const review = buildGuide(cfg, {
     active: true, stage: 'review', cycle: 1, stageTurn: 1,
@@ -130,7 +130,7 @@ test('review continue starts a new process cycle and clears fixed draws', () => 
   assert.equal(next.flow.cycle, 2);
   assert.equal(next.flow.stageTurn, 1);
   assert.ok(next.flow.fixedDraws.length >= 1);
-  assert.notDeepEqual(next.flow.fixedDraws, review.flow.fixedDraws);
+  assert.equal(next.flow.fixedDraws.every(item => item.drawMode === 'cycle'), true);
 });
 
 test('stop cancels from any active stage', () => {
