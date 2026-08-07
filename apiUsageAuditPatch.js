@@ -4,6 +4,9 @@ const crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const express = require('express');
 
+// Loaded after thinkingTransportPatch, so this function is the finalized outbound
+// transport. It may answer tiny local compatibility probes without touching the
+// paid provider; those local probes are explicitly excluded from the audit below.
 const upstreamFetch = globalThis.fetch;
 const requestContext = new AsyncLocalStorage();
 const PROFILE_CACHE_MS = 60_000;
@@ -26,6 +29,26 @@ function isModelRequest(url, body) {
   const parsed = safeUrl(url);
   if (!parsed) return false;
   return /\/(?:messages|chat\/completions|responses)\/?$/i.test(parsed.pathname);
+}
+
+function messageText(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map(message => {
+      if (typeof message?.content === 'string') return message.content;
+      if (!Array.isArray(message?.content)) return '';
+      return message.content
+        .map(block => typeof block === 'string' ? block : block?.text || '')
+        .filter(Boolean)
+        .join('\n');
+    })
+    .join('\n');
+}
+
+function isLocalThinkingDecision(body) {
+  const text = messageText(body?.messages);
+  return Number(body?.max_tokens || 0) <= 20
+    && text.includes('只回答一个词')
+    && text.includes('想 或者 不想');
 }
 
 function protocolFor(url) {
@@ -131,8 +154,13 @@ if (typeof upstreamFetch === 'function') {
     }
     if (!isModelRequest(url, body)) return upstreamFetch(input, init);
 
+    // thinkingTransportPatch resolves this tiny compatibility probe locally. It is
+    // deliberately not a paid provider call and must never inflate the usage log.
+    if (isLocalThinkingDecision(body)) return upstreamFetch(input, init);
+
     const context = auditContext();
-    const started = Date.now();
+    const startedAt = new Date();
+    const startedMs = startedAt.getTime();
     const parsedUrl = safeUrl(url);
     const profilePromise = resolveProfile(url);
     let response;
@@ -153,6 +181,7 @@ if (typeof upstreamFetch === 'function') {
       thrown = error;
       throw error;
     } finally {
+      const finishedAt = new Date();
       const profile = await profilePromise.catch(() => ({ id: null, name: null }));
       const usage = usageFrom(payload);
       const status = response?.ok ? 'success' : 'error';
@@ -178,7 +207,9 @@ if (typeof upstreamFetch === 'function') {
         output_tokens: usage.outputTokens,
         request_chars: typeof init?.body === 'string' ? init.body.length : null,
         response_chars: rawText ? rawText.length : null,
-        duration_ms: Date.now() - started,
+        duration_ms: finishedAt.getTime() - startedMs,
+        started_at: startedAt.toISOString(),
+        finished_at: finishedAt.toISOString(),
         provider_response_id: payload?.id ? String(payload.id).slice(0, 240) : null,
         error_detail: errorDetail,
       };
@@ -239,7 +270,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function apiAuditMarker(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, api_usage_audit: 'provider-call-audit-v1' };
+      body = { ...body, api_usage_audit: 'provider-call-audit-v2' };
     }
     return originalJson.call(this, body);
   };
