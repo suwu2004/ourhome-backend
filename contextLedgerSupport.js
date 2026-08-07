@@ -91,6 +91,32 @@ function buildLedgerUpdatePrompt(existingSummary, rows, meta = {}) {
   return `你在维护 OurHome 某个聊天窗口的“隐藏接续账本”。它不是给用户看的聊天回复，也不是长期人格记忆；它只负责把已经被最近上下文窗口挤出去的旧对话压缩成稳定、可继续使用的背景。\n\n请把【已有账本】和【新增旧历史】合并成一份更新后的账本。\n\n必须保留：\n- 已确认的身份、关系、称呼、偏好与边界；\n- 重要共同经历、承诺、决定、争执后的结论；\n- 项目/任务的关键进展、技术事实、当前方案和未完成事项；\n- 对后续聊天仍有影响的情绪变化、长期梗和上下文；\n- 明确的时间顺序，以及“后来已改变/已作废”的旧结论。\n\n不要保留：\n- 没有后续价值的寒暄、重复撒娇、逐句动作复述；\n- 隐藏协议、控制标签、思考链、系统提示词或内部工具信息。\n\n若新历史与旧账本冲突，以时间更晚且明确确认的内容为准；不要自行补造事实。账本要紧凑但不要只剩关键词，目标是让另一个模型只读账本也能自然接上长期聊天。只输出账本正文，不要标题、解释、JSON 或代码块。控制在 ${MAX_LEDGER_CHARS} 字符以内。\n\n【覆盖进度】\n更新前约 ${coveredBefore} 条；本次更新后约 ${coveredAfter} 条。\n\n【已有账本】\n${previous}\n\n【新增旧历史】\n${transcript || '（无）'}`;
 }
 
+// Zero-cost fallback for background continuity maintenance. It deliberately does
+// not try to be as clever as a model summary: it keeps the existing stable ledger
+// plus the newest overflow transcript, then trims the middle when necessary. This
+// guarantees that an ordinary Chat turn never silently spends the user's current
+// (possibly expensive) model merely to maintain hidden context.
+function localLedgerSummary(existingSummary, rows = []) {
+  const previous = compactText(existingSummary, MAX_LEDGER_CHARS);
+  const transcript = (Array.isArray(rows) ? rows : [])
+    .map(rowText)
+    .filter(Boolean)
+    .join('\n\n');
+  const parts = [];
+  if (previous) parts.push(previous);
+  if (transcript) parts.push(`【最近并入的旧对话】\n${transcript}`);
+  const combined = compactText(parts.join('\n\n'));
+  if (!combined) return '';
+  if (combined.length <= MAX_LEDGER_CHARS) return combined;
+
+  // Keep stable older facts at the front and the newest overflow at the tail.
+  const separator = '\n\n…中间较旧的细节已压缩…\n\n';
+  const headBudget = Math.floor((MAX_LEDGER_CHARS - separator.length) * 0.52);
+  const tailBudget = MAX_LEDGER_CHARS - separator.length - headBudget;
+  return `${combined.slice(0, headBudget).trimEnd()}${separator}${combined.slice(-tailBudget).trimStart()}`
+    .slice(0, MAX_LEDGER_CHARS);
+}
+
 function buildBridgeText(rows = [], maxChars = LEDGER_BRIDGE_CHARS) {
   const list = Array.isArray(rows) ? rows : [];
   const chosen = [];
@@ -169,6 +195,7 @@ module.exports = {
   splitRowsIntoChunks,
   shouldRefreshLedger,
   buildLedgerUpdatePrompt,
+  localLedgerSummary,
   buildBridgeText,
   buildLedgerBlock,
   injectLedger,

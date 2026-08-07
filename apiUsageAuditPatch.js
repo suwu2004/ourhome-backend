@@ -51,6 +51,15 @@ function isLocalThinkingDecision(body) {
     && text.includes('想 或者 不想');
 }
 
+function callPurpose(init = {}) {
+  try {
+    const headers = new Headers(init?.headers || undefined);
+    return String(headers.get('X-OurHome-Call-Purpose') || '').trim().slice(0, 80) || null;
+  } catch {
+    return null;
+  }
+}
+
 function protocolFor(url) {
   const path = safeUrl(url)?.pathname || '';
   if (/\/messages\/?$/i.test(path)) return 'anthropic';
@@ -159,6 +168,7 @@ if (typeof upstreamFetch === 'function') {
     if (isLocalThinkingDecision(body)) return upstreamFetch(input, init);
 
     const context = auditContext();
+    const purpose = callPurpose(init);
     const startedAt = new Date();
     const startedMs = startedAt.getTime();
     const parsedUrl = safeUrl(url);
@@ -194,6 +204,7 @@ if (typeof upstreamFetch === 'function') {
         request_id: context.requestId,
         call_index: context.callIndex,
         source: context.source,
+        purpose,
         session_id: context.sessionId,
         api_profile_id: profile.id,
         api_profile_name: profile.name,
@@ -214,7 +225,7 @@ if (typeof upstreamFetch === 'function') {
         error_detail: errorDetail,
       };
       persistLog(row).catch(() => {});
-      console.log(`[api-audit] ${row.request_id} #${row.call_index} ${row.source} ${profile.name || row.api_origin || ''} model=${row.model} status=${row.http_status || 'ERR'} in=${row.input_tokens ?? '?'} out=${row.output_tokens ?? '?'} ${row.duration_ms}ms`);
+      console.log(`[api-audit] ${row.request_id} #${row.call_index} ${row.source} purpose=${row.purpose || 'direct'} ${profile.name || row.api_origin || ''} model=${row.model} status=${row.http_status || 'ERR'} in=${row.input_tokens ?? '?'} out=${row.output_tokens ?? '?'} ${row.duration_ms}ms`);
     }
   };
 }
@@ -270,7 +281,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function apiAuditMarker(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, api_usage_audit: 'provider-call-audit-v2' };
+      body = { ...body, api_usage_audit: 'provider-call-audit-v3-purpose' };
     }
     return originalJson.call(this, body);
   };

@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   LEDGER_REFRESH_MESSAGE_DELTA,
@@ -8,9 +10,12 @@ const {
   splitRowsIntoChunks,
   shouldRefreshLedger,
   buildLedgerUpdatePrompt,
+  localLedgerSummary,
   buildLedgerBlock,
   normalizeLedgerSummary,
 } = require('../contextLedgerSupport');
+
+const patchSource = fs.readFileSync(path.resolve(__dirname, '..', 'contextLedgerPatch.js'), 'utf8');
 
 function row(id, role = 'user', content = `消息 ${id}`) {
   return { id, role, content, attachment_summary: null };
@@ -51,6 +56,25 @@ test('更新提示保留旧账本与新增旧历史，但隐藏控制不会进�
   assert.match(prompt, /旧事实/);
   assert.match(prompt, /陆泽：正文/);
   assert.doesNotMatch(prompt, /intimacy_control/);
+});
+
+test('本地账本整理不调用模型也能保留旧摘要和最新溢出对话', () => {
+  const summary = localLedgerSummary('已有稳定事实', [
+    row(101, 'user', '新的旧消息 A'),
+    row(102, 'assistant', '新的旧消息 B'),
+  ]);
+  assert.match(summary, /已有稳定事实/);
+  assert.match(summary, /新的旧消息 A/);
+  assert.match(summary, /新的旧消息 B/);
+  assert.ok(summary.length <= 6000);
+});
+
+test('隐藏账本默认绝不继承当前 Chat 模型，付费模式也一轮最多一次', () => {
+  assert.match(patchSource, /process\.env\.CONTEXT_LEDGER_MODEL/);
+  assert.doesNotMatch(patchSource, /CONTEXT_LEDGER_MODEL\s*\|\|\s*mainBody/);
+  assert.match(patchSource, /PAID_LEDGER_MAX_CHUNKS_PER_TURN\s*=\s*1/);
+  assert.match(patchSource, /X-OurHome-Call-Purpose[^\n]*context-ledger/);
+  assert.match(patchSource, /rolling-local-first-v2/);
 });
 
 test('注入块包含滚动账本和紧邻最近窗口的桥接旧消息', () => {
