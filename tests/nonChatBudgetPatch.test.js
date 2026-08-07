@@ -5,9 +5,15 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'nonChatBudgetPatch.js'), 'utf8');
 
-test('main Chat and Toy Bear are exempt from the global non-Chat budget rewrite', () => {
-  assert.match(source, /isMainChatRequest\(url, body\) \|\| isToyboxRequest\(body\)/);
-  assert.match(source, /The only model that follows the user's manual selector is the main Chat/);
+test('main Chat, Toy Bear, and Theater are exempt from the global non-Chat budget rewrite', () => {
+  assert.match(source, /isMainChatRequest\(url, body\) \|\| isToyboxRequest\(body\) \|\| isTheaterRequest\(body\)/);
+  assert.match(source, /Interactive Chat, Toy Bear, and Theater keep their own selected model/);
+});
+
+test('Theater requests are recognized as interactive model-controlled calls', () => {
+  assert.match(source, /function isTheaterRequest\(body\)/);
+  assert.match(source, /小剧场\|互动写作引擎\|剧本名/);
+  assert.match(source, /if \(isTheaterRequest\(body\)\) return 'theater'/);
 });
 
 test('budget selector prefers explicit cheap hints and low-cost model families', () => {
@@ -32,5 +38,5 @@ test('non-Chat work is blocked rather than silently falling back to an expensive
 test('rewritten non-Chat calls are purpose-labelled for the API audit log', () => {
   assert.match(source, /X-OurHome-Call-Purpose/);
   assert.match(source, /non_chat_model_policy/);
-  assert.match(source, /cheapest-except-chat-and-toybear-v1/);
+  assert.match(source, /cheapest-except-chat-toybear-theater-v2/);
 });
