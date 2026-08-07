@@ -8,7 +8,8 @@ const bootstrap = fs.readFileSync(path.resolve(__dirname, '..', 'runtimeBootstra
 
 test('runtime bootstrap loads toybox routes', () => {
   assert.match(bootstrap, /require\('\.\/toyboxRoutePatch'\);/);
-  assert.match(bootstrap, /toybox: 'interactive-budget-v2'/);
+  assert.match(bootstrap, /require\('\.\/toyboxSocialRoutePatch'\);/);
+  assert.match(bootstrap, /toybox: 'shared-play-v3'/);
 });
 
 test('toybox exposes the four interactive game endpoints', () => {
