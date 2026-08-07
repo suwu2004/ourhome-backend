@@ -1,22 +1,10 @@
-// Preload compatibility layer for OurHome chat thinking.
-// Chat reply style rules stay minimal; visible thinking is handled separately here.
-// Native reasoning is preferred. When an upstream provider returns no reasoning and
-// ignores the requested <thinking> block, a local deterministic fallback keeps the
-// “想了想” area present WITHOUT making a second paid model request.
+'use strict';
 
-const { extractThinkingText } = require('./thinkingSupport');
-const {
-  deterministicFallbackThought,
-  injectReasoningContent,
-} = require('./visibleThinkingFallback');
-
+// OurHome Chat now treats visible reasoning as optional provider metadata.
+// We never ask the provider for an extra visible chain, never synthesize one,
+// and never force extended-thinking parameters. If the selected model/provider
+// naturally returns reasoning/thinking, server.js will still extract and save it.
 const originalFetch = globalThis.fetch;
-
-const VISIBLE_THINKING_PROTOCOL = `【可见思考协议】
-每一轮聊天都要保留可见思考，不再判断这一轮是否需要思考。
-如果接口单独返回 reasoning、reasoning_content、thinking 或 analysis 等原生思考字段，系统会优先读取并展示原生内容。
-如果接口没有返回原生思考字段，请在正式回复之前输出一个完整的 <thinking> 与 </thinking> 标签块，写下自然、连续的可见思考。简单问候或直白话题可以很短；复杂问题可以自然展开。
-不要把正式回复复制进 thinking，不要为了长度机械重复。结束 </thinking> 后另起一段给出正式回复。`;
 
 function systemText(system) {
   if (typeof system === 'string') return system;
@@ -40,34 +28,24 @@ function messageText(messages) {
     .join('\n');
 }
 
-function stripLegacyInnerMonologue(value) {
+function stripLegacyThinkingInstruction(value) {
   return String(value || '')
     .replace(/\n*【可见的内心独白】[\s\S]*$/u, '')
     .replace(/\n*【每轮可见思考】[\s\S]*$/u, '')
+    .replace(/\n*【可见思考协议】[\s\S]*$/u, '')
     .trimEnd();
 }
 
 function sanitizeChatSystem(system) {
-  if (typeof system === 'string') return stripLegacyInnerMonologue(system);
+  if (typeof system === 'string') return stripLegacyThinkingInstruction(system);
   if (!Array.isArray(system)) return system;
   return system.map(block => {
-    if (typeof block === 'string') return stripLegacyInnerMonologue(block);
+    if (typeof block === 'string') return stripLegacyThinkingInstruction(block);
     if (!block || typeof block !== 'object') return block;
-    if (typeof block.text === 'string') return { ...block, text: stripLegacyInnerMonologue(block.text) };
-    if (typeof block.content === 'string') return { ...block, content: stripLegacyInnerMonologue(block.content) };
+    if (typeof block.text === 'string') return { ...block, text: stripLegacyThinkingInstruction(block.text) };
+    if (typeof block.content === 'string') return { ...block, content: stripLegacyThinkingInstruction(block.content) };
     return block;
   });
-}
-
-function appendVisibleThinkingProtocol(system) {
-  if (systemText(system).includes('【可见思考协议】')) return system;
-  if (typeof system === 'string') {
-    return `${system.trimEnd()}\n\n${VISIBLE_THINKING_PROTOCOL}`;
-  }
-  if (Array.isArray(system)) {
-    return [...system, { type: 'text', text: VISIBLE_THINKING_PROTOCOL }];
-  }
-  return VISIBLE_THINKING_PROTOCOL;
 }
 
 function isMainChatRequest(url, body) {
@@ -85,117 +63,72 @@ function isThinkingDecisionRequest(url, body) {
     && text.includes('想 或者 不想');
 }
 
-function shouldEnableNativeThinking(body) {
-  const model = String(body?.model || '').toLowerCase();
-  return model.includes('claude') && model.includes('thinking');
-}
-
-function fixedThinkResponse() {
+function fixedNoThinkResponse() {
   return new Response(JSON.stringify({
-    id: 'ourhome-always-think',
+    id: 'ourhome-no-forced-thinking',
     type: 'message',
     role: 'assistant',
-    content: [{ type: 'text', text: '想' }],
+    content: [{ type: 'text', text: '不想' }],
     stop_reason: 'end_turn',
+    usage: { input_tokens: 0, output_tokens: 0 },
   }), {
     status: 200,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-OurHome-Local-Response': 'thinking-decision',
+    },
   });
-}
-
-function jsonResponseLike(response, payload) {
-  const headers = new Headers(response.headers || undefined);
-  headers.set('content-type', 'application/json; charset=utf-8');
-  headers.delete('content-length');
-  headers.delete('content-encoding');
-  headers.delete('transfer-encoding');
-  return new Response(JSON.stringify(payload), {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-async function guaranteeVisibleThinking(response, mainBody) {
-  if (!response?.ok || !mainBody) return response;
-
-  let payload;
-  try {
-    payload = await response.clone().json();
-  } catch (error) {
-    console.warn('[thinking:fallback] primary response is not JSON:', error.message);
-    return response;
-  }
-
-  const nativeOrTaggedThinking = extractThinkingText(payload);
-  if (nativeOrTaggedThinking) return response;
-
-  // Cost guard: never call the paid provider again just to fill the visible-thinking UI.
-  // The main reply has already been generated; a local deterministic line is enough.
-  const fallbackThought = deterministicFallbackThought(mainBody.messages);
-  console.log(`[thinking:fallback-local] injected visible thought chars=${fallbackThought.length} model=${mainBody.model || ''}`);
-  return jsonResponseLike(response, injectReasoningContent(payload, fallbackThought));
 }
 
 if (typeof originalFetch === 'function') {
-  globalThis.fetch = async function patchedFetch(input, init = {}) {
+  globalThis.fetch = async function nativeThinkingOnlyFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
-    let mainBody = null;
 
-    if (typeof init?.body === 'string') {
-      try {
-        const body = JSON.parse(init.body);
+    if (typeof init?.body !== 'string') return originalFetch(input, init);
 
-        // server.js 旧代码仍保留一次“想/不想”判断。这里直接固定为“想”，
-        // 不再请求上游，也不再让某一轮因为判断结果而没有思考。
-        if (isThinkingDecisionRequest(url, body)) {
-          return fixedThinkResponse();
-        }
+    try {
+      const body = JSON.parse(init.body);
 
-        if (isMainChatRequest(url, body)) {
-          // 回复风格提示词保持精简；思考输出协议由独立兼容层追加。
-          body.system = appendVisibleThinkingProtocol(sanitizeChatSystem(body.system));
-          mainBody = body;
+      // Old server code still asks a tiny "think or not" question for some models.
+      // Resolve it locally as "no" so it can never become a paid provider call.
+      if (isThinkingDecisionRequest(url, body)) return fixedNoThinkResponse();
 
-          const headers = new Headers(init.headers || undefined);
-          if (shouldEnableNativeThinking(body)) {
-            const maxTokens = Number(body.max_tokens) || 0;
-            const safeBudget = Math.max(1024, Math.min(6000, maxTokens > 1400 ? maxTokens - 800 : 1024));
-            body.thinking = { type: 'enabled', budget_tokens: safeBudget };
-            body.temperature = 1;
-            headers.set('anthropic-beta', 'interleaved-thinking-2025-05-14');
-            console.log(`[thinking:relay] native reasoning enabled model=${body.model} budget=${safeBudget}`);
-          }
-
-          init = {
-            ...init,
-            headers,
-            body: JSON.stringify(body),
-          };
-        }
-      } catch (error) {
-        console.warn('[thinking:relay] request patch skipped:', error.message);
+      if (isMainChatRequest(url, body)) {
+        // Remove every legacy mechanism that forced visible thinking. We intentionally
+        // leave provider responses untouched: native reasoning, when present, survives.
+        const headers = new Headers(init.headers || undefined);
+        headers.delete('anthropic-beta');
+        delete body.thinking;
+        body.system = sanitizeChatSystem(body.system);
+        return originalFetch(input, {
+          ...init,
+          headers,
+          body: JSON.stringify(body),
+        });
       }
+    } catch (error) {
+      console.warn('[thinking:native-only] request patch skipped:', error.message);
     }
 
-    const response = await originalFetch(input, init);
-    return guaranteeVisibleThinking(response, mainBody);
+    return originalFetch(input, init);
   };
 }
 
-// Public marker for confirming which thinking transport is live on Render.
 try {
   const express = require('express');
   const originalJson = express.response.json;
-  express.response.json = function patchedJson(body) {
+  express.response.json = function nativeThinkingHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = {
-        ...body,
-        thinking_transport: 'guaranteed-visible-thinking-v6-local-fallback',
-      };
+      body = { ...body, thinking_transport: 'native-only-thinking-v7' };
     }
     return originalJson.call(this, body);
   };
 } catch (error) {
-  console.warn('[thinking:relay] health marker unavailable:', error.message);
+  console.warn('[thinking:native-only] health marker unavailable:', error.message);
 }
+
+module.exports = {
+  isMainChatRequest,
+  isThinkingDecisionRequest,
+  sanitizeChatSystem,
+};
