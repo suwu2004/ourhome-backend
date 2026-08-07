@@ -36,6 +36,6 @@ test('local thinking decision probes are not counted as paid provider calls', ()
   assert.match(audit, /if \(isLocalThinkingDecision\(body\)\) return upstreamFetch\(input, init\)/);
 });
 
-test('audit patch loads after thinking transport so it sees final provider calls', () => {
-  assert.match(pkg, /thinkingTransportPatch\.js -r \.\/apiUsageAuditPatch\.js server\.js/);
+test('audit patch loads after thinking transport and before the background cost guard', () => {
+  assert.match(pkg, /thinkingTransportPatch\.js -r \.\/apiUsageAuditPatch\.js -r \.\/backgroundAiCostGuardPatch\.js server\.js/);
 });
