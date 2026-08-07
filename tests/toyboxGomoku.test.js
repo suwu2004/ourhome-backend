@@ -17,3 +17,10 @@ test('LuZe Gomoku invitations begin with a persisted center black move', () => {
   assert.match(assistant, /luze_color: 'black'/);
   assert.match(assistant, /turn: 'user'/);
 });
+
+test('main Chat knows Toy Bear and its old aliases are the same room', () => {
+  assert.match(assistant, /OurHome「玩具熊」/);
+  assert.match(assistant, /旧名字“玩具箱”/);
+  assert.match(assistant, /“工具熊”都指同一个房间/);
+  assert.match(assistant, /aliases: \['玩具箱', '工具熊', 'toybox'\]/);
+});
