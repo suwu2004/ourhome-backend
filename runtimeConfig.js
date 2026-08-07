@@ -3,12 +3,14 @@ require('./runtimeBootstrap');
 const { createReadingAssistant } = require('./readingAssistant');
 const { createReadingNoteAssistant } = require('./readingNotes');
 const { createReadingToolSafety } = require('./readingToolSafety');
+const { createToyboxAssistant } = require('./toyboxAssistant');
 
 function createRuntimeConfig(supabase) {
   const missingRelation = error => ['42P01', 'PGRST205', 'PGRST202'].includes(error?.code);
   const unwrap = data => Array.isArray(data) ? (data[0] || null) : data;
   const readingAssistant = createReadingAssistant({ supabase });
   const readingNoteAssistant = createReadingNoteAssistant({ supabase });
+  const toyboxAssistant = createToyboxAssistant({ supabase });
 
   async function getBaseSettings() {
     const { data, error } = await supabase.from('settings').select('*').eq('session_id', 'global').single();
@@ -232,9 +234,10 @@ function createRuntimeConfig(supabase) {
       bridge: readingAssistant.getToolBridge(),
     });
     const noteBridge = readingNoteAssistant.getToolBridge();
+    const toyboxBridge = toyboxAssistant.getToolBridge();
     return {
-      tools: [...safeReading.tools, ...noteBridge.tools],
-      handlers: new Map([...safeReading.handlers, ...noteBridge.handlers]),
+      tools: [...safeReading.tools, ...noteBridge.tools, ...toyboxBridge.tools],
+      handlers: new Map([...safeReading.handlers, ...noteBridge.handlers, ...toyboxBridge.handlers]),
     };
   }
 
