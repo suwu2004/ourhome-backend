@@ -35,13 +35,14 @@ test('思考协议独立于回复风格提示词并继续优先原生思考', ()
   assert.match(thinkingTransportPatch, /native reasoning enabled/);
 });
 
-test('上游没有 reasoning 时会进行第二次可见思考生成并注入响应', () => {
+test('上游没有 reasoning 时只用本地兜底，不再产生第二次付费调用', () => {
   assert.match(thinkingTransportPatch, /guaranteeVisibleThinking/);
-  assert.match(thinkingTransportPatch, /buildFallbackRequestBody/);
+  assert.doesNotMatch(thinkingTransportPatch, /buildFallbackRequestBody/);
+  assert.doesNotMatch(thinkingTransportPatch, /fallbackResponse\s*=\s*await\s+originalFetch/);
   assert.match(thinkingTransportPatch, /injectReasoningContent/);
   assert.match(thinkingTransportPatch, /deterministicFallbackThought/);
-  assert.match(thinkingTransportPatch, /thinking:fallback/);
-  assert.match(thinkingTransportPatch, /guaranteed-visible-thinking-v5/);
+  assert.match(thinkingTransportPatch, /thinking:fallback-local/);
+  assert.match(thinkingTransportPatch, /guaranteed-visible-thinking-v6-local-fallback/);
 });
 
 test('官方 Anthropic 在需要思考时使用原生 thinking 参数', () => {

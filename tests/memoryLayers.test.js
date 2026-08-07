@@ -62,9 +62,9 @@ test('迁移保留旧记忆并提供提炼、过期和审计机制', () => {
   assert.doesNotMatch(migration, /delete\s+from\s+public\.memory_marks/i);
 });
 
-test('生产启动时先加载记忆分层，再加载 token 与思考兼容层', () => {
+test('生产启动时先加载记忆分层、token、思考，再加载调用审计', () => {
   assert.equal(
     packageJson.scripts.start,
-    'node -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js server.js',
+    'node -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js server.js',
   );
 });

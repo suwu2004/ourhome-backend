@@ -1,14 +1,11 @@
 // Preload compatibility layer for OurHome chat thinking.
 // Chat reply style rules stay minimal; visible thinking is handled separately here.
 // Native reasoning is preferred. When an upstream provider returns no reasoning and
-// ignores the requested <thinking> block, a second lightweight model call creates
-// the visible thought so the “想了想” area is never empty.
+// ignores the requested <thinking> block, a local deterministic fallback keeps the
+// “想了想” area present WITHOUT making a second paid model request.
 
 const { extractThinkingText } = require('./thinkingSupport');
 const {
-  extractResponseText,
-  normalizeVisibleThought,
-  buildFallbackRequestBody,
   deterministicFallbackThought,
   injectReasoningContent,
 } = require('./visibleThinkingFallback');
@@ -119,7 +116,7 @@ function jsonResponseLike(response, payload) {
   });
 }
 
-async function guaranteeVisibleThinking(response, url, init, mainBody) {
+async function guaranteeVisibleThinking(response, mainBody) {
   if (!response?.ok || !mainBody) return response;
 
   let payload;
@@ -133,38 +130,10 @@ async function guaranteeVisibleThinking(response, url, init, mainBody) {
   const nativeOrTaggedThinking = extractThinkingText(payload);
   if (nativeOrTaggedThinking) return response;
 
-  const replyText = extractResponseText(payload);
-  let fallbackThought = '';
-
-  try {
-    const fallbackBody = buildFallbackRequestBody(mainBody, replyText);
-    const headers = new Headers(init?.headers || undefined);
-    headers.delete('content-length');
-    headers.delete('anthropic-beta');
-
-    const fallbackResponse = await originalFetch(url, {
-      ...init,
-      headers,
-      body: JSON.stringify(fallbackBody),
-    });
-
-    if (fallbackResponse.ok) {
-      const fallbackPayload = await fallbackResponse.json();
-      fallbackThought = normalizeVisibleThought(
-        extractResponseText(fallbackPayload) || extractThinkingText(fallbackPayload),
-      );
-    } else {
-      console.warn(`[thinking:fallback] visible thought request failed status=${fallbackResponse.status}`);
-    }
-  } catch (error) {
-    console.warn('[thinking:fallback] visible thought request failed:', error.message);
-  }
-
-  if (!fallbackThought) {
-    fallbackThought = deterministicFallbackThought(mainBody.messages);
-  }
-
-  console.log(`[thinking:fallback] injected visible thought chars=${fallbackThought.length} model=${mainBody.model || ''}`);
+  // Cost guard: never call the paid provider again just to fill the visible-thinking UI.
+  // The main reply has already been generated; a local deterministic line is enough.
+  const fallbackThought = deterministicFallbackThought(mainBody.messages);
+  console.log(`[thinking:fallback-local] injected visible thought chars=${fallbackThought.length} model=${mainBody.model || ''}`);
   return jsonResponseLike(response, injectReasoningContent(payload, fallbackThought));
 }
 
@@ -210,7 +179,7 @@ if (typeof originalFetch === 'function') {
     }
 
     const response = await originalFetch(input, init);
-    return guaranteeVisibleThinking(response, url, init, mainBody);
+    return guaranteeVisibleThinking(response, mainBody);
   };
 }
 
@@ -222,7 +191,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        thinking_transport: 'guaranteed-visible-thinking-v5',
+        thinking_transport: 'guaranteed-visible-thinking-v6-local-fallback',
       };
     }
     return originalJson.call(this, body);
