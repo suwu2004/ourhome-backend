@@ -33,7 +33,7 @@ test('shared Toybox history routes are registered', () => {
 });
 
 test('Toybox history supports both participants and completion state', () => {
-  assert.match(assistant, /initiator in/);
+  assert.match(assistant, /initiator === 'luze'/);
   assert.match(assistant, /completed/);
   assert.match(assistant, /toybox_events/);
 });
