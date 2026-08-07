@@ -19,34 +19,35 @@ test('每条聊天请求都会带入精简后的统一回复规则', () => {
   assert.doesNotMatch(server, /除非本轮后续规则明确要求 thinking/);
 });
 
-test('运行时不再向上游询问这一轮要不要思考', () => {
+test('旧的想不想判断只在本地返回不想，不再向上游发请求', () => {
   assert.match(thinkingTransportPatch, /isThinkingDecisionRequest/);
-  assert.match(thinkingTransportPatch, /fixedThinkResponse/);
-  assert.match(thinkingTransportPatch, /text: '想'/);
-  assert.match(thinkingTransportPatch, /不再请求上游/);
-  assert.match(thinkingTransportPatch, /return fixedThinkResponse\(\)/);
+  assert.match(thinkingTransportPatch, /fixedNoThinkResponse/);
+  assert.match(thinkingTransportPatch, /text: '不想'/);
+  assert.match(thinkingTransportPatch, /zero-cost|0 次|never become a paid provider call/i);
+  assert.match(thinkingTransportPatch, /return fixedNoThinkResponse\(\)/);
 });
 
-test('思考协议独立于回复风格提示词并继续优先原生思考', () => {
-  assert.match(thinkingTransportPatch, /VISIBLE_THINKING_PROTOCOL/);
-  assert.match(thinkingTransportPatch, /【可见思考协议】/);
-  assert.match(thinkingTransportPatch, /appendVisibleThinkingProtocol/);
-  assert.match(thinkingTransportPatch, /【OurHome 房间与入口认知（事实规则）】/);
-  assert.match(thinkingTransportPatch, /native reasoning enabled/);
+test('Chat 不再注入可见思考协议，只保留上游自然返回的 reasoning', () => {
+  assert.doesNotMatch(thinkingTransportPatch, /VISIBLE_THINKING_PROTOCOL/);
+  assert.doesNotMatch(thinkingTransportPatch, /appendVisibleThinkingProtocol/);
+  assert.match(thinkingTransportPatch, /stripLegacyThinkingInstruction/);
+  assert.match(thinkingTransportPatch, /delete body\.thinking/);
+  assert.match(thinkingTransportPatch, /headers\.delete\('anthropic-beta'\)/);
+  assert.match(thinkingTransportPatch, /native reasoning, when present, survives/);
 });
 
-test('上游没有 reasoning 时只用本地兜底，不再产生第二次付费调用', () => {
-  assert.match(thinkingTransportPatch, /guaranteeVisibleThinking/);
+test('上游没有 reasoning 时就不显示想一想，不再本地伪造思考', () => {
+  assert.doesNotMatch(thinkingTransportPatch, /guaranteeVisibleThinking/);
   assert.doesNotMatch(thinkingTransportPatch, /buildFallbackRequestBody/);
   assert.doesNotMatch(thinkingTransportPatch, /fallbackResponse\s*=\s*await\s+originalFetch/);
-  assert.match(thinkingTransportPatch, /injectReasoningContent/);
-  assert.match(thinkingTransportPatch, /deterministicFallbackThought/);
-  assert.match(thinkingTransportPatch, /thinking:fallback-local/);
-  assert.match(thinkingTransportPatch, /guaranteed-visible-thinking-v6-local-fallback/);
+  assert.doesNotMatch(thinkingTransportPatch, /injectReasoningContent/);
+  assert.doesNotMatch(thinkingTransportPatch, /deterministicFallbackThought/);
+  assert.match(thinkingTransportPatch, /native-only-thinking-v7/);
 });
 
-test('官方 Anthropic 在需要思考时使用原生 thinking 参数', () => {
+test('server 仍兼容官方 Anthropic thinking，但生产传输层会按当前规则移除强制参数', () => {
   assert.match(server, /if \(isOfficialAnthropicApi\(settings\)\) \{/);
+  assert.match(thinkingTransportPatch, /delete body\.thinking/);
 });
 
 test('不同中转站的 thinking 返回格式会统一提取', () => {
