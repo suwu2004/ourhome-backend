@@ -4,11 +4,12 @@
 // `node -r ...` preload flags from package.json. Loading the patches from a
 // module imported by server.js makes both startup paths behave the same.
 // Node's module cache prevents double installation when npm start is used.
+require('./theaterMemoryPatch');
 require('./memoryLayerPatch');
 require('./modelTokenLimitPatch');
 require('./thinkingTransportPatch');
 
-console.log('[runtime:bootstrap] memory, token and thinking patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token and thinking patches loaded');
 
 try {
   const express = require('express');
