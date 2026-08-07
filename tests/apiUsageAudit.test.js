@@ -14,8 +14,10 @@ test('visible-thinking fallback never makes a second paid provider request', () 
   assert.match(thinking, /guaranteed-visible-thinking-v6-local-fallback/);
 });
 
-test('provider API calls are audited with request IDs, tokens, status and precise timing', () => {
+test('provider API calls are audited with request IDs, tokens, status, purpose and precise timing', () => {
   assert.match(audit, /x-ourhome-request-id/i);
+  assert.match(audit, /X-OurHome-Call-Purpose/);
+  assert.match(audit, /purpose/);
   assert.match(audit, /api_profile_name/);
   assert.match(audit, /input_tokens/);
   assert.match(audit, /output_tokens/);
@@ -24,7 +26,7 @@ test('provider API calls are audited with request IDs, tokens, status and precis
   assert.match(audit, /finished_at/);
   assert.match(audit, /http_status/);
   assert.match(audit, /\/api-usage\/logs/);
-  assert.match(audit, /provider-call-audit-v2/);
+  assert.match(audit, /provider-call-audit-v3-purpose/);
 });
 
 test('local thinking decision probes are not counted as paid provider calls', () => {
