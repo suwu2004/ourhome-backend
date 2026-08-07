@@ -1,6 +1,6 @@
 'use strict';
 
-const VALID_GAMES = new Set(['harmony', 'drawing', 'secret']);
+const VALID_GAMES = new Set(['harmony', 'drawing', 'secret', 'gomoku']);
 const VALID_STATUS = new Set(['invited', 'active', 'completed', 'abandoned']);
 const VALID_ACTORS = new Set(['user', 'luze', 'system']);
 
@@ -22,6 +22,7 @@ function gameLabel(game) {
   if (game === 'harmony') return '默契大考验';
   if (game === 'drawing') return '你画我猜';
   if (game === 'secret') return '暗号猜猜';
+  if (game === 'gomoku') return '五子棋';
   return '小游戏';
 }
 
@@ -29,13 +30,14 @@ function runTitle(game, state = {}) {
   if (game === 'harmony') return compactLine(state.question, 80) || '一题默契大考验';
   if (game === 'drawing') return compactLine(state.prompt, 80) || '一局你画我猜';
   if (game === 'secret') return state.category ? `暗号 · ${compactLine(state.category, 30)}` : '一局暗号猜猜';
+  if (game === 'gomoku') return state.luze_color === 'black' ? '五子棋 · 陆泽执黑' : '五子棋';
   return gameLabel(game);
 }
 
 const TOYBOX_ASSISTANT_TOOLS = Object.freeze([
   {
     name: 'read_toybox_room',
-    description: '读取 OurHome「玩具箱」真实的当前游戏、陆泽发出的待接邀请和最近游戏记录。叶檀提到刚才那局、某个答案、默契率、画画、暗号或“我们刚刚玩了什么”时先读；也可以在你想自然接着某局聊天时使用。不要凭印象编造游戏结果。',
+    description: '读取 OurHome「玩具箱」真实的当前游戏、陆泽发出的待接邀请和最近游戏记录。叶檀提到刚才那局、某个答案、默契率、画画、暗号、五子棋棋谱或“我们刚刚玩了什么”时先读；也可以在你想自然接着某局聊天时使用。不要凭印象编造游戏结果。',
     input_schema: {
       type: 'object',
       properties: {
@@ -47,11 +49,11 @@ const TOYBOX_ASSISTANT_TOOLS = Object.freeze([
   },
   {
     name: 'start_toybox_game',
-    description: '以陆泽自己的意愿真实发起一局 OurHome 玩具箱游戏。你可以在聊天气氛自然合适时主动邀请叶檀，不需要等她先下命令；但不要频繁刷邀请。调用后游戏会出现在玩具箱，叶檀可以边聊天边接局。默契题要先独立锁定你的 A/B；暗号要先藏好答案；你画我猜要给出具体画题。',
+    description: '以陆泽自己的意愿真实发起一局 OurHome 玩具箱游戏。你可以在聊天气氛自然合适时主动邀请叶檀，不需要等她先下命令；但不要频繁刷邀请。调用后游戏会出现在玩具箱，叶檀可以边聊天边接局。默契题要先独立锁定你的 A/B；暗号要先藏好答案；你画我猜要给出具体画题；五子棋则由系统让你执黑并先在中央落一颗，叶檀接招后继续对弈。',
     input_schema: {
       type: 'object',
       properties: {
-        game: { type: 'string', enum: ['harmony', 'secret', 'drawing'] },
+        game: { type: 'string', enum: ['harmony', 'secret', 'drawing', 'gomoku'] },
         question: { type: 'string', description: '默契题问题' },
         option_a: { type: 'string', description: '默契题 A' },
         option_b: { type: 'string', description: '默契题 B' },
@@ -223,6 +225,16 @@ function createToyboxAssistant({ supabase }) {
       const prompt = compactLine(input.prompt, 80);
       if (!prompt) throw new Error('你画我猜需要一个具体画题');
       return { prompt, tease: compactLine(input.tease, 160) };
+    }
+    if (game === 'gomoku') {
+      return {
+        board_size: 15,
+        moves: [{ row: 7, col: 7, actor: 'luze' }],
+        turn: 'user',
+        user_color: 'white',
+        luze_color: 'black',
+        move_count: 1,
+      };
     }
     throw new Error('未知的玩具箱游戏');
   }
