@@ -1,15 +1,16 @@
 'use strict';
 
-// Render currently starts the service with `node server.js`, which bypasses the
-// `node -r ...` preload flags from package.json. Loading the patches from a
-// module imported by server.js makes both startup paths behave the same.
-// Node's module cache prevents double installation when npm start is used.
+// Render currently starts the service with `node server.js`. Keep every runtime
+// compatibility layer on this one path so local npm start and Render behave the same.
 require('./theaterMemoryPatch');
 require('./memoryLayerPatch');
 require('./modelTokenLimitPatch');
 require('./thinkingTransportPatch');
+// Keep intimacy last: it becomes the outer transport boundary and sanitizes any
+// hidden control after normal text/thinking processing but before server persistence.
+require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token and thinking patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, thinking and intimacy patches loaded');
 
 try {
   const express = require('express');

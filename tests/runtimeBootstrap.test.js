@@ -12,14 +12,17 @@ test('node server.js 也会加载运行时补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/memoryLayerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/modelTokenLimitPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/thinkingTransportPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/intimacyFlowPatch'\);/);
 });
 
-test('运行时补丁按记忆、token、思考顺序加载', () => {
+test('运行时补丁按记忆、token、思考、亲密状态顺序加载', () => {
   const memoryIndex = bootstrapSource.indexOf("require('./memoryLayerPatch')");
   const tokenIndex = bootstrapSource.indexOf("require('./modelTokenLimitPatch')");
   const thinkingIndex = bootstrapSource.indexOf("require('./thinkingTransportPatch')");
+  const intimacyIndex = bootstrapSource.indexOf("require('./intimacyFlowPatch')");
   assert.ok(memoryIndex >= 0 && memoryIndex < tokenIndex);
   assert.ok(tokenIndex < thinkingIndex);
+  assert.ok(thinkingIndex < intimacyIndex);
 });
 
 test('健康接口会暴露 direct server start 标记', () => {
