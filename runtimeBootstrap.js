@@ -15,18 +15,20 @@ require('./intimacyFlowAutonomyPatch');
 // Remove old response-shaping instructions that conflict with the compact
 // persona-first rules stored in settings. This changes prompt wording only.
 require('./chatPromptCleanupPatch');
+// Register the lightweight AI-backed Toybox routes without touching Chat history.
+require('./toyboxRoutePatch');
 // Keep intimacy last: it becomes the outer transport boundary and sanitizes any
 // hidden control after normal text/thinking/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, thinking, context ledger, autonomy, persona-first cleanup and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, thinking, context ledger, autonomy, persona-first cleanup, toybox and intimacy patches loaded');
 
 try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function runtimeBootstrapJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, runtime_bootstrap: 'direct-server-start-v1' };
+      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'interactive-v1' };
     }
     return originalJson.call(this, body);
   };
