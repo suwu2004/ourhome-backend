@@ -3,9 +3,18 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const express = require('express');
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const originalListen = express.application.listen;
 let registered = false;
+let supabaseClient = null;
+
+function getSupabase() {
+  if (supabaseClient) return supabaseClient;
+  const url = String(process.env.SUPABASE_URL || '').trim();
+  const key = String(process.env.SUPABASE_KEY || '').trim();
+  if (!url || !key) throw new Error('Toybox Supabase 尚未配置');
+  supabaseClient = createClient(url, key);
+  return supabaseClient;
+}
 
 function compactLine(value, max = 240) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -69,6 +78,7 @@ function personaOnly(systemPrompt) {
 }
 
 async function loadRuntime() {
+  const supabase = getSupabase();
   const [{ data: settings, error: settingsError }, { data: profile, error: profileError }] = await Promise.all([
     supabase.from('settings').select('*').eq('session_id', 'global').maybeSingle(),
     supabase.from('api_profiles').select('*').eq('is_active', true).maybeSingle(),
@@ -92,6 +102,7 @@ async function loadRuntime() {
 
 async function loadRelationshipContext() {
   try {
+    const supabase = getSupabase();
     const [{ data: memories }, { data: daily }] = await Promise.all([
       supabase.from('memories')
         .select('summary,is_protected,timestamp')
