@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createRuntimeConfig } = require('../runtimeConfig');
 
-test('聊天运行时同时暴露基础共读工具和陆泽书签工具', () => {
+test('聊天运行时同时暴露共读与玩具箱工具', () => {
   const runtime = createRuntimeConfig({});
   const bridge = runtime.getReadingAssistantBridge();
   const names = bridge.tools.map(tool => tool.name);
@@ -16,6 +16,9 @@ test('聊天运行时同时暴露基础共读工具和陆泽书签工具', () =>
     'generate_reading_chapter_notes',
     'read_reading_notes',
     'write_reading_note',
+    'read_toybox_room',
+    'start_toybox_game',
+    'leave_toybox_note',
   ]);
   assert.equal(new Set(names).size, names.length);
   names.forEach(name => assert.equal(typeof bridge.handlers.get(name), 'function'));
