@@ -37,7 +37,7 @@ function runTitle(game, state = {}) {
 const TOYBOX_ASSISTANT_TOOLS = Object.freeze([
   {
     name: 'read_toybox_room',
-    description: '读取 OurHome「玩具箱」真实的当前游戏、陆泽发出的待接邀请和最近游戏记录。叶檀提到刚才那局、某个答案、默契率、画画、暗号、五子棋棋谱或“我们刚刚玩了什么”时先读；也可以在你想自然接着某局聊天时使用。不要凭印象编造游戏结果。',
+    description: '读取 OurHome「玩具熊」真实的当前游戏、陆泽发出的待接邀请和最近游戏记录。这里内部仍叫 toybox，旧名字“玩具箱”和此前出现过的“工具熊”都指同一个房间；叶檀说玩具熊、玩具箱或工具熊时都要理解为这里。她提到刚才那局、某个答案、默契率、画画、暗号、五子棋棋谱或“我们刚刚玩了什么”时先读；也可以在你想自然接着某局聊天时使用。不要凭印象编造游戏结果。',
     input_schema: {
       type: 'object',
       properties: {
@@ -49,7 +49,7 @@ const TOYBOX_ASSISTANT_TOOLS = Object.freeze([
   },
   {
     name: 'start_toybox_game',
-    description: '以陆泽自己的意愿真实发起一局 OurHome 玩具箱游戏。你可以在聊天气氛自然合适时主动邀请叶檀，不需要等她先下命令；但不要频繁刷邀请。调用后游戏会出现在玩具箱，叶檀可以边聊天边接局。默契题要先独立锁定你的 A/B；暗号要先藏好答案；你画我猜要给出具体画题；五子棋则由系统让你执黑并先在中央落一颗，叶檀接招后继续对弈。',
+    description: '以陆泽自己的意愿真实发起一局 OurHome 玩具熊游戏。玩具熊就是内部的 toybox（旧称玩具箱/工具熊）。你可以在聊天气氛自然合适时主动邀请叶檀，不需要等她先下命令；但不要频繁刷邀请。调用后游戏会出现在玩具熊，叶檀可以边聊天边接局。默契题要先独立锁定你的 A/B；暗号要先藏好答案；你画我猜要给出具体画题；五子棋则由系统让你执黑并先在中央落一颗，叶檀接招后继续对弈。',
     input_schema: {
       type: 'object',
       properties: {
@@ -62,7 +62,7 @@ const TOYBOX_ASSISTANT_TOOLS = Object.freeze([
         answer: { type: 'string', description: '暗号答案，2-8个中文字符为主' },
         category: { type: 'string', description: '暗号宽泛分类' },
         hint1: { type: 'string', description: '暗号第一条提示，不能直接含答案' },
-        hint2: { type: 'string', description: '暗号第二条提示，不能直接含答案' },
+        hint2: { type: 'string', description: '暗号第二条更明显提示，不能直接含答案' },
         reveal_comment: { type: 'string', description: '暗号揭晓时想说的一句短话' },
         prompt: { type: 'string', description: '你画我猜的画题，具体且适合手机画' },
         tease: { type: 'string', description: '出画题时想说的一句短话' },
@@ -72,7 +72,7 @@ const TOYBOX_ASSISTANT_TOOLS = Object.freeze([
   },
   {
     name: 'leave_toybox_note',
-    description: '给当前或指定的一局玩具箱游戏留下一条真实的陆泽记录，例如吐槽、复盘、输赢后的短评。它会进入游戏记录册。只有确实值得留下时使用，不必每局都写。',
+    description: '给当前或指定的一局玩具熊游戏留下一条真实的陆泽记录，例如吐槽、复盘、输赢后的短评。它会进入这款游戏自己的记录册。只有确实值得留下时使用，不必每局都写。',
     input_schema: {
       type: 'object',
       properties: {
@@ -139,7 +139,7 @@ function createToyboxStore({ supabase }) {
 
   async function createRun({ game, status = 'active', initiator = 'user', chatSessionId = null, title = '', state = {}, result = {}, model = null } = {}) {
     const safeGame = compactLine(game, 30);
-    if (!VALID_GAMES.has(safeGame)) throw new Error('未知的玩具箱游戏');
+    if (!VALID_GAMES.has(safeGame)) throw new Error('未知的玩具熊游戏');
     const safeStatus = VALID_STATUS.has(status) ? status : 'active';
     const safeInitiator = initiator === 'luze' ? 'luze' : 'user';
     const cleanState = safeObject(state);
@@ -236,7 +236,7 @@ function createToyboxAssistant({ supabase }) {
         move_count: 1,
       };
     }
-    throw new Error('未知的玩具箱游戏');
+    throw new Error('未知的玩具熊游戏');
   }
 
   async function readToybox(input = {}) {
@@ -247,7 +247,7 @@ function createToyboxAssistant({ supabase }) {
     ]);
     let latest = recent[0] || null;
     if (latest && input.include_events !== false) latest = await store.getRun(latest.id, { includeEvents: true });
-    return { ok: true, open, recent, latest };
+    return { ok: true, room: '玩具熊', aliases: ['玩具箱', '工具熊', 'toybox'], open, recent, latest };
   }
 
   async function startGame(input = {}) {
@@ -262,7 +262,7 @@ function createToyboxAssistant({ supabase }) {
     });
     return {
       ok: true,
-      message: `已经在玩具箱发起「${gameLabel(game)}」，叶檀打开或正在玩具箱时会看到邀请。`,
+      message: `已经在玩具熊发起「${gameLabel(game)}」，叶檀打开或正在玩具熊时会看到邀请。`,
       run,
     };
   }
@@ -280,7 +280,7 @@ function createToyboxAssistant({ supabase }) {
     if (name === 'read_toybox_room') return readToybox(input);
     if (name === 'start_toybox_game') return startGame(input);
     if (name === 'leave_toybox_note') return leaveNote(input);
-    return { ok: false, error: '未知的玩具箱工具' };
+    return { ok: false, error: '未知的玩具熊工具' };
   }
 
   function getToolBridge() {
