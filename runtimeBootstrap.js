@@ -17,18 +17,20 @@ require('./intimacyFlowAutonomyPatch');
 require('./chatPromptCleanupPatch');
 // Register the lightweight AI-backed Toybox routes without touching Chat history.
 require('./toyboxRoutePatch');
+// Add persistent game history, shared active state and Chat-linked Toybox access.
+require('./toyboxSocialRoutePatch');
 // Keep intimacy last: it becomes the outer transport boundary and sanitizes any
 // hidden control after normal text/thinking/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, thinking, context ledger, autonomy, persona-first cleanup, toybox and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, thinking, context ledger, autonomy, persona-first cleanup, toybox social and intimacy patches loaded');
 
 try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function runtimeBootstrapJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'interactive-budget-v2' };
+      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'shared-play-v3' };
     }
     return originalJson.call(this, body);
   };
