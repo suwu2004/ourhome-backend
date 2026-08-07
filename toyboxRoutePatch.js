@@ -36,6 +36,12 @@ function safeList(value, limit = 16, itemMax = 120) {
     .slice(0, limit);
 }
 
+function clampInt(value, min, max, fallback = min) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
 function buildEndpoint(base, path) {
   const clean = String(base || '').replace(/\/+$/, '');
   return clean.endsWith(path) ? clean : `${clean}${path}`;
@@ -74,10 +80,12 @@ function personaOnly(systemPrompt) {
   const raw = String(systemPrompt || '你是陆泽，叶檀的伴侣。');
   const adultGuide = raw.indexOf('【性爱指南】');
   const clipped = adultGuide >= 0 ? raw.slice(0, adultGuide) : raw;
-  return compactBlock(clipped, 12_000);
+  // Toybox only needs enough persona to sound like Lu Ze. Keeping this compact
+  // avoids paying the full Chat persona/context cost for every little game call.
+  return compactBlock(clipped, 6_500);
 }
 
-async function loadRuntime() {
+async function loadRuntime(preferredModel = '') {
   const supabase = getSupabase();
   const [{ data: settings, error: settingsError }, { data: profile, error: profileError }] = await Promise.all([
     supabase.from('settings').select('*').eq('session_id', 'global').maybeSingle(),
@@ -95,9 +103,10 @@ async function loadRuntime() {
 
   const apiKey = String(profileKey || settings?.api_key || process.env.ANTHROPIC_API_KEY || '').trim();
   const baseUrl = compactLine(profile?.base_url || settings?.api_base_url || process.env.ANTHROPIC_API_BASE_URL || 'https://api.anthropic.com/v1', 1000);
-  const model = compactLine(profile?.selected_model || settings?.selected_model || 'claude-sonnet-4-6', 240);
+  const requested = compactLine(preferredModel, 240);
+  const model = requested || compactLine(profile?.selected_model || settings?.selected_model || 'claude-sonnet-4-6', 240);
   if (!apiKey) throw new Error('当前 API 站点没有可用密钥');
-  return { settings: settings || {}, apiKey, baseUrl, model };
+  return { settings: settings || {}, apiKey, baseUrl, model, chatModel: compactLine(profile?.selected_model || settings?.selected_model || '', 240) };
 }
 
 async function loadRelationshipContext() {
@@ -108,20 +117,20 @@ async function loadRelationshipContext() {
         .select('summary,is_protected,timestamp')
         .order('is_protected', { ascending: false })
         .order('timestamp', { ascending: false })
-        .limit(24),
+        .limit(10),
       supabase.from('daily_summaries')
-        .select('summary,highlights,mood,summary_date')
+        .select('summary,summary_date')
         .order('summary_date', { ascending: false })
         .limit(1)
         .maybeSingle(),
     ]);
     const memoryLines = (memories || [])
-      .map(item => compactLine(item.summary, 180))
+      .map(item => compactLine(item.summary, 150))
       .filter(Boolean)
-      .slice(0, 20);
+      .slice(0, 6);
     const parts = [];
-    if (memoryLines.length) parts.push(`【可自然参考的共同记忆】\n${memoryLines.map(item => `- ${item}`).join('\n')}`);
-    if (daily?.summary) parts.push(`【最近一天的气氛】\n${compactLine(daily.summary, 500)}`);
+    if (memoryLines.length) parts.push(`【可自然参考的少量共同记忆】\n${memoryLines.map(item => `- ${item}`).join('\n')}`);
+    if (daily?.summary) parts.push(`【最近气氛】\n${compactLine(daily.summary, 220)}`);
     return parts.join('\n\n');
   } catch (error) {
     console.warn('[toybox] relationship context unavailable:', error.message);
@@ -134,7 +143,7 @@ async function callModel({ runtime, system, messages, maxTokens = 650, temperatu
   const timer = setTimeout(() => controller.abort(), 45_000);
   try {
     const endpoint = buildEndpoint(runtime.baseUrl, '/messages');
-    const thinkingNamed = /thinking/i.test(runtime.model);
+    const thinkingNamed = /thinking|reasoning/i.test(runtime.model);
     const body = {
       model: runtime.model,
       max_tokens: maxTokens,
@@ -187,14 +196,64 @@ function requireObject(data, fields) {
   return data;
 }
 
+function normalizeHarmonyRound(data) {
+  requireObject(data, ['question', 'option_a', 'option_b', 'luze_choice']);
+  const choice = String(data.luze_choice || '').trim().toUpperCase();
+  if (!['A', 'B'].includes(choice)) throw new Error('陆泽这次没把选项锁好');
+  return {
+    question: compactLine(data.question, 120),
+    option_a: compactLine(data.option_a, 80),
+    option_b: compactLine(data.option_b, 80),
+    luze_choice: choice,
+    luze_comment: compactLine(data.luze_comment, 150) || '嗯，答案锁了。现在看我们是不是想到一起。',
+  };
+}
+
+function normalizeSecretRound(data) {
+  requireObject(data, ['answer', 'category', 'hint1', 'hint2']);
+  const answer = compactLine(data.answer, 20).replace(/\s+/g, '');
+  if (!answer || answer.length > 12) throw new Error('这轮暗号长度不太适合玩');
+  return {
+    answer,
+    category: compactLine(data.category, 30),
+    hint1: compactLine(data.hint1, 110),
+    hint2: compactLine(data.hint2, 110),
+    reveal_comment: compactLine(data.reveal_comment, 150) || '记住它，下次说不定又会碰见。',
+  };
+}
+
+function normalizeDrawingPrompt(data) {
+  requireObject(data, ['prompt']);
+  return {
+    prompt: compactLine(data.prompt, 50),
+    tease: compactLine(data.tease, 120) || '画吧，我等着看你能把它画成什么。',
+  };
+}
+
+function extractRounds(parsed, count, normalizer) {
+  const source = Array.isArray(parsed?.rounds) ? parsed.rounds : (count === 1 ? [parsed] : []);
+  const normalized = [];
+  for (const item of source) {
+    try { normalized.push(normalizer(item)); } catch { /* skip one malformed item */ }
+    if (normalized.length >= count) break;
+  }
+  if (!normalized.length) throw new Error('小游戏这次没有按约定批量出题');
+  return normalized;
+}
+
+function respondRounds(res, rounds, model, count) {
+  if (count === 1) return res.json({ ...rounds[0], model });
+  return res.json({ rounds: rounds.map(item => ({ ...item, model })), model });
+}
+
 function registerToyboxRoutes(app) {
   if (registered) return;
   registered = true;
 
   app.get('/toybox/status', async (req, res) => {
     try {
-      const runtime = await loadRuntime();
-      res.json({ ok: true, toybox: 'interactive-v1', model: runtime.model });
+      const runtime = await loadRuntime(req.query?.model);
+      res.json({ ok: true, toybox: 'interactive-budget-v2', model: runtime.model, chat_model: runtime.chatModel });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -202,22 +261,20 @@ function registerToyboxRoutes(app) {
 
   app.post('/toybox/harmony-round', async (req, res) => {
     try {
-      const runtime = await loadRuntime();
-      const recent = safeList(req.body?.recent_questions, 12, 100);
-      const system = await toyboxSystem(runtime, '你们正在玩“默契大考验”。陆泽必须在不知道叶檀会选什么的情况下先独立选 A 或 B。');
-      const prompt = `随机出一道适合情侣玩的二选一题。题目可以来自生活习惯、奇怪脑洞、旅行、食物、审美、相处方式、假设情境、轻微恶作剧等，不要只围绕共同记忆，也不要总是恋爱鸡汤。\n${recent.length ? `最近已经出过这些，避开重复：\n${recent.map(item => `- ${item}`).join('\n')}\n` : ''}\n先替陆泽自己选好答案，再输出。只输出 JSON：\n{"question":"12-36字的问题","option_a":"不超过18字","option_b":"不超过18字","luze_choice":"A或B","luze_comment":"揭晓时陆泽会说的一句自然短话，不超过55字"}`;
-      const result = await callModel({ runtime, system, messages: [{ role: 'user', content: prompt }], maxTokens: 520, temperature: 1 });
-      const data = requireObject(parseJsonObject(result.text), ['question', 'option_a', 'option_b', 'luze_choice']);
-      const choice = String(data.luze_choice || '').trim().toUpperCase();
-      if (!['A', 'B'].includes(choice)) throw new Error('陆泽这次没把选项锁好');
-      res.json({
-        question: compactLine(data.question, 120),
-        option_a: compactLine(data.option_a, 80),
-        option_b: compactLine(data.option_b, 80),
-        luze_choice: choice,
-        luze_comment: compactLine(data.luze_comment, 180) || '嗯，答案锁了。现在看我们是不是想到一起。',
-        model: result.model,
+      const count = clampInt(req.body?.count, 1, 12, 1);
+      const runtime = await loadRuntime(req.body?.model);
+      const recent = safeList(req.body?.recent_questions, 20, 100);
+      const system = await toyboxSystem(runtime, '你们正在玩“默契大考验”。陆泽必须在不知道叶檀会选什么的情况下先独立选 A 或 B。若一次生成多题，每一题的答案也都要现在就锁定。');
+      const prompt = `一次生成 ${count} 道彼此不同、适合情侣玩的二选一题。题目可以来自生活习惯、奇怪脑洞、旅行、食物、审美、相处方式、假设情境、轻微恶作剧等，不要只围绕共同记忆，也不要总是恋爱鸡汤。\n${recent.length ? `最近已经出过这些，避开重复：\n${recent.map(item => `- ${item}`).join('\n')}\n` : ''}\n每题都先替陆泽自己独立选好 A 或 B；叶檀此刻还没看到这些题，所以不能根据她之后的选择改答案。只输出 JSON：\n{"rounds":[{"question":"12-36字的问题","option_a":"不超过18字","option_b":"不超过18字","luze_choice":"A或B","luze_comment":"揭晓时的一句自然短话，不超过45字"}]}`;
+      const result = await callModel({
+        runtime,
+        system,
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: Math.min(2600, 320 + count * 180),
+        temperature: 1,
       });
+      const rounds = extractRounds(parseJsonObject(result.text), count, normalizeHarmonyRound);
+      return respondRounds(res, rounds, result.model, count);
     } catch (error) {
       console.error('[toybox:harmony]', error.message);
       res.status(500).json({ error: error.message || '默契题暂时没出好' });
@@ -226,22 +283,20 @@ function registerToyboxRoutes(app) {
 
   app.post('/toybox/secret-round', async (req, res) => {
     try {
-      const runtime = await loadRuntime();
-      const recent = safeList(req.body?.recent_answers, 16, 40);
-      const system = await toyboxSystem(runtime, '你们正在玩“暗号猜猜”。答案由陆泽随机出题；范围要开，不局限于两人的固定梗。');
-      const prompt = `随机想一个适合中文猜词小游戏的答案。要真的随机扩散题材：自然、物件、地点、食物、动作、职业、动物、植物、文学、科技、日常、抽象概念、网络词、幻想事物都可以。不要被共同记忆绑死。答案以 2-6 个中文字符为主，偶尔可以是大家熟悉的短词，不要生僻到无法猜。\n${recent.length ? `最近出现过这些答案，本局不要重复或只换同义词：${recent.join('、')}\n` : ''}\n只输出 JSON：\n{"answer":"答案","category":"宽泛分类，不超过8字","hint1":"第一条含蓄提示，不直接含答案","hint2":"第二条更明显提示，不直接含答案","reveal_comment":"猜中或揭晓时陆泽的一句短话，不超过55字"}`;
-      const result = await callModel({ runtime, system, messages: [{ role: 'user', content: prompt }], maxTokens: 520, temperature: 1 });
-      const data = requireObject(parseJsonObject(result.text), ['answer', 'category', 'hint1', 'hint2']);
-      const answer = compactLine(data.answer, 20).replace(/\s+/g, '');
-      if (!answer || answer.length > 12) throw new Error('这轮暗号长度不太适合玩');
-      res.json({
-        answer,
-        category: compactLine(data.category, 30),
-        hint1: compactLine(data.hint1, 120),
-        hint2: compactLine(data.hint2, 120),
-        reveal_comment: compactLine(data.reveal_comment, 180) || '记住它，下次说不定又会碰见。',
-        model: result.model,
+      const count = clampInt(req.body?.count, 1, 12, 1);
+      const runtime = await loadRuntime(req.body?.model);
+      const recent = safeList(req.body?.recent_answers, 24, 40);
+      const system = await toyboxSystem(runtime, '你们正在玩“暗号猜猜”。答案由陆泽随机出题；范围要开，不局限于两人的固定梗。一次生成多题时也必须彼此不同。');
+      const prompt = `一次随机想 ${count} 个彼此不同、适合中文猜词小游戏的答案。题材要真正扩散：自然、物件、地点、食物、动作、职业、动物、植物、文学、科技、日常、抽象概念、网络词、幻想事物都可以。不要被共同记忆绑死。答案以 2-6 个中文字符为主，偶尔可以是大家熟悉的短词，不要生僻到无法猜。\n${recent.length ? `最近出现过这些答案，本批不要重复或只换同义词：${recent.join('、')}\n` : ''}\n只输出 JSON：\n{"rounds":[{"answer":"答案","category":"宽泛分类，不超过8字","hint1":"含蓄提示，不含答案","hint2":"更明显提示，不含答案","reveal_comment":"揭晓时陆泽的一句短话，不超过45字"}]}`;
+      const result = await callModel({
+        runtime,
+        system,
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: Math.min(2500, 320 + count * 165),
+        temperature: 1,
       });
+      const rounds = extractRounds(parseJsonObject(result.text), count, normalizeSecretRound);
+      return respondRounds(res, rounds, result.model, count);
     } catch (error) {
       console.error('[toybox:secret]', error.message);
       res.status(500).json({ error: error.message || '暗号这次没有藏好' });
@@ -250,17 +305,20 @@ function registerToyboxRoutes(app) {
 
   app.post('/toybox/drawing-prompt', async (req, res) => {
     try {
-      const runtime = await loadRuntime();
-      const recent = safeList(req.body?.recent_prompts, 12, 50);
-      const system = await toyboxSystem(runtime, '你们正在玩“你画我猜”。陆泽只负责给一个好画、好猜、偶尔有点离谱的题目。');
-      const prompt = `随机给一个适合手机手绘的题目，优先具体可画的东西或小场景，难度不要太高，但可以偶尔调皮。\n${recent.length ? `避开最近题目：${recent.join('、')}\n` : ''}\n只输出 JSON：{"prompt":"2-10字题目","tease":"陆泽出题时的一句短话，不超过45字"}`;
-      const result = await callModel({ runtime, system, messages: [{ role: 'user', content: prompt }], maxTokens: 300, temperature: 1 });
-      const data = requireObject(parseJsonObject(result.text), ['prompt']);
-      res.json({
-        prompt: compactLine(data.prompt, 50),
-        tease: compactLine(data.tease, 150) || '画吧，我等着看你能把它画成什么。',
-        model: result.model,
+      const count = clampInt(req.body?.count, 1, 12, 1);
+      const runtime = await loadRuntime(req.body?.model);
+      const recent = safeList(req.body?.recent_prompts, 20, 50);
+      const system = await toyboxSystem(runtime, '你们正在玩“你画我猜”。陆泽只负责给好画、好猜、偶尔有点离谱的题目。');
+      const prompt = `一次随机给 ${count} 个彼此不同、适合手机手绘的题目。优先具体可画的东西或小场景，难度不要太高，但可以偶尔调皮。\n${recent.length ? `避开最近题目：${recent.join('、')}\n` : ''}\n只输出 JSON：{"rounds":[{"prompt":"2-10字题目","tease":"陆泽出题时的一句短话，不超过36字"}]}`;
+      const result = await callModel({
+        runtime,
+        system,
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: Math.min(1500, 220 + count * 95),
+        temperature: 1,
       });
+      const rounds = extractRounds(parseJsonObject(result.text), count, normalizeDrawingPrompt);
+      return respondRounds(res, rounds, result.model, count);
     } catch (error) {
       console.error('[toybox:drawing-prompt]', error.message);
       res.status(500).json({ error: error.message || '画题这次没抽出来' });
@@ -274,13 +332,13 @@ function registerToyboxRoutes(app) {
       if (!match) return res.status(400).json({ error: '画布图片格式不正确' });
       if (match[2].length > 3_600_000) return res.status(400).json({ error: '这张画太大了，先清一点再猜' });
 
-      const runtime = await loadRuntime();
+      const runtime = await loadRuntime(req.body?.model);
       const system = await toyboxSystem(runtime, '你们正在玩“你画我猜”。你现在真的能看到叶檀画的图。不要假装看不清就乱编；按图像本身猜。');
-      const prompt = '看这张手绘，猜叶檀画的是什么。可以大胆猜一个最可能答案，再说一句你看到这幅鬼画符时的自然反应。只输出 JSON：{"guess":"最可能的答案，不超过16字","comment":"不超过60字","confidence":"high、medium 或 low"}';
+      const prompt = '看这张手绘，猜叶檀画的是什么。大胆猜一个最可能答案，再说一句很短的自然反应。只输出 JSON：{"guess":"最可能的答案，不超过16字","comment":"不超过45字","confidence":"high、medium 或 low"}';
       const result = await callModel({
         runtime,
         system,
-        maxTokens: 420,
+        maxTokens: 260,
         temperature: 0.75,
         messages: [{
           role: 'user',
@@ -296,7 +354,7 @@ function registerToyboxRoutes(app) {
         : 'medium';
       res.json({
         guess: compactLine(data.guess, 80),
-        comment: compactLine(data.comment, 220) || '……我先保留一点尊严，猜这个。',
+        comment: compactLine(data.comment, 180) || '……我先保留一点尊严，猜这个。',
         confidence,
         model: result.model,
       });
@@ -315,8 +373,12 @@ express.application.listen = function toyboxPatchedListen(...args) {
 module.exports = {
   compactLine,
   safeList,
+  clampInt,
   parseJsonObject,
   extractModelText,
   personaOnly,
+  normalizeHarmonyRound,
+  normalizeSecretRound,
+  normalizeDrawingPrompt,
   registerToyboxRoutes,
 };

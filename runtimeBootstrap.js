@@ -28,7 +28,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function runtimeBootstrapJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'interactive-v1' };
+      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'interactive-budget-v2' };
     }
     return originalJson.call(this, body);
   };
