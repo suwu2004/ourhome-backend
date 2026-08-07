@@ -30,7 +30,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function runtimeBootstrapJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'shared-play-v3' };
+      body = { ...body, runtime_bootstrap: 'direct-server-start-v1', toybox: 'toy-bear-gomoku-v4' };
     }
     return originalJson.call(this, body);
   };
