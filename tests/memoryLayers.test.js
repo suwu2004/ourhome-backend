@@ -62,9 +62,9 @@ test('迁移保留旧记忆并提供提炼、过期和审计机制', () => {
   assert.doesNotMatch(migration, /delete\s+from\s+public\.memory_marks/i);
 });
 
-test('生产启动按记忆分层、token、思考、调用审计、后台费用保护顺序加载', () => {
+test('生产启动按记忆、token、原生思考、审计、非 Chat 省钱和后台本地保护顺序加载', () => {
   assert.equal(
     packageJson.scripts.start,
-    'node -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./backgroundAiCostGuardPatch.js server.js',
+    'node -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./nonChatBudgetPatch.js -r ./backgroundAiCostGuardPatch.js server.js',
   );
 });
