@@ -12,6 +12,7 @@ const {
   splitRowsIntoChunks,
   shouldRefreshLedger,
   buildLedgerUpdatePrompt,
+  localLedgerSummary,
   buildLedgerBlock,
   injectLedger,
   providerText,
@@ -29,6 +30,7 @@ const TARGET_ROUTES = new Set([
 ]);
 const SETTINGS_CACHE_MS = 20_000;
 const HISTORY_PAGE_SIZE = 1000;
+const PAID_LEDGER_MAX_CHUNKS_PER_TURN = 1;
 
 const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseKey = process.env.SUPABASE_KEY || '';
@@ -45,6 +47,13 @@ let settingsCacheAt = 0;
 function safeId(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function configuredLedgerModel() {
+  // Cost guard: a hidden ledger call is allowed only when the owner explicitly
+  // configures a dedicated model. Never inherit the current Chat model (which may
+  // be Opus or another expensive provider SKU) merely because a long chat overflowed.
+  return String(process.env.CONTEXT_LEDGER_MODEL || '').trim();
 }
 
 async function loadLedgerSettings() {
@@ -168,13 +177,16 @@ async function commitLedger({ sessionId, expectedVersion, summary, cursorId, cou
   return Array.isArray(data) ? (data[0] || null) : data;
 }
 
-async function generateLedgerSummary(url, init, mainBody, existingSummary, chunkRows, coveredBefore) {
+async function generateLedgerSummary(url, init, existingSummary, chunkRows, coveredBefore) {
+  const model = configuredLedgerModel();
+  if (!model) {
+    return localLedgerSummary(existingSummary, chunkRows);
+  }
+
   const prompt = buildLedgerUpdatePrompt(existingSummary, chunkRows, { coveredBefore });
-  const model = String(process.env.CONTEXT_LEDGER_MODEL || mainBody?.model || '').trim();
-  if (!model) throw new Error('没有可用于账本整理的模型');
   const body = {
     model,
-    max_tokens: 1800,
+    max_tokens: 1200,
     temperature: 0.2,
     system: '你只负责维护隐藏的聊天接续账本。严格依据给出的旧聊天整理事实，不虚构，不输出对话回复，不输出思考过程。',
     messages: [{ role: 'user', content: prompt }],
@@ -182,6 +194,7 @@ async function generateLedgerSummary(url, init, mainBody, existingSummary, chunk
   const headers = new Headers(init?.headers || undefined);
   headers.delete('content-length');
   headers.delete('anthropic-beta');
+  headers.set('X-OurHome-Call-Purpose', 'context-ledger');
   const response = await previousFetch(url, {
     ...init,
     headers,
@@ -218,10 +231,12 @@ async function prepareLedger(ctx, url, init, body) {
   let pending = rowsAfterCursor(overflow, cursorId);
 
   if (shouldRefreshLedger(ledger, pending) && !retryBlocked(ledger)) {
-    const chunks = splitRowsIntoChunks(pending).slice(0, LEDGER_MAX_CHUNKS_PER_TURN);
+    const paidModel = configuredLedgerModel();
+    const chunkLimit = paidModel ? PAID_LEDGER_MAX_CHUNKS_PER_TURN : LEDGER_MAX_CHUNKS_PER_TURN;
+    const chunks = splitRowsIntoChunks(pending).slice(0, chunkLimit);
     try {
       for (const chunk of chunks) {
-        const nextSummary = await generateLedgerSummary(url, init, body, summary, chunk, coveredCount);
+        const nextSummary = await generateLedgerSummary(url, init, summary, chunk, coveredCount);
         const last = chunk[chunk.length - 1];
         const nextCount = coveredCount + chunk.length;
         const nextChars = coveredChars + rowsChars(chunk);
@@ -247,7 +262,7 @@ async function prepareLedger(ctx, url, init, body) {
         coveredCount = Number(committed.summarized_message_count) || nextCount;
         coveredChars = Number(committed.summarized_chars) || nextChars;
       }
-      console.log(`[context:ledger] session=${ctx.sessionId} covered=${coveredCount}/${overflow.length}`);
+      console.log(`[context:ledger] mode=${paidModel ? `paid:${paidModel}` : 'local-zero-cost'} session=${ctx.sessionId} covered=${coveredCount}/${overflow.length}`);
     } catch (error) {
       const retryAfter = new Date(Date.now() + LEDGER_RETRY_MS).toISOString();
       try {
@@ -305,7 +320,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function contextLedgerHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, context_ledger: 'rolling-precompact-v1' };
+      body = { ...body, context_ledger: 'rolling-local-first-v2' };
     }
     return originalJson.call(this, body);
   };
@@ -314,6 +329,7 @@ try {
 }
 
 module.exports = {
+  configuredLedgerModel,
   loadVisibleHistory,
   readLedger,
   commitLedger,
