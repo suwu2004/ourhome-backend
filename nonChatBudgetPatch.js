@@ -6,13 +6,12 @@ const { isLikelyVisionModel } = require('./modelCompatibility');
 
 // Loaded after apiUsageAuditPatch and before backgroundAiCostGuardPatch.
 // Chat and Theater keep the exact model chosen by the user. Toy Bear keeps its
-// own existing budget selector. Lu Ze's private-room consent and real learning
-// synthesis also keep the selected smart model; planning/rough work stays cheap.
+// own existing budget selector. Lu Ze's final learning synthesis keeps the
+// selected smart model; private-room knocks plus planning/rough work stay cheap.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const modelCache = new Map();
 const SMART_BACKGROUND_PURPOSES = new Set([
-  'luze-private-consent',
   'luze-learning-synthesis',
   'luze-learning-deep',
 ]);
@@ -232,8 +231,8 @@ if (typeof providerFetch === 'function') {
 
     const purpose = requestPurpose(init);
     // Interactive Chat, Toy Bear, and Theater keep their own selected model.
-    // Private-room consent and final learning synthesis are also deliberate
-    // high-quality calls; planning/filtering stays behind the cheap-model guard.
+    // Final learning synthesis is deliberate high-quality work; private-room
+    // consent, planning and filtering stay behind the cheap-model guard.
     if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(purpose)) {
       return providerFetch(input, init);
     }
