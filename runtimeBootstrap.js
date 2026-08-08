@@ -65,6 +65,7 @@ try {
         runtime_bootstrap: 'direct-server-start-v2-cost-guard',
         toybox: 'toy-bear-gomoku-v4',
         toybox_cloud_history: 'drawing-auto-save-v1',
+        toybox_stale_cleanup: 'one-hour-user-rounds-v1',
         luze_private_room: body.luze_private_room || 'private-learning-room-v1',
         luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
         luze_room_knock: 'local-zero-api-v1',
