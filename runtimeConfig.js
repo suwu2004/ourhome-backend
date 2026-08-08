@@ -5,8 +5,14 @@ const { createReadingNoteAssistant } = require('./readingNotes');
 const { createReadingToolSafety } = require('./readingToolSafety');
 const { createToyboxAssistant } = require('./toyboxAssistant');
 const { createLuzePrivateRoomAssistant } = require('./luzePrivateRoomAssistant');
+const { installPrivateBucketGuard } = require('./privateUploads');
 
 function createRuntimeConfig(supabase) {
+  // The shared uploads bucket contains chat attachments and Toybox drawings.
+  // Guard the main Supabase client immediately so legacy callers can never flip
+  // the bucket public, even if they still request `public: true` internally.
+  installPrivateBucketGuard(supabase);
+
   const missingRelation = error => ['42P01', 'PGRST205', 'PGRST202'].includes(error?.code);
   const unwrap = data => Array.isArray(data) ? (data[0] || null) : data;
   const readingAssistant = createReadingAssistant({ supabase });
@@ -214,7 +220,7 @@ function createRuntimeConfig(supabase) {
   }
 
   async function deleteConnection(id) {
-    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_id: id });
+    const { error } = await supabase.rpc('ourhome_delete_service_connection', { p_connection_id: id });
     if (error) throw error;
   }
 
