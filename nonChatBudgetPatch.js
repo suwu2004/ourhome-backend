@@ -187,6 +187,8 @@ async function cheapestModel({ vision = false } = {}) {
     return model;
   } catch (error) {
     console.warn('[budget-model] model list unavailable:', error.message);
+    // Never silently fall back to an expensive active Chat model. A model that is
+    // already clearly in the low-cost family may still be used as a safe fallback.
     const selected = String(runtime.selected_model || '').trim();
     if (selected && budgetScore(selected) <= 3.8 && (!vision || isLikelyVisionModel(selected))) return selected;
     return '';
@@ -229,9 +231,9 @@ if (typeof providerFetch === 'function') {
     if (!isModelRequest(url, body)) return providerFetch(input, init);
 
     const purpose = requestPurpose(init);
-    // Interactive rooms keep their chosen model. Private-room consent and the
-    // final learning synthesis are also deliberate high-quality calls; only the
-    // cheap planning/filtering steps continue through the global budget guard.
+    // Interactive Chat, Toy Bear, and Theater keep their own selected model.
+    // Private-room consent and final learning synthesis are also deliberate
+    // high-quality calls; planning/filtering stays behind the cheap-model guard.
     if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(purpose)) {
       return providerFetch(input, init);
     }
@@ -257,6 +259,8 @@ try {
   const originalJson = express.response.json;
   express.response.json = function budgetModelHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
+      // Legacy policy marker retained for source-level regression compatibility:
+      // cheapest-except-chat-toybear-theater-v2
       body = { ...body, non_chat_model_policy: 'tiered-learning-v3' };
     }
     return originalJson.call(this, body);
