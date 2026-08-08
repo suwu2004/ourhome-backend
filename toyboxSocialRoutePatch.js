@@ -5,22 +5,45 @@ const { createToyboxStore } = require('./toyboxAssistant');
 
 const express = require('express');
 const originalListen = express.application.listen;
+const STALE_USER_RUN_MS = 60 * 60 * 1000;
+const AUTO_CLEAN_GAMES = ['harmony', 'secret'];
 let registered = false;
 let store = null;
+let supabaseClient = null;
 
-function getStore() {
-  if (store) return store;
+function getSupabase() {
+  if (supabaseClient) return supabaseClient;
   const url = String(process.env.SUPABASE_URL || '').trim();
   const key = String(process.env.SUPABASE_KEY || '').trim();
   if (!url || !key) throw new Error('Toybox Supabase 尚未配置');
-  const supabase = createClient(url, key);
-  store = createToyboxStore({ supabase });
+  supabaseClient = createClient(url, key);
+  return supabaseClient;
+}
+
+function getStore() {
+  if (store) return store;
+  store = createToyboxStore({ supabase: getSupabase() });
   return store;
 }
 
 function safeStatus(value) {
   const status = String(value || '').trim();
   return ['invited', 'active', 'completed', 'abandoned'].includes(status) ? status : null;
+}
+
+async function cleanupStaleUserRuns(now = new Date()) {
+  const cutoff = new Date(now.getTime() - STALE_USER_RUN_MS).toISOString();
+  const timestamp = now.toISOString();
+  const { data, error } = await getSupabase()
+    .from('toybox_runs')
+    .update({ status: 'abandoned', completed_at: timestamp, updated_at: timestamp })
+    .in('game', AUTO_CLEAN_GAMES)
+    .eq('status', 'active')
+    .eq('initiator', 'user')
+    .lt('updated_at', cutoff)
+    .select('id');
+  if (error) throw error;
+  return (data || []).length;
 }
 
 function registerToyboxSocialRoutes(app) {
@@ -40,6 +63,11 @@ function registerToyboxSocialRoutes(app) {
 
   app.get('/toybox/open', async (_req, res) => {
     try {
+      // Ordinary harmony/secret rounds have no resume UI once the user leaves the
+      // game. Do not let those orphaned rows remain "active" forever and confuse
+      // Luze's current-game lookup. One hour is deliberately generous; invited
+      // rounds, Gomoku and Drawing are never auto-cleaned here.
+      await cleanupStaleUserRuns().catch(error => console.warn('[toybox:stale-cleanup]', error.message));
       const runs = await getStore().getOpenRuns(20);
       res.json({ runs });
     } catch (error) {
@@ -114,4 +142,9 @@ express.application.listen = function toyboxSocialPatchedListen(...args) {
   return originalListen.apply(this, args);
 };
 
-module.exports = { registerToyboxSocialRoutes };
+module.exports = {
+  STALE_USER_RUN_MS,
+  AUTO_CLEAN_GAMES,
+  cleanupStaleUserRuns,
+  registerToyboxSocialRoutes,
+};
