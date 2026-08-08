@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
+const { installPrivateBucketGuard } = require('./privateUploads');
 
 const DRAWING_ACTIVE_WINDOW_MS = 2 * 60 * 60 * 1000;
 const UPLOAD_BUCKET = process.env.SUPABASE_UPLOAD_BUCKET || 'uploads';
@@ -15,6 +16,9 @@ function getSupabase() {
   const key = String(process.env.SUPABASE_KEY || '').trim();
   if (!url || !key) throw new Error('Toybox Supabase 尚未配置');
   supabaseClient = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  // This patch owns its own Supabase client, so install the same private-bucket
+  // guard used by the rest of OurHome instead of relying on the server client.
+  installPrivateBucketGuard(supabaseClient, UPLOAD_BUCKET);
   return supabaseClient;
 }
 
@@ -36,10 +40,17 @@ async function ensureUploadBucket() {
   if (existing.error) {
     const missing = existing.error.statusCode === '404' || /not found/i.test(existing.error.message || '');
     if (!missing) throw existing.error;
-    const created = await supabase.storage.createBucket(UPLOAD_BUCKET, { public: true, fileSizeLimit: 12 * 1024 * 1024 });
+    const created = await supabase.storage.createBucket(UPLOAD_BUCKET, {
+      public: false,
+      fileSizeLimit: 12 * 1024 * 1024,
+    });
     if (created.error) throw created.error;
-  } else if (existing.data?.public === false) {
-    const updated = await supabase.storage.updateBucket(UPLOAD_BUCKET, { public: true, fileSizeLimit: 12 * 1024 * 1024 });
+  } else if (existing.data?.public === true) {
+    // Never make the shared attachment bucket public just to show a Drawing.
+    const updated = await supabase.storage.updateBucket(UPLOAD_BUCKET, {
+      public: false,
+      fileSizeLimit: 12 * 1024 * 1024,
+    });
     if (updated.error) throw updated.error;
   }
   uploadBucketReady = true;
@@ -56,6 +67,8 @@ async function uploadDrawing(image) {
     upsert: false,
   });
   if (uploaded.error) throw uploaded.error;
+  // Keep the stable canonical object reference in the database. OurHome's existing
+  // private upload middleware signs it only when sending it back to the browser.
   return supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(path).data?.publicUrl || '';
 }
 
