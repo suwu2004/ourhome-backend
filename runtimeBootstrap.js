@@ -56,6 +56,7 @@ try {
         toybox_cloud_history: 'drawing-auto-save-v1',
         luze_private_room: body.luze_private_room || 'private-learning-room-v1',
         luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
+        memory_journal: body.memory_journal || 'local-semantic-summary-v2',
       };
     }
     return originalJson.call(this, body);
