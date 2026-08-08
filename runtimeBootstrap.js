@@ -56,7 +56,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, autonomy, persona cleanup, vault tool economy, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -75,6 +75,7 @@ try {
         luze_learning_resilience: 'long-timeout-local-fallback-v1',
         runtime_timeout_guard: 'single-call-timeouts-v1',
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
+        upload_privacy: 'main-client-private-guard-v1',
       };
     }
     return originalJson.call(this, body);
