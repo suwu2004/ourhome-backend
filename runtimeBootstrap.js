@@ -15,6 +15,9 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
+// The hidden journal may maintain open-thread metadata every turn, but its local
+// fallback must never turn the user-facing Happiness Diary summary into “本轮” logs.
+require('./memoryJournalPresentationPatch');
 // A private-room knock is only a local ritual. Intercept its old consent-shaped
 // model request before it can reach the provider or the API usage audit.
 require('./luzeDoorCostGuardPatch');
@@ -31,6 +34,9 @@ require('./runtimeTimeoutGuardPatch');
 // if a paid ledger model is explicitly enabled later, it is still subject to the
 // global non-Chat budget policy and appears in the audit log.
 require('./contextLedgerPatch');
+// Historical summaries and open-thread notes are background only. The final user
+// entry in the provider message array always owns the current turn.
+require('./chatCurrentTurnGuardPatch');
 
 // Adjust ambiguous intimacy cues before intimacyFlowPatch captures the exports.
 require('./intimacyFlowAutonomyPatch');
@@ -56,7 +62,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
