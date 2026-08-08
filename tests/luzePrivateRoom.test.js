@@ -1,0 +1,36 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { parseJsonObject, pickSearchInput, PASS_TTL_MS } = require('../luzePrivateRoomPatch');
+const { preservesRequestedModel } = require('../nonChatBudgetPatch');
+
+test('private room door pass is short-lived rather than permanent', () => {
+  assert.equal(PASS_TTL_MS, 30 * 60 * 1000);
+});
+
+test('learning parser tolerates fenced JSON from a model', () => {
+  assert.deepEqual(
+    parseJsonObject('```json\n{"title":"今天看到的东西","keywords":["Agent"]}\n```'),
+    { title: '今天看到的东西', keywords: ['Agent'] },
+  );
+});
+
+test('search input adapts to web and MCP search schemas', () => {
+  assert.deepEqual(
+    pickSearchInput({ input_schema: { properties: { query: {}, max_results: {}, topic: {} } } }, 'agent memory', 6),
+    { query: 'agent memory', max_results: 6, topic: 'general' },
+  );
+  assert.deepEqual(
+    pickSearchInput({ input_schema: { properties: { q: {}, limit: {} } } }, 'github agents', 4),
+    { q: 'github agents', limit: 4 },
+  );
+});
+
+test('only deliberate private-room thinking bypasses the cheap model guard', () => {
+  assert.equal(preservesRequestedModel('luze-private-consent'), true);
+  assert.equal(preservesRequestedModel('luze-learning-synthesis'), true);
+  assert.equal(preservesRequestedModel('luze-learning-deep'), true);
+  assert.equal(preservesRequestedModel('luze-learning-plan'), false);
+  assert.equal(preservesRequestedModel('memory-journal'), false);
+});

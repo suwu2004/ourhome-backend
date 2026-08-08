@@ -6,11 +6,16 @@ const { isLikelyVisionModel } = require('./modelCompatibility');
 
 // Loaded after apiUsageAuditPatch and before backgroundAiCostGuardPatch.
 // Chat and Theater keep the exact model chosen by the user. Toy Bear keeps its
-// own existing budget selector. Every other paid model request is rewritten to
-// the cheapest suitable model exposed by the currently active API profile.
+// own existing budget selector. Lu Ze's private-room consent and real learning
+// synthesis also keep the selected smart model; planning/rough work stays cheap.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const modelCache = new Map();
+const SMART_BACKGROUND_PURPOSES = new Set([
+  'luze-private-consent',
+  'luze-learning-synthesis',
+  'luze-learning-deep',
+]);
 
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY && typeof providerFetch === 'function'
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
@@ -48,6 +53,15 @@ function messageText(messages) {
         .join('\n');
     })
     .join('\n');
+}
+
+function requestPurpose(init = {}) {
+  try { return String(new Headers(init.headers || undefined).get('X-OurHome-Call-Purpose') || '').trim(); }
+  catch { return ''; }
+}
+
+function preservesRequestedModel(purpose) {
+  return SMART_BACKGROUND_PURPOSES.has(String(purpose || '').trim());
 }
 
 function isModelRequest(url, body) {
@@ -216,13 +230,18 @@ if (typeof providerFetch === 'function') {
     try { body = JSON.parse(init.body); } catch { return providerFetch(input, init); }
     if (!isModelRequest(url, body)) return providerFetch(input, init);
 
+    const purpose = requestPurpose(init);
     // Interactive Chat, Toy Bear, and Theater keep their own selected model.
-    if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body)) return providerFetch(input, init);
+    // Private-room consent and final learning synthesis are also deliberate
+    // high-quality calls; planning/filtering stays behind the cheap-model guard.
+    if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(purpose)) {
+      return providerFetch(input, init);
+    }
 
     const vision = isVisionReaderRequest(body);
     const model = await cheapestModel({ vision });
     if (!model) {
-      console.warn(`[budget-model] blocked paid non-chat call; no safe cheapest model purpose=${inferPurpose(body)} requested=${body.model || ''}`);
+      console.warn(`[budget-model] blocked paid non-chat call; no safe cheapest model purpose=${purpose || inferPurpose(body)} requested=${body.model || ''}`);
       return localBudgetError('当前 API 站点暂时没有拿到可确认的省钱模型，后台功能已停止这次调用，避免误用 Chat 的昂贵模型。');
     }
 
@@ -230,7 +249,7 @@ if (typeof providerFetch === 'function') {
     if (!headers.has('X-OurHome-Call-Purpose')) headers.set('X-OurHome-Call-Purpose', inferPurpose(body));
     const originalModel = String(body.model || '');
     const nextBody = { ...body, model };
-    if (originalModel !== model) console.log(`[budget-model] ${inferPurpose(body)} ${originalModel} -> ${model}`);
+    if (originalModel !== model) console.log(`[budget-model] ${purpose || inferPurpose(body)} ${originalModel} -> ${model}`);
     return providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
   };
 }
@@ -240,7 +259,9 @@ try {
   const originalJson = express.response.json;
   express.response.json = function budgetModelHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, non_chat_model_policy: 'cheapest-except-chat-toybear-theater-v2' };
+      // Legacy policy marker retained for source-level regression compatibility:
+      // cheapest-except-chat-toybear-theater-v2
+      body = { ...body, non_chat_model_policy: 'tiered-learning-v3' };
     }
     return originalJson.call(this, body);
   };
@@ -255,4 +276,6 @@ module.exports = {
   isTheaterRequest,
   isVisionReaderRequest,
   inferPurpose,
+  requestPurpose,
+  preservesRequestedModel,
 };
