@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseJsonObject, pickSearchInput, PASS_TTL_MS } = require('../luzePrivateRoomPatch');
 const { preservesRequestedModel } = require('../nonChatBudgetPatch');
+const { normalizeKinds, scoreEntry } = require('../luzePrivateRoomAssistant');
 
 test('private room door pass is short-lived rather than permanent', () => {
   assert.equal(PASS_TTL_MS, 30 * 60 * 1000);
@@ -27,10 +28,20 @@ test('search input adapts to web and MCP search schemas', () => {
   );
 });
 
-test('only deliberate private-room thinking bypasses the cheap model guard', () => {
-  assert.equal(preservesRequestedModel('luze-private-consent'), true);
+test('only real learning synthesis bypasses the cheap model guard', () => {
+  assert.equal(preservesRequestedModel('luze-private-consent'), false);
   assert.equal(preservesRequestedModel('luze-learning-synthesis'), true);
   assert.equal(preservesRequestedModel('luze-learning-deep'), true);
   assert.equal(preservesRequestedModel('luze-learning-plan'), false);
   assert.equal(preservesRequestedModel('memory-journal'), false);
+});
+
+test('Chat private-room lookup keeps only valid room sections', () => {
+  assert.deepEqual(normalizeKinds(['note', 'idea', 'secret', 'note']), ['note', 'idea']);
+});
+
+test('Chat private-room lookup prefers titles and keywords over loose body matches', () => {
+  const strong = scoreEntry({ title: 'Agent memory', body: '', keywords: ['长期记忆'], stickers: [] }, ['agent', '长期记忆']);
+  const weak = scoreEntry({ title: '随手记', body: '今天看了 agent 和长期记忆', keywords: [], stickers: [] }, ['agent', '长期记忆']);
+  assert.ok(strong > weak);
 });
