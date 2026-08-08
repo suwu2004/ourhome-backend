@@ -47,7 +47,7 @@ try {
       body = {
         ...body,
         runtime_bootstrap: 'direct-server-start-v2-cost-guard',
-        toybox: 'toy-bear-cloud-history-v5',
+        toybox: 'toy-bear-gomoku-v4',
       };
     }
     return originalJson.call(this, body);
