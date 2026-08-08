@@ -48,6 +48,7 @@ try {
         ...body,
         runtime_bootstrap: 'direct-server-start-v2-cost-guard',
         toybox: 'toy-bear-gomoku-v4',
+        toybox_cloud_history: 'drawing-auto-save-v1',
       };
     }
     return originalJson.call(this, body);
