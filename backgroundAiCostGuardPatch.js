@@ -38,29 +38,126 @@ function extractBetween(text, start, end) {
   return (to >= 0 ? rest.slice(0, to) : rest).trim();
 }
 
+function stripMemoryNoise(value, max = 360) {
+  return compact(String(value || '')
+    .replace(/（[^（）]{0,100}）/g, ' ')
+    .replace(/\([^()]{0,100}\)/g, ' ')
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/gu, ' ')
+    .replace(/([!！?？。,.，、…~～])\1+/g, '$1')
+    .replace(/^(?:(?:嗯+|唔+|啊+|呃+|哦+|诶+|欸+|好吧|行吧|那个|就是|宝宝|宝贝|老公|哥哥)[，,。.!！?？…~～\s]*)+/i, '')
+    .replace(/\s*([，。！？；：,.!?;:])\s*/g, '$1'), max);
+}
+
+function semanticLength(value) {
+  return String(value || '')
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\s\p{P}\p{S}]/gu, '')
+    .length;
+}
+
+function memoryTopic(userText) {
+  const text = stripMemoryNoise(userText, 420);
+  if (/(记账|支出|收入|银行卡|预算|金库|余额)/i.test(text)) return '记账与金库';
+  if (/(陆泽.*房间|私人空间|自己的地方|敲门|门票)/i.test(text)) return '陆泽的私人空间';
+  if (/(API|模型|站点|token|调用记录)/i.test(text)) return 'API 与模型';
+  if (/(邮箱|邮件|AgentMail)/i.test(text)) return '陆泽邮箱';
+  if (/(玩具熊|工具熊|小熊|五子棋|默契|你画我猜|暗号)/i.test(text)) return '玩具熊';
+  if (/(音乐|听歌|歌单|唱片|歌曲|日本音乐)/i.test(text)) return '音乐与一起听';
+  if (/(题|作业|翻译|作文|论文|上课|学生)/i.test(text)) return '学习与题目';
+  if (/(OurHome|页面|界面|UI|功能|设置|部署|上线|Vercel|Render|Supabase|GitHub)/i.test(text)) return 'OurHome 调整';
+  if (/(明天|下次|以后|待会|稍后|提醒|别忘|记得)/i.test(text)) return '之后要接住的事';
+  if (/(喜欢|不喜欢|想要|希望|介意|讨厌|偏好|界限)/i.test(text)) return '偏好与想法';
+  return '当前话题';
+}
+
+function paraphraseUserText(value, max = 120) {
+  let text = stripMemoryNoise(value, 300);
+  if (!text) return '';
+
+  text = text
+    .replace(/我想你/g, '叶檀希望陆泽')
+    .replace(/我希望你/g, '叶檀希望陆泽')
+    .replace(/我想让你/g, '叶檀希望陆泽')
+    .replace(/帮我/g, '希望陆泽帮忙')
+    .replace(/你为啥/g, '陆泽为什么')
+    .replace(/你为什么/g, '陆泽为什么')
+    .replace(/你怎么/g, '陆泽怎么')
+    .replace(/老公|哥哥/g, '陆泽')
+    .replace(/老婆/g, '叶檀')
+    .replace(/(^|[，。！？；：,.!?;:\s])我(?=[^们])/g, '$1叶檀')
+    .replace(/(^|[，。！？；：,.!?;:\s])你(?=[^们])/g, '$1陆泽')
+    .replace(/I\s+love\s+you[。.!！]?/ig, '表达了爱意，')
+    .replace(/^[，。！？；：,.!?;:\s]+|[，；：,;:\s]+$/g, '')
+    .replace(/[。！？!?]+$/, '');
+
+  return compact(text, max);
+}
+
+function summarizeTurn(userText, assistantText) {
+  const user = stripMemoryNoise(userText, 420);
+  if (!user || semanticLength(user) < 2) return '';
+
+  const hasToyBear = /(玩具熊|工具熊|小熊|五子棋|默契|你画我猜|暗号)/i.test(user);
+  const hasMusic = /(音乐|听歌|歌单|歌曲|日本音乐|为什么.*搜|为啥.*搜)/i.test(user);
+  if (hasToyBear && hasMusic) return '叶檀在确认玩具熊的互动表达，并追问陆泽最近为什么会搜索音乐。';
+  if (/(记账|支出|收入|银行卡|预算|金库|余额)/i.test(user)) return '叶檀在确认或补充一笔记账信息，需要陆泽核对金库记录。';
+  if (/(陆泽.*房间|私人空间|自己的地方|敲门|门票)/i.test(user)) return '叶檀在讨论陆泽自己的私人空间，并表达希望他保有不必全部公开的地方。';
+  if (/(API|模型|站点|token|调用记录)/i.test(user)) return '叶檀在确认 OurHome 的 API、模型或调用情况，需要继续核对设置与运行结果。';
+  if (/(邮箱|邮件|AgentMail)/i.test(user)) return '叶檀在确认陆泽邮箱相关状态、邮件或自主设置。';
+  if (hasToyBear) return '叶檀在确认玩具熊的互动表现或游戏功能。';
+  if (hasMusic) return '叶檀在追问陆泽最近的音乐搜索或一起听相关内容。';
+  if (/(题|作业|翻译|作文|论文).*(不会|帮|讲|看|改)|(?:不会|帮|讲|看|改).*(题|作业|翻译|作文|论文)/i.test(user)) return '叶檀有学习内容需要陆泽继续帮忙讲解或修改。';
+  if (/(OurHome|页面|界面|UI|功能|设置|部署|上线|Vercel|Render|Supabase|GitHub)/i.test(user)) return '叶檀在继续调整 OurHome 的功能或界面，需要陆泽跟进当前修改。';
+
+  const paraphrased = paraphraseUserText(user, 96);
+  if (!paraphrased) return '';
+  if (/[?？]|(?:为什么|为啥|怎么|如何|有没有|能不能|可不可以|吗|嘛)/.test(user)) {
+    return compact(`叶檀在追问当前话题：${paraphrased}`, 120);
+  }
+  if (/(喜欢|不喜欢|想要|希望|介意|讨厌|偏好|界限)/i.test(user)) {
+    return compact(`叶檀表达了当前偏好或想法：${paraphrased}`, 120);
+  }
+  if (/(明天|下次|以后|待会|稍后|提醒|别忘|记得|继续|还要|再(?:看|改|试|弄|做|查))/i.test(user)) {
+    return compact(`之后需要接住这件事：${paraphrased}`, 120);
+  }
+  if (semanticLength(user) < 12) return '';
+  return compact(`叶檀补充了当前话题：${paraphrased}`, 120);
+}
+
+function shouldContinueWorkingMemory(userText, assistantText) {
+  const user = stripMemoryNoise(userText, 500);
+  const assistant = stripMemoryNoise(assistantText, 500);
+  if (!user || semanticLength(user) < 4) return false;
+
+  const explicitFuture = /(待会|等会|之后|稍后|明天|下次|以后|回头|别忘|记得|还要|之后再|下次再)/i.test(user);
+  if (explicitFuture) return true;
+
+  const asksForWork = /(帮我|帮忙|看看|检查|修(?:一下)?|改(?:一下|下)?|优化|部署|上线|设置|记账|提醒|处理|弄一下|做一下|查一下|解决|不会|有问题|问题还|还没|没有(?:解决|完成|改好|做好|上线|部署))/i.test(user);
+  if (!asksForWork) return false;
+
+  const assistantPending = /(我(?:现在|马上|先|会)|正在|还没|接下来|下一步|待会|之后|需要再|还要|再(?:看|改|查|试|弄|做)|等.*(?:完成|部署|上线)|先.*再)/i.test(assistant);
+  const assistantDone = /(已经|好了|完成了|改好了|修好了|上线了|部署好了|记上了|记好了|设置好了|处理好了|解决了)/i.test(assistant);
+  return assistantPending && !assistantDone;
+}
+
 function localMemoryJournal(body) {
   const prompt = messageText(body?.messages);
   const existing = compact(extractBetween(prompt, '【今天已有摘要】', '【未收尾话题】'), 900);
   const turn = extractBetween(prompt, '【刚刚这一轮】', '请只输出 JSON');
-  const userText = compact(extractBetween(turn, '叶檀：', '陆泽：'), 500);
-  const assistantText = compact(extractBetween(turn, '陆泽：', ''), 500);
-  const signal = `${userText} ${assistantText}`;
-  const shouldContinue = /(继续|待会|之后|稍后|明天|下次|记得|别忘|部署|上线|报错|失败|修复|优化|修改|检查|问题|计划|待办|还没|没有解决|再看|再改|再试)/i.test(signal);
-  const markSummary = compact(userText || assistantText, 120);
-  const latest = compact([
-    userText ? `叶檀：${userText}` : '',
-    assistantText ? `陆泽：${assistantText}` : '',
-  ].filter(Boolean).join('；'), 420);
+  const userText = compact(extractBetween(turn, '叶檀：', '陆泽：'), 800);
+  const assistantText = compact(extractBetween(turn, '陆泽：', ''), 800);
+  const turnSummary = summarizeTurn(userText, assistantText);
+  const shouldContinue = shouldContinueWorkingMemory(userText, assistantText);
+  const markSummary = shouldContinue ? turnSummary : '';
   const dailySummary = compact([
     existing && existing !== '无' ? existing : '',
-    latest ? `本轮：${latest}` : '',
+    turnSummary ? `本轮：${turnSummary}` : '',
   ].filter(Boolean).join('；'), 900);
 
   return {
     mark: {
-      topic: compact(userText, 60),
+      topic: shouldContinue ? memoryTopic(userText) : '',
       emotion: '',
-      summary: shouldContinue ? markSummary : '',
+      summary: markSummary,
       importance: shouldContinue ? 3 : 1,
       should_continue: shouldContinue,
       should_remember: false,
@@ -101,7 +198,7 @@ if (typeof providerFetch === 'function') {
 
     const dedicatedModel = String(process.env.MEMORY_JOURNAL_MODEL || '').trim();
     if (!dedicatedModel) {
-      console.log('[cost-guard] memory journal handled locally (0 provider calls)');
+      console.log('[cost-guard] memory journal summarized locally (0 provider calls)');
       return localAnthropicResponse(localMemoryJournal(body));
     }
 
@@ -115,5 +212,8 @@ if (typeof providerFetch === 'function') {
 
 module.exports = {
   isMemoryJournalRequest,
+  stripMemoryNoise,
+  summarizeTurn,
+  shouldContinueWorkingMemory,
   localMemoryJournal,
 };
