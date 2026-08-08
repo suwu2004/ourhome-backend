@@ -18,6 +18,13 @@ test('Drawing guesses persist a canvas image and a cloud record', () => {
   assert.match(source, /record_saved: true/);
 });
 
+test('Drawing storage keeps the shared upload bucket private', () => {
+  assert.match(source, /installPrivateBucketGuard/);
+  assert.match(source, /public: false/);
+  assert.doesNotMatch(source, /public: true/);
+  assert.match(source, /stable canonical object reference/);
+});
+
 test('prompted Drawing runs are reused instead of duplicated', () => {
   assert.match(source, /\.eq\('game', 'drawing'\)/);
   assert.match(source, /\.eq\('status', 'active'\)/);
