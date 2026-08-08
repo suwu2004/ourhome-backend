@@ -36,11 +36,13 @@ require('./toyboxDrawingPersistencePatch');
 // Lu Ze's own room stays outside relationship memory. It has a per-visit door pass,
 // private notes/ideas/trails and a small autonomous read-only learning loop.
 require('./luzePrivateRoomPatch');
+// Settings may tune Lu Ze's autonomy without opening the private room itself.
+require('./luzeAutonomySettingsPatch');
 // Keep intimacy last: it becomes the outer transport boundary and sanitizes any
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -53,6 +55,7 @@ try {
         toybox: 'toy-bear-gomoku-v4',
         toybox_cloud_history: 'drawing-auto-save-v1',
         luze_private_room: body.luze_private_room || 'private-learning-room-v1',
+        luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
       };
     }
     return originalJson.call(this, body);
