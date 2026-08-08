@@ -30,11 +30,14 @@ require('./chatPromptCleanupPatch');
 require('./toyboxRoutePatch');
 // Add persistent game history, shared active state and Chat-linked Toy Bear access.
 require('./toyboxSocialRoutePatch');
+// A finished Drawing guess is a save boundary: persist freestyle drawings too,
+// and attach the canvas image to an existing prompted Drawing run when possible.
+require('./toyboxDrawingPersistencePatch');
 // Keep intimacy last: it becomes the outer transport boundary and sanitizes any
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, context ledger, autonomy, persona cleanup, toy bear and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, context ledger, autonomy, persona cleanup, toy bear cloud persistence and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -45,6 +48,7 @@ try {
         ...body,
         runtime_bootstrap: 'direct-server-start-v2-cost-guard',
         toybox: 'toy-bear-gomoku-v4',
+        toybox_cloud_history: 'drawing-auto-save-v1',
       };
     }
     return originalJson.call(this, body);
