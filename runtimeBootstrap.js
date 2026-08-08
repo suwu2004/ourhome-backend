@@ -18,6 +18,10 @@ require('./backgroundAiCostGuardPatch');
 // A private-room knock is only a local ritual. Intercept its old consent-shaped
 // model request before it can reach the provider or the API usage audit.
 require('./luzeDoorCostGuardPatch');
+// Learning-note synthesis is allowed a longer transport window than small helper
+// calls. Clear transient HTTP failures retry once; ambiguous timeouts fall back
+// locally so a completed browsing run never vanishes without a note.
+require('./luzeLearningResiliencePatch');
 
 // The rolling ledger runs after the cost guards. Its default path is local-first;
 // if a paid ledger model is explicitly enabled later, it is still subject to the
@@ -45,7 +49,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -60,6 +64,7 @@ try {
         luze_private_room: body.luze_private_room || 'private-learning-room-v1',
         luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
         luze_room_knock: 'local-zero-api-v1',
+        luze_learning_resilience: 'long-timeout-local-fallback-v1',
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
       };
     }
