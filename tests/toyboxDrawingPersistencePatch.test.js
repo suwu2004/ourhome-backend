@@ -26,5 +26,5 @@ test('prompted Drawing runs are reused instead of duplicated', () => {
 
 test('Drawing persistence is loaded on direct production startup', () => {
   assert.match(bootstrap, /require\('\.\/toyboxDrawingPersistencePatch'\)/);
-  assert.match(bootstrap, /toy-bear-cloud-history-v5/);
+  assert.match(bootstrap, /toy-bear-gomoku-v4/);
 });
