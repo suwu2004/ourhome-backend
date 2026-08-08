@@ -79,7 +79,7 @@ try {
         luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
         luze_room_knock: 'local-zero-api-v1',
         luze_learning_resilience: 'long-timeout-local-fallback-v1',
-        runtime_timeout_guard: 'single-call-timeouts-v1',
+        runtime_timeout_guard: 'single-call-timeouts-v2-helper-caps',
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
         upload_privacy: 'main-client-private-guard-v1',
       };
