@@ -22,6 +22,10 @@ require('./luzeDoorCostGuardPatch');
 // calls. Clear transient HTTP failures retry once; ambiguous timeouts fall back
 // locally so a completed browsing run never vanishes without a note.
 require('./luzeLearningResiliencePatch');
+// A few known single-call helpers used timeouts that were shorter than healthy
+// provider latency (or had no practical cap). Extend/cap only those exact calls;
+// never retry them here, so this guard cannot create an extra provider charge.
+require('./runtimeTimeoutGuardPatch');
 
 // The rolling ledger runs after the cost guards. Its default path is local-first;
 // if a paid ledger model is explicitly enabled later, it is still subject to the
@@ -49,7 +53,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -65,6 +69,7 @@ try {
         luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
         luze_room_knock: 'local-zero-api-v1',
         luze_learning_resilience: 'long-timeout-local-fallback-v1',
+        runtime_timeout_guard: 'single-call-timeouts-v1',
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
       };
     }
