@@ -37,6 +37,9 @@ require('./intimacyFlowAutonomyPatch');
 // Remove old response-shaping instructions that conflict with the compact
 // persona-first rules stored in settings. This changes prompt wording only.
 require('./chatPromptCleanupPatch');
+// Exact vault account names can be resolved by the backend itself, so Chat should
+// not spend another expensive model round reading the vault just to fetch IDs.
+require('./chatToolEconomyPatch');
 // Register the lightweight AI-backed Toy Bear routes without touching Chat history.
 require('./toyboxRoutePatch');
 // Add persistent game history, shared active state and Chat-linked Toy Bear access.
@@ -53,7 +56,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, autonomy, persona cleanup, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, autonomy, persona cleanup, vault tool economy, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
