@@ -10,6 +10,9 @@ const { Pool } = require('pg');
 const upstreamFetch = globalThis.fetch;
 const enabled = /^(1|true|yes|on)$/i.test(String(process.env.OURHOME_NEON_FAILOVER_ENABLED || ''));
 const connectionString = String(process.env.OURHOME_NEON_DATABASE_URL || '').trim();
+const secretWrapKey = connectionString
+  ? crypto.createHash('sha256').update(`${connectionString}:ourhome-neon-failover-secrets-v1`).digest('hex')
+  : '';
 const pool = enabled && connectionString
   ? new Pool({ connectionString, max: 4, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 8_000 })
   : null;
@@ -199,11 +202,61 @@ function postgrestError(message, code = 'OURHOME_NEON_FAILOVER') {
   return jsonResponse({ message, code, details: null, hint: null }, 503);
 }
 
+function parseJsonSecret(value) {
+  if (value == null || value === '') return null;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+async function decryptedSecret(client, { secretId = null, name = null } = {}) {
+  const result = await client.query({
+    text: `
+      select pgp_sym_decrypt(ciphertext, $3) as secret
+      from public.ourhome_failover_secrets
+      where ($1::text is not null and secret_id = $1)
+         or ($2::text is not null and secret_name = $2)
+      order by updated_at desc
+      limit 1
+    `,
+    values: [secretId, name, secretWrapKey],
+  });
+  return result.rows[0]?.secret ?? null;
+}
+
+async function handleRpcRequest(client, rpcName, body) {
+  if (rpcName === 'ourhome_get_api_profile_secret') {
+    const profiles = await loadRows(client, 'api_profiles');
+    const profile = profiles.find(row => String(row?.id) === String(body?.p_profile_id || ''));
+    return jsonResponse(profile?.api_key_secret_id
+      ? await decryptedSecret(client, { secretId: String(profile.api_key_secret_id) })
+      : null);
+  }
+
+  if (rpcName === 'ourhome_get_service_secret' || rpcName === 'ourhome_get_agentmail_webhook_secret') {
+    const connections = await loadRows(client, 'service_connections');
+    const connection = connections.find(row => String(row?.id) === String(body?.p_connection_id || ''));
+    const key = rpcName === 'ourhome_get_agentmail_webhook_secret' ? 'webhook_secret_id' : 'secret_id';
+    return jsonResponse(connection?.[key]
+      ? await decryptedSecret(client, { secretId: String(connection[key]) })
+      : null);
+  }
+
+  if (rpcName === 'ourhome_get_daily_automation_token') {
+    return jsonResponse(await decryptedSecret(client, { name: 'ourhome_daily_automation_token' }));
+  }
+
+  if (rpcName === 'ourhome_get_or_create_vapid_keys') {
+    const existing = await decryptedSecret(client, { name: 'ourhome_vapid_keys' });
+    return jsonResponse(parseJsonSecret(existing) || parseJsonSecret(body?.p_secret));
+  }
+
+  return postgrestError(`Supabase RPC ${rpcName} is unavailable while the emergency database is active.`);
+}
+
 function wantsObject(headers) {
   return /vnd\.pgrst\.object\+json/i.test(headers.get('accept') || '');
 }
 
-function formatReadResponse(rows, headers, total) {
+function formatReadResponse(rows, headers, total, offset = 0) {
   if (wantsObject(headers)) {
     if (rows.length === 1) return jsonResponse(rows[0]);
     return jsonResponse({
@@ -211,14 +264,17 @@ function formatReadResponse(rows, headers, total) {
       code: 'PGRST116', details: `The result contains ${rows.length} rows`, hint: null,
     }, 406);
   }
-  const end = rows.length ? rows.length - 1 : 0;
-  return jsonResponse(rows, 200, { 'Content-Range': `0-${end}/${total}` });
+  const end = rows.length ? offset + rows.length - 1 : offset;
+  return jsonResponse(rows, 200, { 'Content-Range': `${offset}-${end}/${total}` });
 }
 
 async function handleTableRequest(client, url, method, headers, body) {
   const table = decodeURIComponent(url.pathname.split('/rest/v1/')[1] || '').replace(/^\/+|\/+$/g, '');
-  if (!/^[a-zA-Z_][\w]*$/.test(table) || table.startsWith('rpc/')) {
-    return postgrestError('This Supabase RPC is unavailable while the emergency database is active.');
+  if (table.startsWith('rpc/')) {
+    return handleRpcRequest(client, table.slice(4), body || {});
+  }
+  if (!/^[a-zA-Z_][\w]*$/.test(table)) {
+    return postgrestError('This Supabase request is unavailable while the emergency database is active.');
   }
   const allRows = await loadRows(client, table);
   const matched = applyFilters(allRows, url.searchParams);
@@ -226,12 +282,15 @@ async function handleTableRequest(client, url, method, headers, body) {
 
   if (method === 'GET' || method === 'HEAD') {
     const ordered = applyOrder(matched, url.searchParams.get('order'));
-    const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-    const limitValue = Number(url.searchParams.get('limit'));
+    const range = String(headers.get('range') || '').match(/^(\d+)-(\d+)$/);
+    const offset = Math.max(0, Number(url.searchParams.get('offset')) || Number(range?.[1]) || 0);
+    const queryLimit = Number(url.searchParams.get('limit'));
+    const rangeLimit = range ? Number(range[2]) - Number(range[1]) + 1 : NaN;
+    const limitValue = Number.isFinite(queryLimit) ? queryLimit : rangeLimit;
     const limited = Number.isFinite(limitValue) && limitValue >= 0 ? ordered.slice(offset, offset + limitValue) : ordered.slice(offset);
     const projected = projectRows(limited, url.searchParams.get('select'));
     if (method === 'HEAD') return jsonResponse(null, 200, { 'Content-Range': `0-0/${matched.length}` });
-    return formatReadResponse(projected, headers, matched.length);
+    return formatReadResponse(projected, headers, matched.length, offset);
   }
 
   if (method === 'POST') {
