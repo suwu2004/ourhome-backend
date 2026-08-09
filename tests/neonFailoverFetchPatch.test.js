@@ -9,11 +9,16 @@ const {
   applyOrder,
   createVaultTransaction,
   deleteVaultTransaction,
+  deleteApiProfile,
+  deleteServiceConnection,
   decryptedSecret,
   inferDefaults,
   matchFilter,
   projectRows,
   readWindow,
+  saveAgentMailWebhookSecret,
+  saveApiProfile,
+  saveServiceConnection,
   storeFailoverObjectWithClient,
 } = require('../neonFailoverFetchPatch');
 
@@ -58,17 +63,40 @@ test('infers numeric and UUID ids without mutating input', () => {
 });
 
 test('encrypted failover secrets use columns that exist in the Neon vault snapshot', async () => {
-  let query;
+  const queries = [];
   const secret = await decryptedSecret({
     async query(statement) {
-      query = statement;
+      queries.push(statement);
+      if (/ourhome_failover_secret_changes/.test(statement.text)) return { rows: [] };
       return { rows: [{ secret: 'kept-private' }] };
     },
   }, { secretId: 'secret-1' });
 
   assert.equal(secret, 'kept-private');
-  assert.match(query.text, /source_updated_at desc nulls last, backed_up_at desc/);
-  assert.doesNotMatch(query.text, /order by updated_at/);
+  assert.match(queries[1].text, /source_updated_at desc nulls last, backed_up_at desc/);
+  assert.doesNotMatch(queries[1].text, /order by updated_at/);
+});
+
+test('pending encrypted secret changes override snapshots, including deletion tombstones', async () => {
+  const updated = await decryptedSecret({
+    async query(statement) {
+      if (/ourhome_failover_secret_changes/.test(statement.text)) {
+        return { rows: [{ operation: 'upsert', secret: 'new-private-key' }] };
+      }
+      throw new Error('snapshot should not be read after a pending secret update');
+    },
+  }, { secretId: 'secret-1' });
+  assert.equal(updated, 'new-private-key');
+
+  const deleted = await decryptedSecret({
+    async query(statement) {
+      if (/ourhome_failover_secret_changes/.test(statement.text)) {
+        return { rows: [{ operation: 'delete', secret: null }] };
+      }
+      throw new Error('snapshot should not resurrect a deleted secret');
+    },
+  }, { secretId: 'secret-1' });
+  assert.equal(deleted, null);
 });
 
 test('API profile activation is journaled atomically during Supabase quota failover', async () => {
@@ -115,9 +143,11 @@ test('API profile activation is journaled atomically during Supabase quota failo
 
 function vaultJournalClient(initialTables) {
   const journal = [];
+  const secretChanges = [];
   const commands = [];
   return {
     journal,
+    secretChanges,
     commands,
     async query(statement) {
       if (typeof statement === 'string') {
@@ -145,10 +175,75 @@ function vaultJournalClient(initialTables) {
         });
         return { rows: [] };
       }
+      if (/insert into public\.ourhome_failover_secret_changes/.test(statement.text)) {
+        secretChanges.push({
+          id: statement.values[0],
+          name: statement.values[1],
+          operation: /'delete'/.test(statement.text) ? 'delete' : 'upsert',
+          secret: statement.values[2] || null,
+        });
+        return { rows: [] };
+      }
       throw new Error(`Unexpected query: ${statement.text}`);
     },
   };
 }
+
+test('API profile create, activation, settings update and deletion stay atomic in Neon', async () => {
+  const client = vaultJournalClient({
+    api_profiles: [{
+      id: '11111111-1111-4111-8111-111111111111', name: '旧线路',
+      base_url: 'https://old.example/v1', selected_model: 'old-model',
+      api_key_secret_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      is_active: true, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z',
+    }],
+    settings: [{
+      id: '22222222-2222-4222-8222-222222222222', session_id: 'global',
+      api_base_url: 'https://old.example/v1', selected_model: 'old-model', updated_at: 'old',
+    }],
+  });
+
+  const createdResponse = await saveApiProfile(client, {
+    p_name: '新线路', p_base_url: 'https://new.example/v1/', p_api_key: 'private-key',
+    p_selected_model: 'new-model', p_make_active: true,
+  });
+  const created = await createdResponse.json();
+  assert.equal(created.base_url, 'https://new.example/v1');
+  assert.equal(created.is_active, true);
+  assert.equal(client.secretChanges[0].name, `ourhome_api_${created.id}`);
+  assert.equal(client.secretChanges[0].operation, 'upsert');
+  assert.equal(client.journal.find(change => change.table === 'settings').payload.selected_model, 'new-model');
+  assert.equal(client.journal.filter(change => change.table === 'api_profiles').length, 2);
+
+  const deletedResponse = await deleteApiProfile(client, created.id);
+  assert.equal(await deletedResponse.text(), '');
+  assert.equal(client.secretChanges.at(-1).operation, 'delete');
+  assert.equal(client.journal.at(-3).operation, 'delete');
+  assert.deepEqual(client.commands, ['begin', 'commit', 'begin', 'commit']);
+});
+
+test('service connections and AgentMail webhook secrets use the encrypted Neon journal', async () => {
+  const client = vaultJournalClient({ service_connections: [] });
+  const savedResponse = await saveServiceConnection(client, {
+    p_kind: 'agentmail', p_name: '陆泽邮箱', p_url: 'https://api.agentmail.to',
+    p_secret: 'mailbox-key', p_enabled: true, p_config: {},
+  });
+  const saved = await savedResponse.json();
+  assert.equal(saved.kind, 'agentmail');
+  assert.equal(client.secretChanges[0].name, `ourhome_connection_${saved.id}`);
+
+  const webhookResponse = await saveAgentMailWebhookSecret(client, {
+    p_connection_id: saved.id, p_secret: 'webhook-key',
+  });
+  const webhookSecretId = await webhookResponse.json();
+  assert.match(webhookSecretId, /^[0-9a-f-]{36}$/i);
+  assert.equal(client.secretChanges.at(-1).name, `ourhome_agentmail_webhook_${saved.id}`);
+
+  const deletedResponse = await deleteServiceConnection(client, saved.id);
+  assert.equal(await deletedResponse.text(), '');
+  assert.equal(client.secretChanges.at(-1).operation, 'delete');
+  assert.equal(client.journal.at(-1).operation, 'delete');
+});
 
 test('vault transaction RPC updates balance and journals every dependent row atomically', async () => {
   const accountId = '11111111-1111-4111-8111-111111111111';

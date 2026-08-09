@@ -293,6 +293,21 @@ function parseJsonSecret(value) {
 }
 
 async function decryptedSecret(client, { secretId = null, name = null } = {}) {
+  const pending = await client.query({
+    text: `
+      select operation,
+             case when operation = 'upsert' then pgp_sym_decrypt(ciphertext, $3) end as secret
+      from public.ourhome_failover_secret_changes
+      where ($1::text is not null and secret_id = $1)
+         or ($2::text is not null and secret_name = $2)
+      order by updated_at desc
+      limit 1
+    `,
+    values: [secretId, name, secretWrapKey],
+  });
+  if (pending.rows[0]) {
+    return pending.rows[0].operation === 'delete' ? null : pending.rows[0].secret;
+  }
   const result = await client.query({
     text: `
       select pgp_sym_decrypt(ciphertext, $3) as secret
@@ -307,8 +322,55 @@ async function decryptedSecret(client, { secretId = null, name = null } = {}) {
   return result.rows[0]?.secret ?? null;
 }
 
+async function storeFailoverSecret(client, { secretId, secretName, secret }) {
+  await client.query({
+    text: `insert into public.ourhome_failover_secret_changes
+             (secret_id,secret_name,operation,ciphertext,created_at,updated_at)
+           values ($1,$2,'upsert',pgp_sym_encrypt($3,$4,'cipher-algo=aes256'),now(),now())
+           on conflict (secret_id) do update
+             set secret_name=excluded.secret_name,
+                 operation='upsert',
+                 ciphertext=excluded.ciphertext,
+                 updated_at=now(),
+                 applied_to_supabase_at=null`,
+    values: [String(secretId), String(secretName), String(secret), secretWrapKey],
+  });
+}
+
+async function deleteFailoverSecret(client, { secretId, secretName }) {
+  if (!secretId) return;
+  await client.query({
+    text: `insert into public.ourhome_failover_secret_changes
+             (secret_id,secret_name,operation,ciphertext,created_at,updated_at)
+           values ($1,$2,'delete',null,now(),now())
+           on conflict (secret_id) do update
+             set secret_name=excluded.secret_name,
+                 operation='delete',
+                 ciphertext=null,
+                 updated_at=now(),
+                 applied_to_supabase_at=null`,
+    values: [String(secretId), String(secretName || `ourhome_secret_${secretId}`)],
+  });
+}
+
+async function journalSettingsForProfile(client, profile, now, settingsRows = null) {
+  const settings = settingsRows || await loadRows(client, 'settings');
+  const current = settings.find(row => row?.session_id === 'global');
+  if (!current) return;
+  await recordChange(client, 'settings', 'upsert', {
+    ...current,
+    api_key: null,
+    api_base_url: profile.base_url,
+    selected_model: profile.selected_model || current.selected_model || null,
+    updated_at: now,
+  }, rowKey(current));
+}
+
 async function activateApiProfile(client, profileId) {
-  const profiles = await loadRows(client, 'api_profiles');
+  const [profiles, settings] = await Promise.all([
+    loadRows(client, 'api_profiles'),
+    loadRows(client, 'settings'),
+  ]);
   const target = profiles.find(profile => String(profile?.id) === String(profileId || ''));
   if (!target) return postgrestError('找不到这个 API 站点', 'P0002');
 
@@ -326,12 +388,205 @@ async function activateApiProfile(client, profileId) {
       }, rowKey(profile));
     }
     await recordChange(client, 'api_profiles', 'upsert', activated, rowKey(target));
+    await journalSettingsForProfile(client, activated, now, settings);
     await client.query('commit');
   } catch (error) {
     await client.query('rollback');
     throw error;
   }
   return jsonResponse(activated);
+}
+
+async function saveApiProfile(client, body = {}) {
+  const [profiles, settings] = await Promise.all([
+    loadRows(client, 'api_profiles'),
+    loadRows(client, 'settings'),
+  ]);
+  const id = String(body.p_id || crypto.randomUUID());
+  const name = String(body.p_name || '').trim();
+  const baseUrl = String(body.p_base_url || '').trim().replace(/\/+$/, '');
+  if (!name || !baseUrl) return postgrestError('站点名称和 API 网址不能为空', '22023');
+  const existing = profiles.find(profile => String(profile?.id) === id) || null;
+  const makeActive = Boolean(body.p_make_active);
+  const now = new Date().toISOString();
+  let secretId = existing?.api_key_secret_id || null;
+  const apiKey = String(body.p_api_key || '').trim();
+  if (apiKey && !secretId) secretId = crypto.randomUUID();
+  const shouldBeActive = makeActive || existing?.is_active || !profiles.some(profile => profile?.is_active);
+  const profile = {
+    ...(existing || {}),
+    id,
+    name,
+    base_url: baseUrl,
+    api_key_secret_id: secretId,
+    selected_model: String(body.p_selected_model || '').trim() || null,
+    is_active: Boolean(shouldBeActive),
+    created_at: existing?.created_at || now,
+    updated_at: now,
+  };
+
+  await client.query('begin');
+  try {
+    if (apiKey) {
+      await storeFailoverSecret(client, {
+        secretId,
+        secretName: `ourhome_api_${id}`,
+        secret: apiKey,
+      });
+    }
+    if (profile.is_active) {
+      for (const current of profiles) {
+        if (!current?.is_active || String(current.id) === id) continue;
+        await recordChange(client, 'api_profiles', 'upsert', {
+          ...current,
+          is_active: false,
+          updated_at: now,
+        }, rowKey(current));
+      }
+    }
+    await recordChange(client, 'api_profiles', 'upsert', profile, existing ? rowKey(existing) : id);
+    if (profile.is_active) await journalSettingsForProfile(client, profile, now, settings);
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(profile);
+}
+
+async function deleteApiProfile(client, profileId) {
+  const [profiles, settings] = await Promise.all([
+    loadRows(client, 'api_profiles'),
+    loadRows(client, 'settings'),
+  ]);
+  const target = profiles.find(profile => String(profile?.id) === String(profileId || ''));
+  if (!target) return jsonResponse(null);
+  const remaining = profiles.filter(profile => String(profile?.id) !== String(target.id));
+  const next = target.is_active
+    ? [...remaining].sort((left, right) => Date.parse(right?.updated_at || 0) - Date.parse(left?.updated_at || 0))[0]
+    : null;
+  const now = new Date().toISOString();
+
+  await client.query('begin');
+  try {
+    await recordChange(client, 'api_profiles', 'delete', null, rowKey(target));
+    await deleteFailoverSecret(client, {
+      secretId: target.api_key_secret_id,
+      secretName: `ourhome_api_${target.id}`,
+    });
+    if (next) {
+      const activated = { ...next, is_active: true, updated_at: now };
+      await recordChange(client, 'api_profiles', 'upsert', activated, rowKey(next));
+      await journalSettingsForProfile(client, activated, now, settings);
+    }
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(null);
+}
+
+async function saveServiceConnection(client, body = {}) {
+  const connections = await loadRows(client, 'service_connections');
+  const id = String(body.p_id || crypto.randomUUID());
+  const existing = connections.find(connection => String(connection?.id) === id) || null;
+  const kind = String(body.p_kind || '');
+  const name = String(body.p_name || '').trim();
+  const url = String(body.p_url || '').trim();
+  if (!['web_search', 'mcp', 'agentmail'].includes(kind) || !name || !url) {
+    return postgrestError('联网服务的类型、名称或网址不正确', '22023');
+  }
+  const secret = String(body.p_secret || '').trim();
+  let secretId = existing?.secret_id || null;
+  if (secret && !secretId) secretId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const connection = {
+    ...(existing || {}),
+    id,
+    kind,
+    name,
+    url,
+    secret_id: secretId,
+    enabled: body.p_enabled !== false,
+    config: body.p_config && typeof body.p_config === 'object' ? body.p_config : {},
+    created_at: existing?.created_at || now,
+    updated_at: now,
+  };
+
+  await client.query('begin');
+  try {
+    if (secret) {
+      await storeFailoverSecret(client, {
+        secretId,
+        secretName: `ourhome_connection_${id}`,
+        secret,
+      });
+    }
+    await recordChange(client, 'service_connections', 'upsert', connection, existing ? rowKey(existing) : id);
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(connection);
+}
+
+async function deleteServiceConnection(client, connectionId) {
+  const connections = await loadRows(client, 'service_connections');
+  const target = connections.find(connection => String(connection?.id) === String(connectionId || ''));
+  if (!target) return jsonResponse(null);
+  await client.query('begin');
+  try {
+    await recordChange(client, 'service_connections', 'delete', null, rowKey(target));
+    await deleteFailoverSecret(client, { secretId: target.secret_id, secretName: `ourhome_connection_${target.id}` });
+    await deleteFailoverSecret(client, { secretId: target.webhook_secret_id, secretName: `ourhome_agentmail_webhook_${target.id}` });
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(null);
+}
+
+async function saveAgentMailWebhookSecret(client, body = {}) {
+  const connections = await loadRows(client, 'service_connections');
+  const target = connections.find(connection => (
+    String(connection?.id) === String(body.p_connection_id || '') && connection?.kind === 'agentmail'
+  ));
+  if (!target) return postgrestError('找不到 AgentMail 连接', 'P0002');
+  const secret = String(body.p_secret || '').trim();
+  const secretId = target.webhook_secret_id || (secret ? crypto.randomUUID() : null);
+  const now = new Date().toISOString();
+  let config = target.config && typeof target.config === 'object' ? { ...target.config } : {};
+  if (!secret) {
+    delete config.webhook_id;
+    delete config.webhook_url;
+    delete config.webhook_registered_at;
+  }
+  const connection = { ...target, webhook_secret_id: secret ? secretId : null, config, updated_at: now };
+
+  await client.query('begin');
+  try {
+    if (secret) {
+      await storeFailoverSecret(client, {
+        secretId,
+        secretName: `ourhome_agentmail_webhook_${target.id}`,
+        secret,
+      });
+    } else {
+      await deleteFailoverSecret(client, {
+        secretId: target.webhook_secret_id,
+        secretName: `ourhome_agentmail_webhook_${target.id}`,
+      });
+    }
+    await recordChange(client, 'service_connections', 'upsert', connection, rowKey(target));
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(secretId);
 }
 
 function vaultBalanceDelta(account, type, amount, reverse = false) {
@@ -473,6 +728,26 @@ async function handleRpcRequest(client, rpcName, body) {
 
   if (rpcName === 'ourhome_activate_api_profile') {
     return activateApiProfile(client, body?.p_id);
+  }
+
+  if (rpcName === 'ourhome_save_api_profile') {
+    return saveApiProfile(client, body);
+  }
+
+  if (rpcName === 'ourhome_delete_api_profile') {
+    return deleteApiProfile(client, body?.p_id);
+  }
+
+  if (rpcName === 'ourhome_save_service_connection') {
+    return saveServiceConnection(client, body);
+  }
+
+  if (rpcName === 'ourhome_delete_service_connection') {
+    return deleteServiceConnection(client, body?.p_connection_id);
+  }
+
+  if (rpcName === 'ourhome_save_agentmail_webhook_secret') {
+    return saveAgentMailWebhookSecret(client, body);
   }
 
   if (rpcName === 'ourhome_vault_create_transaction') {
@@ -622,6 +897,8 @@ module.exports = {
   applyOrder,
   createVaultTransaction,
   deleteVaultTransaction,
+  deleteApiProfile,
+  deleteServiceConnection,
   decryptedSecret,
   failoverObjectSignature,
   handleRpcRequest,
@@ -630,6 +907,9 @@ module.exports = {
   projectRows,
   readFailoverObject,
   readWindow,
+  saveAgentMailWebhookSecret,
+  saveApiProfile,
+  saveServiceConnection,
   storeFailoverObject,
   storeFailoverObjectWithClient,
   verifyFailoverObjectSignature,
