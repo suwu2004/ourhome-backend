@@ -907,6 +907,7 @@ module.exports = {
   projectRows,
   readFailoverObject,
   readWindow,
+  primaryFetch: upstreamFetch,
   saveAgentMailWebhookSecret,
   saveApiProfile,
   saveServiceConnection,
