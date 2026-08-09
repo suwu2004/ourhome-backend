@@ -70,6 +70,32 @@ test('同一份响应里的历史附件会批量换成短期签名链接', async
   assert.match(signed, /token=batch/);
 });
 
+test('客户端发现过期图片后可以强制绕过签名缓存', async () => {
+  let batch = 0;
+  const supabase = {
+    storage: {
+      from() {
+        return {
+          async createSignedUrls(paths) {
+            batch += 1;
+            return { data: paths.map(path => ({ path, signedUrl: `https://signed.example/${path}?token=${batch}` })), error: null };
+          },
+          async createSignedUrl(path) {
+            return { data: { signedUrl: `https://signed.example/${path}?token=${batch}` }, error: null };
+          },
+        };
+      },
+    },
+  };
+  const signer = createUploadSigner({ supabase, expiresIn: 3600 });
+  const first = await signer.signText(PUBLIC_URL);
+  const cached = await signer.signText(PUBLIC_URL);
+  const refreshed = await signer.signText(PUBLIC_URL, { force: true });
+  assert.equal(first, cached);
+  assert.notEqual(first, refreshed);
+  assert.match(refreshed, /token=2/);
+});
+
 test('响应中间件会签名读取链接，请求中间件会还原稳定引用', async () => {
   const signer = { signText: async text => text.replace(PUBLIC_URL, 'https://signed.example/temporary') };
   const middleware = createPrivateUploadMiddleware({ signer });
@@ -84,6 +110,17 @@ test('响应中间件会签名读取链接，请求中间件会还原稳定引�
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(req.body.attachment_url, PUBLIC_URL);
   assert.equal(JSON.parse(sent[0]).attachment_url, 'https://signed.example/temporary');
+});
+
+test('背景恢复请求会把强制刷新标记传给签名器', async () => {
+  let received = null;
+  const signer = { signText: async (text, options) => { received = options; return text; } };
+  const middleware = createPrivateUploadMiddleware({ signer });
+  const req = { originalUrl: '/settings', body: {}, headers: { 'x-ourhome-refresh-assets': '1' } };
+  const res = { statusCode: 200, send() { return this; } };
+  middleware(req, res, () => res.send(PUBLIC_URL));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(received, { force: true });
 });
 
 test('备份保持稳定附件引用，不写入即将过期的 token', async () => {

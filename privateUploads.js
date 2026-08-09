@@ -55,7 +55,8 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
   const cache = new Map();
   const fileApi = supabase.storage.from(bucket);
 
-  function cached(path) {
+  function cached(path, force = false) {
+    if (force) return '';
     const item = cache.get(path);
     return item && item.expiresAt > Date.now() + SIGNED_CACHE_SAFETY_MS ? item.url : '';
   }
@@ -69,8 +70,8 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
     if (cache.size > 5000) cache.delete(cache.keys().next().value);
   }
 
-  async function signOne(path) {
-    const existing = cached(path);
+  async function signOne(path, { force = false } = {}) {
+    const existing = cached(path, force);
     if (existing) return existing;
     const { data, error } = await fileApi.createSignedUrl(path, expiresIn);
     if (error || !data?.signedUrl) return '';
@@ -78,12 +79,12 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
     return data.signedUrl;
   }
 
-  async function signMany(paths) {
+  async function signMany(paths, { force = false } = {}) {
     const unique = [...new Set(paths.filter(Boolean))];
     const result = new Map();
     const missing = [];
     unique.forEach(path => {
-      const existing = cached(path);
+      const existing = cached(path, force);
       if (existing) result.set(path, existing);
       else missing.push(path);
     });
@@ -107,18 +108,18 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
     }
 
     await Promise.all(missing.filter(path => !result.has(path)).map(async path => {
-      const signedUrl = await signOne(path);
+      const signedUrl = await signOne(path, { force });
       if (signedUrl) result.set(path, signedUrl);
     }));
     return result;
   }
 
-  async function signText(text) {
+  async function signText(text, { force = false } = {}) {
     if (typeof text !== 'string' || !text.includes('/storage/v1/object/')) return text;
     const matches = [...new Set(text.match(UPLOAD_URL_RE) || [])];
     if (!matches.length) return text;
     const parsed = matches.map(url => ({ url, parsed: parseUploadObjectUrl(url, bucket) })).filter(item => item.parsed);
-    const signed = await signMany(parsed.map(item => item.parsed.path));
+    const signed = await signMany(parsed.map(item => item.parsed.path), { force });
     let output = text;
     parsed.forEach(item => {
       const signedUrl = signed.get(item.parsed.path);
@@ -205,6 +206,7 @@ function createPrivateUploadMiddleware({ signer, exportSigner = signer, bucket =
 
     const path = requestPath(req);
     const keepStableReferences = path === '/backup' || path.startsWith('/backup/');
+    const forceRefresh = String(req.headers?.['x-ourhome-refresh-assets'] || '') === '1';
     const responseSigner = path === '/export' || path.startsWith('/export/') ? exportSigner : signer;
     const originalSend = res.send.bind(res);
     let sending = false;
@@ -219,7 +221,7 @@ function createPrivateUploadMiddleware({ signer, exportSigner = signer, bucket =
         return originalSend(body);
       }
       sending = true;
-      responseSigner.signText(body)
+      responseSigner.signText(body, { force: forceRefresh })
         .then(originalSend)
         .catch(error => {
           console.error('附件临时链接生成失败，继续返回原始引用:', error.message);
