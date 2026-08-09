@@ -18,6 +18,11 @@ require('./backgroundAiCostGuardPatch');
 // Install the dormant R2 mirror before any runtime creates a protected upload
 // client. Without explicit Cloudflare credentials this patch is a no-op.
 require('./r2ShadowPatch');
+// A cached Render build can occasionally contain a stale index.html beside newer
+// hashed assets. Reject that incomplete shell before the front-door module resolves
+// its local directory, so the safe Vercel-origin fallback can provide one coherent build.
+const { guardRenderFrontend } = require('./renderFrontendIntegrityGuard');
+guardRenderFrontend();
 // Add a Render-hosted fallback UI before Express starts listening. The existing
 // '/' health endpoint remains untouched; the browser entry is '/home'.
 const renderFrontdoorPatch = require('./renderFrontdoorPatch');
