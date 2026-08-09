@@ -67,6 +67,9 @@ app.post('/agentmail/webhook', express.raw({ type: 'application/json', limit: '1
 app.use(express.json());
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const { createNeonFailoverReplay } = require('./neonFailoverReplay');
+const { primaryFetch } = require('./neonFailoverFetchPatch');
+const failoverReplay = createNeonFailoverReplay({ fetchImpl: primaryFetch });
 const runtimeConfig = createRuntimeConfig(supabase);
 const integrationManager = createIntegrationManager(runtimeConfig);
 const vaultStore = createVaultStore(supabase);
@@ -3338,6 +3341,25 @@ app.get('/', (req, res) => {
   });
 });
 
+app.get('/failover/status', async (req, res) => {
+  if (!failoverReplay) return res.json({ enabled: false, tables: [], pending_secrets: 0 });
+  try { res.json({ enabled: true, ...(await failoverReplay.status()) }); }
+  catch (error) { res.status(503).json({ error: '备用数据状态暂时没有取回来' }); }
+});
+
+app.post('/failover/replay', async (req, res) => {
+  if (!failoverReplay) return res.status(503).json({ error: 'Neon 回迁尚未启用' });
+  if (req.body?.confirmation !== 'supabase-restored') {
+    return res.status(400).json({ error: '需要明确确认 Supabase 已恢复后才能回迁' });
+  }
+  try {
+    const result = await failoverReplay.replay({ limit: req.body?.limit });
+    res.status(result.failed.length ? 409 : 200).json(result);
+  } catch (error) {
+    res.status(error?.code === 'pending_secret_replay' ? 409 : 503).json({ error: error.message });
+  }
+});
+
 app.get('/weather', async (req, res) => {
   const city = String(req.query.city || '').trim();
   if (!city) return res.status(400).json({ error: '请先在设置里填写主页天气城市' });
@@ -3946,10 +3968,25 @@ async function fetchModelsForProfile(profile) {
   return raw.map(model => typeof model === 'string' ? model : (model.id || model.name)).filter(Boolean);
 }
 
+async function loadModelsForProfile(profile) {
+  try {
+    return { models: await fetchModelsForProfile(profile), degraded: false };
+  } catch (error) {
+    const savedModel = String(profile?.selected_model || '').trim();
+    if (!savedModel) throw error;
+    console.warn(`模型清单不可用，继续使用已保存模型 ${savedModel}:`, String(error?.message || error).slice(0, 240));
+    return {
+      models: [savedModel],
+      degraded: true,
+      notice: '这个站点没有开放模型清单，已继续使用它保存的模型',
+    };
+  }
+}
+
 app.get('/settings/models', async (req, res) => {
   try {
     const settings = await runtimeConfig.loadSettings();
-    res.json({ models: await fetchModelsForProfile(settings) });
+    res.json(await loadModelsForProfile(settings));
   } catch (err) {
     console.error('拉取模型错误:', err);
     res.status(400).json({ error: err.message });
@@ -4064,7 +4101,7 @@ app.get('/api-profiles/:id/models', async (req, res) => {
   try {
     const profile = await runtimeConfig.getProfileRuntime(req.params.id);
     if (!profile) return res.status(404).json({ error: '找不到这个 API 站点' });
-    res.json({ models: await fetchModelsForProfile(profile) });
+    res.json(await loadModelsForProfile(profile));
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
