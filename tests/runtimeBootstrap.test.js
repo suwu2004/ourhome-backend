@@ -9,6 +9,7 @@ const bootstrapSource = fs.readFileSync(path.join(repoRoot, 'runtimeBootstrap.js
 
 test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(runtimeConfigSource, /^require\('\.\/runtimeBootstrap'\);/);
+  assert.match(bootstrapSource, /require\('\.\/neonFailoverFetchPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/memoryLayerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/modelTokenLimitPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/thinkingTransportPatch'\);/);
