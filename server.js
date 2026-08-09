@@ -3250,7 +3250,10 @@ app.post('/automation/heartbeat', async (req, res) => {
 
 // 全局token验证中间件（/login和/本身不需要验证）
 app.use((req, res, next) => {
-  if (req.path === '/login' || req.path === '/') return next();
+  // Render 的备用前门会把浏览器的同源请求先发到 /api/*，随后由
+  // renderFrontdoorPatch 代理回真正的根路由。外层请求必须先抵达代理，
+  // 内层 /chat、/settings 等路由仍会再次经过这里并校验 token。
+  if (req.path === '/login' || req.path === '/' || req.path === '/api' || req.path.startsWith('/api/')) return next();
   const auth = req.headers['authorization'] || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!verifyToken(token)) return res.status(401).json({ error: '未授权，请先登录' });
