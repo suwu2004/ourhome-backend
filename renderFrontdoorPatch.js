@@ -55,15 +55,28 @@ function cachedStatic(pathname, { allowStale = false } = {}) {
   return item;
 }
 
+// Public Render shell requests are intercepted before Express runs its init
+// middleware, so `res` is still a native Node ServerResponse here. Keep every
+// response on this early path strictly to statusCode/setHeader/end; Express-only
+// helpers such as res.status(), res.send() and res.json() are not available yet.
+function writePublicResponse(res, statusCode, body, headers = {}) {
+  res.statusCode = Number(statusCode) || 200;
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined && value !== null && value !== '') res.setHeader(name, String(value));
+  }
+  res.end(body === undefined || body === null ? '' : body);
+}
+
 function sendCached(res, item, { stale = false } = {}) {
-  res.status(item.status || 200);
-  res.setHeader('Content-Type', item.contentType);
-  if (item.cacheControl) res.setHeader('Cache-Control', item.cacheControl);
-  if (item.etag) res.setHeader('ETag', item.etag);
-  if (item.lastModified) res.setHeader('Last-Modified', item.lastModified);
-  res.setHeader('X-OurHome-Frontdoor-Cache', 'render-memory');
-  if (stale) res.setHeader('X-OurHome-Frontdoor-Stale', '1');
-  res.send(item.body);
+  const headers = {
+    'Content-Type': item.contentType,
+    'Cache-Control': item.cacheControl,
+    ETag: item.etag,
+    'Last-Modified': item.lastModified,
+    'X-OurHome-Frontdoor-Cache': 'render-memory',
+  };
+  if (stale) headers['X-OurHome-Frontdoor-Stale'] = '1';
+  writePublicResponse(res, item.status || 200, item.body, headers);
 }
 
 function localRelativePath(pathname) {
@@ -158,28 +171,32 @@ async function serveFrontendPath(req, res, pathname) {
   try {
     const result = await fetchFrontend(pathname);
     if (result.local) {
-      res.status(200);
-      res.setHeader('Content-Type', result.contentType);
-      res.setHeader('Cache-Control', result.cacheControl);
-      res.setHeader('X-OurHome-Frontdoor', 'render-local-build-v2');
-      return res.send(result.body);
+      return writePublicResponse(res, 200, result.body, {
+        'Content-Type': result.contentType,
+        'Cache-Control': result.cacheControl,
+        'X-OurHome-Frontdoor': 'render-local-build-v3-native-response',
+      });
     }
     if (result.cached) {
       sendCached(res, result.cached, { stale: result.stale });
       return;
     }
     const { response, body } = result;
-    res.status(response.status);
-    res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
-    for (const name of ['cache-control', 'etag', 'last-modified']) {
-      const value = response.headers.get(name);
-      if (value) res.setHeader(name, value);
-    }
-    res.setHeader('X-OurHome-Frontdoor', 'render-remote-fallback-v2');
-    res.send(body);
+    return writePublicResponse(res, response.status, body, {
+      'Content-Type': response.headers.get('content-type') || 'application/octet-stream',
+      'Cache-Control': response.headers.get('cache-control') || '',
+      ETag: response.headers.get('etag') || '',
+      'Last-Modified': response.headers.get('last-modified') || '',
+      'X-OurHome-Frontdoor': 'render-remote-fallback-v3-native-response',
+    });
   } catch (error) {
     console.warn('[render-frontdoor] frontend unavailable:', error?.message || error);
-    res.status(502).type('html').send('<!doctype html><meta charset="utf-8"><title>OurHome</title><body style="font-family:sans-serif;padding:32px">OurHome 的备用前门暂时没有取到页面，请稍后刷新。</body>');
+    return writePublicResponse(
+      res,
+      502,
+      '<!doctype html><meta charset="utf-8"><title>OurHome</title><body style="font-family:sans-serif;padding:32px">OurHome 的备用前门暂时没有取到页面，请稍后刷新。</body>',
+      { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    );
   }
 }
 
@@ -189,13 +206,17 @@ async function serveRenderManifest(req, res) {
     const manifest = JSON.parse(resultBody(result).toString('utf8'));
     manifest.start_url = FRONTDOOR_PATH;
     manifest.scope = '/';
-    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-OurHome-Frontdoor', result.local ? 'render-local-manifest-v2' : 'render-manifest-v2');
-    res.send(JSON.stringify(manifest));
+    return writePublicResponse(res, 200, JSON.stringify(manifest), {
+      'Content-Type': 'application/manifest+json; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'X-OurHome-Frontdoor': result.local ? 'render-local-manifest-v3' : 'render-manifest-v3',
+    });
   } catch (error) {
     console.warn('[render-frontdoor] manifest unavailable:', error?.message || error);
-    res.status(404).json({ error: 'manifest unavailable' });
+    return writePublicResponse(res, 404, JSON.stringify({ error: 'manifest unavailable' }), {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
   }
 }
 
@@ -224,7 +245,10 @@ async function servePublicFrontdoor(req, res, pathname) {
   if (pathname === '/manifest.json') return serveRenderManifest(req, res);
   if (FRONTDOOR_ICON_PATHS.has(pathname)) return serveFrontendPath(req, res, pathname);
   if (pathname === '/ourhome-sw.js') {
-    return res.status(404).type('text').send('Render front door does not install the Vercel service worker.');
+    return writePublicResponse(res, 404, 'Render front door does not install the Vercel service worker.', {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
   }
   return undefined;
 }
@@ -314,8 +338,14 @@ if (!express.application.__ourhomeRenderFrontdoorHandlePatch) {
     if (String(req.method || 'GET').toUpperCase() === 'GET' && isPublicFrontdoorPath(pathname)) {
       Promise.resolve(servePublicFrontdoor(req, res, pathname)).catch(error => {
         console.warn('[render-frontdoor] public shell failed:', error?.message || error);
-        if (!res.headersSent) res.status(502).json({ error: '备用前门暂时不可用' });
-        else res.end();
+        if (!res.headersSent) {
+          writePublicResponse(res, 502, JSON.stringify({ error: '备用前门暂时不可用' }), {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+          });
+        } else {
+          res.end();
+        }
       });
       return;
     }
@@ -343,6 +373,8 @@ module.exports = {
   localFrontendFile,
   readLocalFrontend,
   renderFrontdoorStatus,
+  writePublicResponse,
+  servePublicFrontdoor,
   localApiUrl,
   readProxyBody,
   proxyApiRequest,
