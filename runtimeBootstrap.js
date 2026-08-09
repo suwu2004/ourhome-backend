@@ -2,6 +2,9 @@
 
 // Render starts the service with `node server.js`. Keep every runtime compatibility
 // layer on this one path so direct Render startup and `npm start` behave the same.
+// Arm the Supabase-402 fallback before any module captures the global fetch.
+// Requiring it again from `npm start` is harmless because Node caches modules.
+require('./neonFailoverFetchPatch');
 require('./theaterMemoryPatch');
 require('./memoryLayerPatch');
 require('./modelTokenLimitPatch');
@@ -77,7 +80,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, R2 shadow storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, R2 shadow storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
