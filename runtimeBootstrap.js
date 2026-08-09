@@ -101,6 +101,7 @@ try {
         runtime_timeout_guard: 'single-call-timeouts-v2-helper-caps',
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
         upload_privacy: 'main-client-private-guard-v1',
+        background_recovery: 'force-signed-url-refresh-v1',
         photo_retention: 'chat-images-30d-auto-clean-v1',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,
