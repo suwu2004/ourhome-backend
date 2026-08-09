@@ -24,4 +24,5 @@ test('main runtime installs the private uploads guard on its Supabase client', (
 test('production health exposes the main-client upload privacy guard', () => {
   const bootstrap = source('runtimeBootstrap.js');
   assert.match(bootstrap, /upload_privacy:\s*'main-client-private-guard-v1'/);
+  assert.match(bootstrap, /background_recovery:\s*'force-signed-url-refresh-v1'/);
 });
