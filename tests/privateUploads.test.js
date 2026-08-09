@@ -96,6 +96,33 @@ test('客户端发现过期图片后可以强制绕过签名缓存', async () =>
   assert.match(refreshed, /token=2/);
 });
 
+test('存储配额阻断后不再为同一响应逐张重试签名', async () => {
+  let batchCalls = 0;
+  let singleCalls = 0;
+  const supabase = {
+    storage: {
+      from() {
+        return {
+          async createSignedUrls() {
+            batchCalls += 1;
+            return { data: null, error: { statusCode: 402, message: 'Payment Required' } };
+          },
+          async createSignedUrl() {
+            singleCalls += 1;
+            return { data: null, error: { statusCode: 402, message: 'Payment Required' } };
+          },
+        };
+      },
+    },
+  };
+  const signer = createUploadSigner({ supabase });
+  const text = JSON.stringify({ first: PUBLIC_URL, second: PUBLIC_URL.replace('folder/', 'other/') });
+  assert.equal(await signer.signText(text), text);
+  assert.equal(await signer.signText(text, { force: true }), text);
+  assert.equal(batchCalls, 1);
+  assert.equal(singleCalls, 0);
+});
+
 test('响应中间件会签名读取链接，请求中间件会还原稳定引用', async () => {
   const signer = { signText: async text => text.replace(PUBLIC_URL, 'https://signed.example/temporary') };
   const middleware = createPrivateUploadMiddleware({ signer });
