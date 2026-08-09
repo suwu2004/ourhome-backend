@@ -4,8 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  activateApiProfile,
   applyFilters,
   applyOrder,
+  decryptedSecret,
   inferDefaults,
   matchFilter,
   projectRows,
@@ -50,4 +52,60 @@ test('infers numeric and UUID ids without mutating input', () => {
   assert.match(numeric.created_at, /^\d{4}-/);
   const uuid = inferDefaults({ title: 'letter' }, [{ id: '0ddf4fa8-bc42-4e14-9ae7-b02d1309ad75' }]);
   assert.match(uuid.id, /^[0-9a-f-]{36}$/i);
+});
+
+test('encrypted failover secrets use columns that exist in the Neon vault snapshot', async () => {
+  let query;
+  const secret = await decryptedSecret({
+    async query(statement) {
+      query = statement;
+      return { rows: [{ secret: 'kept-private' }] };
+    },
+  }, { secretId: 'secret-1' });
+
+  assert.equal(secret, 'kept-private');
+  assert.match(query.text, /source_updated_at desc nulls last, backed_up_at desc/);
+  assert.doesNotMatch(query.text, /order by updated_at/);
+});
+
+test('API profile activation is journaled atomically during Supabase quota failover', async () => {
+  const profiles = [
+    { id: 'profile-a', name: 'A', base_url: 'https://a.example/v1', selected_model: 'model-a', is_active: true, updated_at: 'old' },
+    { id: 'profile-b', name: 'B', base_url: 'https://b.example/v1', selected_model: 'model-b', is_active: false, updated_at: 'old' },
+  ];
+  const journal = [];
+  const commands = [];
+  const client = {
+    async query(statement) {
+      if (typeof statement === 'string') {
+        commands.push(statement);
+        return { rows: [] };
+      }
+      if (/with latest_changes/.test(statement.text)) {
+        return { rows: profiles.map(payload => ({ row_key: String(payload.id), payload })) };
+      }
+      if (/insert into public\.ourhome_failover_changes/.test(statement.text)) {
+        journal.push({
+          table: statement.values[0],
+          key: statement.values[1],
+          operation: statement.values[2],
+          payload: JSON.parse(statement.values[3]),
+        });
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected query: ${statement.text}`);
+    },
+  };
+
+  const response = await activateApiProfile(client, 'profile-b');
+  const activated = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(activated.id, 'profile-b');
+  assert.equal(activated.is_active, true);
+  assert.deepEqual(commands, ['begin', 'commit']);
+  assert.deepEqual(journal.map(change => [change.table, change.key, change.payload.is_active]), [
+    ['api_profiles', 'profile-a', false],
+    ['api_profiles', 'profile-b', true],
+  ]);
 });
