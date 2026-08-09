@@ -29,6 +29,10 @@ require('./luzeLearningResiliencePatch');
 // provider latency (or had no practical cap). Extend/cap only those exact calls;
 // never retry them here, so this guard cannot create an extra provider charge.
 require('./runtimeTimeoutGuardPatch');
+// Ordinary chat photos are disposable after 30 days unless another durable feature
+// (photo memories, avatars/backgrounds, favorites or Toybox) still references them.
+// This is storage maintenance only and never calls an AI provider.
+require('./photoRetentionPatch');
 
 // The rolling ledger runs after the cost guards. Its default path is local-first;
 // if a paid ledger model is explicitly enabled later, it is still subject to the
@@ -62,7 +66,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -82,6 +86,8 @@ try {
         runtime_timeout_guard: 'single-call-timeouts-v2-helper-caps',
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
         upload_privacy: 'main-client-private-guard-v1',
+        photo_retention: 'chat-images-30d-auto-clean-v1',
+        storage_egress: '24h-signed-30d-cache-v1',
       };
     }
     return originalJson.call(this, body);
