@@ -1,6 +1,7 @@
 const DEFAULT_BUCKET = 'uploads';
-const DEFAULT_SIGNED_SECONDS = 60 * 60;
+const DEFAULT_SIGNED_SECONDS = 24 * 60 * 60;
 const DEFAULT_EXPORT_SIGNED_SECONDS = 30 * 24 * 60 * 60;
+const DEFAULT_OBJECT_CACHE_SECONDS = 30 * 24 * 60 * 60;
 const SIGNED_CACHE_SAFETY_MS = 5 * 60 * 1000;
 const UPLOAD_URL_RE = /https?:\/\/[^\s"'<>\\]+\/storage\/v1\/object\/(?:public|sign)\/uploads\/[^\s"'<>\\]+/g;
 
@@ -134,6 +135,7 @@ function installPrivateBucketGuard(supabase, bucket = DEFAULT_BUCKET) {
   if (!storage || storage.__ourhomePrivateBucketGuard) return;
   const originalCreate = typeof storage.createBucket === 'function' ? storage.createBucket.bind(storage) : null;
   const originalUpdate = typeof storage.updateBucket === 'function' ? storage.updateBucket.bind(storage) : null;
+  const originalFrom = typeof storage.from === 'function' ? storage.from.bind(storage) : null;
 
   if (originalCreate) {
     storage.createBucket = (id, options = {}) => originalCreate(id, {
@@ -146,6 +148,27 @@ function installPrivateBucketGuard(supabase, bucket = DEFAULT_BUCKET) {
       ...options,
       public: id === bucket ? false : options.public,
     });
+  }
+  if (originalFrom) {
+    storage.from = id => {
+      const fileApi = originalFrom(id);
+      if (id !== bucket || !fileApi || fileApi.__ourhomeUploadCacheGuard) return fileApi;
+      const originalUpload = typeof fileApi.upload === 'function' ? fileApi.upload.bind(fileApi) : null;
+      const originalFileUpdate = typeof fileApi.update === 'function' ? fileApi.update.bind(fileApi) : null;
+      const withCache = options => {
+        const next = { ...(options || {}) };
+        if (next.cacheControl == null) next.cacheControl = String(DEFAULT_OBJECT_CACHE_SECONDS);
+        return next;
+      };
+      if (originalUpload) {
+        fileApi.upload = (path, body, options = {}) => originalUpload(path, body, withCache(options));
+      }
+      if (originalFileUpdate) {
+        fileApi.update = (path, body, options = {}) => originalFileUpdate(path, body, withCache(options));
+      }
+      Object.defineProperty(fileApi, '__ourhomeUploadCacheGuard', { value: true, enumerable: false });
+      return fileApi;
+    };
   }
   Object.defineProperty(storage, '__ourhomePrivateBucketGuard', {
     value: true,
@@ -227,6 +250,7 @@ module.exports = {
   DEFAULT_BUCKET,
   DEFAULT_SIGNED_SECONDS,
   DEFAULT_EXPORT_SIGNED_SECONDS,
+  DEFAULT_OBJECT_CACHE_SECONDS,
   parseUploadObjectUrl,
   canonicalUploadUrl,
   canonicalizeUploadReferences,
