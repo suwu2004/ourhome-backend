@@ -6,7 +6,7 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT, '.render-frontend-src');
-const OUTPUT_DIR = path.join(ROOT, '.render-frontend-dist');
+const OUTPUT_DIR = path.join(ROOT, 'render-frontend-dist');
 const FRONTEND_REPO = 'https://github.com/suwu2004/ourhome-frontend.git';
 
 function run(command, args, options = {}) {
