@@ -20,7 +20,7 @@ require('./backgroundAiCostGuardPatch');
 require('./r2ShadowPatch');
 // Add a Render-hosted fallback UI before Express starts listening. The existing
 // '/' health endpoint remains untouched; the browser entry is '/home'.
-require('./renderFrontdoorPatch');
+const renderFrontdoorPatch = require('./renderFrontdoorPatch');
 // The hidden journal may maintain open-thread metadata every turn, but its local
 // fallback must never turn the user-facing Happiness Diary summary into “本轮” logs.
 require('./memoryJournalPresentationPatch');
@@ -96,7 +96,7 @@ try {
         photo_retention: 'chat-images-30d-auto-clean-v1',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,
-        render_frontdoor: 'home-gateway-v1',
+        render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v2`,
       };
     }
     return originalJson.call(this, body);
