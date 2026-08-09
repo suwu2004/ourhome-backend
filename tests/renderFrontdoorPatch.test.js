@@ -15,6 +15,7 @@ const {
   localFrontendFile,
   readLocalFrontend,
   renderFrontdoorStatus,
+  writePublicResponse,
   localApiUrl,
   readProxyBody,
   proxyApiRequest,
@@ -33,6 +34,16 @@ function responseMock() {
   };
 }
 
+function nativeResponseMock() {
+  return {
+    statusCode: 200,
+    headers: new Map(),
+    body: null,
+    setHeader(name, value) { this.headers.set(String(name).toLowerCase(), String(value)); },
+    end(value) { this.body = value; },
+  };
+}
+
 test('Render fallback lives at /home and keeps a long outer API timeout', () => {
   assert.equal(FRONTDOOR_PATH, '/home');
   assert.ok(API_PROXY_TIMEOUT_MS >= 5 * 60 * 1000);
@@ -46,6 +57,29 @@ test('only public shell paths bypass the normal login middleware', () => {
     assert.equal(isPublicFrontdoorPath(pathname), false, pathname);
   }
   assert.equal(requestPathname({ url: '/home?from=test' }), '/home');
+});
+
+test('early public shell response works before Express response helpers exist', () => {
+  const res = nativeResponseMock();
+  writePublicResponse(res, 200, Buffer.from('<html>home</html>'), {
+    'Content-Type': 'text/html; charset=utf-8',
+    'X-OurHome-Frontdoor': 'test',
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(res.headers.get('x-ourhome-frontdoor'), 'test');
+  assert.equal(Buffer.from(res.body).toString('utf8'), '<html>home</html>');
+});
+
+test('public shell interception never depends on Express-only response helpers', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderFrontdoorPatch.js'), 'utf8');
+  const publicStart = source.indexOf('function writePublicResponse');
+  const privateStart = source.indexOf('function forwardedHeaders');
+  assert.ok(publicStart >= 0 && privateStart > publicStart);
+  const publicSource = source.slice(publicStart, privateStart);
+  assert.doesNotMatch(publicSource, /res\.(?:status|send|json|type)\s*\(/);
+  assert.match(publicSource, /res\.statusCode\s*=/);
+  assert.match(publicSource, /res\.end\(/);
 });
 
 test('local Render build serves index and hashed assets without Vercel', async () => {

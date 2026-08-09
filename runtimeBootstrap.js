@@ -96,7 +96,7 @@ try {
         photo_retention: 'chat-images-30d-auto-clean-v1',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,
-        render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v2`,
+        render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,
       };
     }
     return originalJson.call(this, body);
