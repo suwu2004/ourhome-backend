@@ -72,6 +72,27 @@ test('completed one-turn task does not linger as working memory', () => {
   assert.match(summarizeTurn(user, assistant), /记账/);
 });
 
+test('casual future words and playful questions do not create copied temporary memories', () => {
+  const work = localMemoryJournal(journalBody('有一点点，明天早上还要上班。', '现在该睡了，晚安。'));
+  assert.equal(work.mark.should_continue, false);
+  assert.equal(work.mark.summary, '');
+  assert.match(work.daily_summary.summary, /上班/);
+  assert.doesNotMatch(work.daily_summary.summary, /之后需要接住这件事|叶檀在追问当前话题/);
+
+  const playful = localMemoryJournal(journalBody('以后我们混不下去就开足浴店吧，你当按摩师，我当老板娘怎么样？', '画面很可爱，不过我的手只给你按。'));
+  assert.equal(playful.mark.should_continue, false);
+  assert.equal(playful.mark.summary, '');
+  assert.match(playful.daily_summary.summary, /轻松打趣/);
+});
+
+test('skin concerns are summarized semantically without copying the user sentence', () => {
+  const raw = '我感觉我油脂分泌好旺盛，而且我是油皮，然后脸上好多小疙瘩好讨厌。';
+  const result = localMemoryJournal(journalBody(raw, '先温和清洁，别反复摸和挤。'));
+  assert.equal(result.mark.should_continue, false);
+  assert.match(result.daily_summary.summary, /油皮出油和面部小疙瘩/);
+  assert.doesNotMatch(result.daily_summary.summary, /我感觉我油脂分泌好旺盛/);
+});
+
 test('explicit memory journal provider calls are purpose-labelled', () => {
   assert.match(guard, /X-OurHome-Call-Purpose[^\n]*memory-journal/);
   assert.match(guard, /body: JSON\.stringify\(nextBody\)/);

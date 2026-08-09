@@ -9,6 +9,7 @@ const UPLOAD_BUCKET = process.env.SUPABASE_UPLOAD_BUCKET || 'uploads';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 const webpush = require('web-push');
 const { createRuntimeConfig } = require('./runtimeConfig');
+const { normalizeCalendarDayColors } = require('./calendarDayColors');
 const { createIntegrationManager, validateRemoteUrl, WEB_SEARCH_PROVIDERS } = require('./integrations');
 const { createVaultStore } = require('./vaultStore');
 const { AgentMailError } = require('./agentMail');
@@ -3842,6 +3843,7 @@ app.patch('/settings', async (req, res) => {
     'home_memo_bg_image_url',
     'whisper_bg_image_url', 'whisper_bg_color', 'my_bubble_color', 'partner_bubble_color',
     'font_style', 'vault_phrase_mode', 'selected_model',
+    'calendar_day_colors',
     'daily_journal_enabled', 'daily_journal_time', 'diary_paper_style',
   ]);
   try {
@@ -3867,6 +3869,11 @@ app.patch('/settings', async (req, res) => {
       if (!DIARY_PAPER_STYLES.has(updates.diary_paper_style)) {
         return res.status(400).json({ error: '日记纸样式不正确' });
       }
+    }
+    if (updates.calendar_day_colors !== undefined) {
+      const normalized = normalizeCalendarDayColors(updates.calendar_day_colors);
+      if (!normalized.ok) return res.status(400).json({ error: normalized.error });
+      updates.calendar_day_colors = normalized.value;
     }
     if (updates.home_memo_bg_image_url !== undefined) {
       if (updates.home_memo_bg_image_url !== null && typeof updates.home_memo_bg_image_url !== 'string') {

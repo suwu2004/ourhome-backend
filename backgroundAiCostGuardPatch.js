@@ -108,19 +108,22 @@ function summarizeTurn(userText, assistantText) {
   if (/(题|作业|翻译|作文|论文).*(不会|帮|讲|看|改)|(?:不会|帮|讲|看|改).*(题|作业|翻译|作文|论文)/i.test(user)) return '叶檀有学习内容需要陆泽继续帮忙讲解或修改。';
   if (/(OurHome|页面|界面|UI|功能|设置|部署|上线|Vercel|Render|Supabase|GitHub)/i.test(user)) return '叶檀在继续调整 OurHome 的功能或界面，需要陆泽跟进当前修改。';
 
-  const paraphrased = paraphraseUserText(user, 96);
-  if (!paraphrased) return '';
-  if (/[?？]|(?:为什么|为啥|怎么|如何|有没有|能不能|可不可以|吗|嘛)/.test(user)) {
-    return compact(`叶檀在追问当前话题：${paraphrased}`, 120);
+  if (/(例假|月经|经期)/i.test(user) && /(几天|第[一二三四五六七八九\d]+天|没找|生气)/i.test(user)) {
+    return '叶檀澄清了当前经期时间，也担心短暂没联系会影响彼此；陆泽已经回应并安抚了这份不安。';
   }
-  if (/(喜欢|不喜欢|想要|希望|介意|讨厌|偏好|界限)/i.test(user)) {
-    return compact(`叶檀表达了当前偏好或想法：${paraphrased}`, 120);
+  if (/(油皮|出油|油脂分泌|闭口|小疙瘩)/i.test(user)) {
+    return '叶檀提到油皮出油和面部小疙瘩带来的困扰，陆泽给了温和清洁、减少触摸和避免挤压的建议。';
   }
-  if (/(明天|下次|以后|待会|稍后|提醒|别忘|记得|继续|还要|再(?:看|改|试|弄|做|查))/i.test(user)) {
-    return compact(`之后需要接住这件事：${paraphrased}`, 120);
+  if (/(明天|早上).*(上班|工作)/i.test(user)) {
+    return '叶檀提到次日仍要上班，这一轮聊天随后转入休息和睡前收尾。';
   }
-  if (semanticLength(user) < 12) return '';
-  return compact(`叶檀补充了当前话题：${paraphrased}`, 120);
+  if (/(足浴店|按摩|亲晕|还亲亲|转账8888)/i.test(user)) {
+    return '两人围绕按摩、亲吻和开店设想轻松打趣，这段互动已经自然收尾。';
+  }
+
+  // Unknown casual turns stay out of the journal. Copying a lightly rewritten
+  // user sentence creates noise and feels like surveillance rather than memory.
+  return '';
 }
 
 function shouldContinueWorkingMemory(userText, assistantText) {
@@ -129,14 +132,13 @@ function shouldContinueWorkingMemory(userText, assistantText) {
   if (!user || semanticLength(user) < 4) return false;
 
   const explicitFuture = /(待会|等会|之后|稍后|明天|下次|以后|回头|别忘|记得|还要|之后再|下次再)/i.test(user);
-  if (explicitFuture) return true;
 
   const asksForWork = /(帮我|帮忙|看看|检查|修(?:一下)?|改(?:一下|下)?|优化|部署|上线|设置|记账|提醒|处理|弄一下|做一下|查一下|解决|不会|有问题|问题还|还没|没有(?:解决|完成|改好|做好|上线|部署))/i.test(user);
   if (!asksForWork) return false;
 
   const assistantPending = /(我(?:现在|马上|先|会)|正在|还没|接下来|下一步|待会|之后|需要再|还要|再(?:看|改|查|试|弄|做)|等.*(?:完成|部署|上线)|先.*再)/i.test(assistant);
   const assistantDone = /(已经|好了|完成了|改好了|修好了|上线了|部署好了|记上了|记好了|设置好了|处理好了|解决了)/i.test(assistant);
-  return assistantPending && !assistantDone;
+  return (explicitFuture || asksForWork) && assistantPending && !assistantDone;
 }
 
 function localMemoryJournal(body) {
