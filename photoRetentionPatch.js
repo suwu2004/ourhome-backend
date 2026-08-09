@@ -1,6 +1,7 @@
 'use strict';
 
 const { createClient } = require('@supabase/supabase-js');
+const { installPrivateBucketGuard } = require('./privateUploads');
 const { startPhotoRetentionScheduler, DEFAULT_RETENTION_DAYS } = require('./photoRetention');
 
 if (!globalThis.__ourhomePhotoRetentionScheduler && process.env.OURHOME_DISABLE_PHOTO_RETENTION !== '1') {
@@ -11,6 +12,9 @@ if (!globalThis.__ourhomePhotoRetentionScheduler && process.env.OURHOME_DISABLE_
     const supabase = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
+    // Use the same private-storage wrapper as ordinary uploads so a successful
+    // 30-day cleanup also retires the optional R2 shadow object.
+    installPrivateBucketGuard(supabase);
     globalThis.__ourhomePhotoRetentionScheduler = startPhotoRetentionScheduler({ supabase, retentionDays });
     console.log(`[photo-retention] automatic chat-photo cleanup enabled (${retentionDays} days)`);
   }
