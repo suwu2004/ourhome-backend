@@ -7,6 +7,8 @@ process.env.PORT = '3000';
 const {
   FRONTDOOR_PATH,
   API_PROXY_TIMEOUT_MS,
+  requestPathname,
+  isPublicFrontdoorPath,
   localApiUrl,
   readProxyBody,
   proxyApiRequest,
@@ -28,6 +30,16 @@ function responseMock() {
 test('Render fallback lives at /home and keeps a long outer API timeout', () => {
   assert.equal(FRONTDOOR_PATH, '/home');
   assert.ok(API_PROXY_TIMEOUT_MS >= 5 * 60 * 1000);
+});
+
+test('only public shell paths bypass the normal login middleware', () => {
+  for (const path of ['/home', '/home/', '/assets/index.js', '/manifest.json', '/icon-192.png', '/ourhome-sw.js']) {
+    assert.equal(isPublicFrontdoorPath(path), true, path);
+  }
+  for (const path of ['/', '/chat', '/settings', '/api', '/api/chat', '/agentmail/webhook']) {
+    assert.equal(isPublicFrontdoorPath(path), false, path);
+  }
+  assert.equal(requestPathname({ url: '/home?from=test' }), '/home');
 });
 
 test('same-origin /api URL maps to the existing root backend route', () => {

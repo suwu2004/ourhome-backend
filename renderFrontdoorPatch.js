@@ -9,6 +9,7 @@ const API_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
 const STATIC_CACHE_MAX_BYTES = 48 * 1024 * 1024;
 const STATIC_CACHE_STALE_MS = 24 * 60 * 60 * 1000;
+const FRONTDOOR_ICON_PATHS = new Set(['/icon-192.png', '/icon-512.png', '/apple-touch-icon.png']);
 
 const staticCache = new Map();
 let staticCacheBytes = 0;
@@ -65,7 +66,6 @@ function sendCached(res, item, { stale = false } = {}) {
 async function fetchFrontend(pathname) {
   const fresh = cachedStatic(pathname);
   if (fresh) return { cached: fresh };
-
   try {
     const response = await fetch(`${FRONTEND_ORIGIN}${pathname}`, {
       method: 'GET',
@@ -97,17 +97,14 @@ async function serveFrontendPath(req, res, pathname) {
       sendCached(res, result.cached, { stale: result.stale });
       return;
     }
-
     const { response, body } = result;
     res.status(response.status);
     res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
-    const cacheControl = response.headers.get('cache-control');
-    if (cacheControl) res.setHeader('Cache-Control', cacheControl);
-    const etag = response.headers.get('etag');
-    if (etag) res.setHeader('ETag', etag);
-    const lastModified = response.headers.get('last-modified');
-    if (lastModified) res.setHeader('Last-Modified', lastModified);
-    res.setHeader('X-OurHome-Frontdoor', 'render-gateway-v1');
+    for (const name of ['cache-control', 'etag', 'last-modified']) {
+      const value = response.headers.get(name);
+      if (value) res.setHeader(name, value);
+    }
+    res.setHeader('X-OurHome-Frontdoor', 'render-gateway-v2-public-shell');
     res.send(body);
   } catch (error) {
     console.warn('[render-frontdoor] frontend fetch failed:', error?.message || error);
@@ -131,6 +128,36 @@ async function serveRenderManifest(req, res) {
   }
 }
 
+function requestPathname(req) {
+  try {
+    return new URL(String(req?.url || '/'), 'http://ourhome.local').pathname;
+  } catch {
+    return '/';
+  }
+}
+
+function isPublicFrontdoorPath(pathname) {
+  return pathname === FRONTDOOR_PATH
+    || pathname === `${FRONTDOOR_PATH}/`
+    || pathname.startsWith('/assets/')
+    || pathname === '/manifest.json'
+    || pathname === '/ourhome-sw.js'
+    || FRONTDOOR_ICON_PATHS.has(pathname);
+}
+
+async function servePublicFrontdoor(req, res, pathname) {
+  if (pathname === FRONTDOOR_PATH || pathname === `${FRONTDOOR_PATH}/`) {
+    return serveFrontendPath(req, res, '/');
+  }
+  if (pathname.startsWith('/assets/')) return serveFrontendPath(req, res, pathname);
+  if (pathname === '/manifest.json') return serveRenderManifest(req, res);
+  if (FRONTDOOR_ICON_PATHS.has(pathname)) return serveFrontendPath(req, res, pathname);
+  if (pathname === '/ourhome-sw.js') {
+    return res.status(404).type('text').send('Render front door does not install the Vercel service worker.');
+  }
+  return undefined;
+}
+
 function forwardedHeaders(req) {
   const headers = {};
   for (const name of ['authorization', 'content-type', 'accept', 'x-ourhome-request-id']) {
@@ -143,12 +170,10 @@ function forwardedHeaders(req) {
 async function readProxyBody(req) {
   const method = String(req.method || 'GET').toUpperCase();
   if (method === 'GET' || method === 'HEAD') return undefined;
-
   const contentType = String(req.headers?.['content-type'] || '').toLowerCase();
   if (contentType.includes('application/json') && req.body !== undefined) {
     return Buffer.from(JSON.stringify(req.body));
   }
-
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
@@ -184,7 +209,6 @@ async function proxyApiRequest(req, res, { fetchImpl = fetch } = {}) {
   if (/^\/api\/agentmail\/webhook(?:[/?]|$)/.test(String(req.originalUrl || req.url || ''))) {
     return res.status(404).json({ error: 'not found' });
   }
-
   try {
     const body = await readProxyBody(req);
     const headers = forwardedHeaders(req);
@@ -192,8 +216,6 @@ async function proxyApiRequest(req, res, { fetchImpl = fetch } = {}) {
       method: req.method,
       headers,
       body,
-      // The inner OurHome routes already own model/helper timeouts. This outer hop
-      // only prevents a permanently stuck local socket; it never retries a write.
       signal: AbortSignal.timeout(API_PROXY_TIMEOUT_MS),
     });
     const payload = Buffer.from(await response.arrayBuffer());
@@ -209,23 +231,28 @@ async function proxyApiRequest(req, res, { fetchImpl = fetch } = {}) {
 
 function installRenderFrontdoorGateway(app) {
   if (!app || app.__ourhomeRenderFrontdoor) return;
-
-  app.get([FRONTDOOR_PATH, `${FRONTDOOR_PATH}/`], (req, res) => serveFrontendPath(req, res, '/'));
-  app.get('/assets/*', (req, res) => serveFrontendPath(req, res, req.originalUrl.split('?')[0]));
-  app.get('/manifest.json', serveRenderManifest);
-  for (const path of ['/icon-192.png', '/icon-512.png', '/apple-touch-icon.png']) {
-    app.get(path, (req, res) => serveFrontendPath(req, res, path));
-  }
-
-  // The Vercel service worker is intentionally not installed on the Render origin:
-  // it assumes '/' is the app shell, while Render keeps '/' as the backend health endpoint.
-  app.get('/ourhome-sw.js', (req, res) => res.status(404).type('text').send('Render front door does not install the Vercel service worker.'));
-
-  // Same-origin API alias for the Render-served frontend. The request is forwarded
-  // exactly once to the already-running root route; no write retry/failover exists here.
+  // Only private API alias is mounted in the normal Express stack. The public shell
+  // is intercepted before the global login middleware so navigation/assets can load.
   app.use('/api', (req, res) => proxyApiRequest(req, res));
   Object.defineProperty(app, '__ourhomeRenderFrontdoor', { value: true, enumerable: false });
   console.log(`[render-frontdoor] fallback UI available at ${FRONTDOOR_PATH}`);
+}
+
+const originalHandle = express.application.handle;
+if (!express.application.__ourhomeRenderFrontdoorHandlePatch) {
+  express.application.handle = function renderFrontdoorHandle(req, res, out) {
+    const pathname = requestPathname(req);
+    if (String(req.method || 'GET').toUpperCase() === 'GET' && isPublicFrontdoorPath(pathname)) {
+      Promise.resolve(servePublicFrontdoor(req, res, pathname)).catch(error => {
+        console.warn('[render-frontdoor] public shell failed:', error?.message || error);
+        if (!res.headersSent) res.status(502).json({ error: '备用前门暂时不可用' });
+        else res.end();
+      });
+      return;
+    }
+    return originalHandle.call(this, req, res, out);
+  };
+  Object.defineProperty(express.application, '__ourhomeRenderFrontdoorHandlePatch', { value: true, enumerable: false });
 }
 
 const originalListen = express.application.listen;
@@ -241,6 +268,8 @@ module.exports = {
   FRONTDOOR_PATH,
   FRONTEND_ORIGIN,
   API_PROXY_TIMEOUT_MS,
+  requestPathname,
+  isPublicFrontdoorPath,
   localApiUrl,
   readProxyBody,
   proxyApiRequest,
