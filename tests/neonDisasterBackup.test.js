@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const bridge = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_add_neon_disaster_backup_bridge.sql'), 'utf8');
+const extension = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_expand_neon_disaster_backup.sql'), 'utf8');
 const schedule = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_schedule_neon_disaster_backup.sql'), 'utf8');
 
 test('Neon disaster backup migration never commits a database credential', () => {
@@ -12,11 +13,22 @@ test('Neon disaster backup migration never commits a database credential', () =>
   assert.match(bridge, /vault\.decrypted_secrets/);
 });
 
-test('secret-bearing integration tables are not mirrored to the disaster database', () => {
+test('the base snapshot never mirrors secret-bearing integration tables', () => {
   assert.doesNotMatch(bridge, /'api_profiles'/);
   assert.doesNotMatch(bridge, /'service_connections'/);
   assert.doesNotMatch(bridge, /'push_subscriptions'/);
   assert.match(bridge, /to_jsonb\(q\) - ''api_key''/);
+});
+
+test('the extended snapshot encrypts runtime secrets and still excludes device push credentials', () => {
+  assert.match(extension, /'api_profiles'/);
+  assert.match(extension, /'service_connections'/);
+  assert.match(extension, /'api_call_logs'/);
+  assert.match(extension, /pgp_sym_encrypt/);
+  assert.match(extension, /digest\(neon_url/);
+  assert.match(extension, /ourhome_failover_secrets/);
+  assert.doesNotMatch(extension, /extra_tables[^;]*'push_subscriptions'/s);
+  assert.doesNotMatch(extension, /ourhome_neon_backup_url'\s*\)/);
 });
 
 test('backup is single-flight and each remote table replacement is transactional', () => {
