@@ -3750,7 +3750,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
       actions: actionsPerformed,
-      model: result?.model || modelName,
+      model: modelName,
       requestedModel: modelName,
     });
   } catch (err) {
