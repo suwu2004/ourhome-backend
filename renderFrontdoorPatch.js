@@ -1,9 +1,12 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 
 const FRONTEND_ORIGIN = String(process.env.OURHOME_FRONTEND_ORIGIN || 'https://ourhome-frontend.vercel.app').replace(/\/+$/, '');
 const FRONTDOOR_PATH = '/home';
+const LOCAL_FRONTEND_DIR = path.resolve(process.env.OURHOME_RENDER_FRONTEND_DIR || path.join(__dirname, 'render-frontend-dist'));
 const FRONTEND_FETCH_TIMEOUT_MS = 15_000;
 const API_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
@@ -63,7 +66,68 @@ function sendCached(res, item, { stale = false } = {}) {
   res.send(item.body);
 }
 
+function localRelativePath(pathname) {
+  if (pathname === '/') return 'index.html';
+  if (pathname === '/manifest.json') return 'manifest.json';
+  if (FRONTDOOR_ICON_PATHS.has(pathname)) return pathname.slice(1);
+  if (pathname.startsWith('/assets/')) return pathname.slice(1);
+  return null;
+}
+
+function contentTypeFor(pathname) {
+  const ext = path.extname(pathname).toLowerCase();
+  return ({
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+  })[ext] || 'application/octet-stream';
+}
+
+function localFrontendFile(pathname, rootDir = LOCAL_FRONTEND_DIR) {
+  const relative = localRelativePath(pathname);
+  if (!relative) return null;
+  const root = path.resolve(rootDir);
+  const candidate = path.resolve(root, relative);
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) return null;
+  return candidate;
+}
+
+async function readLocalFrontend(pathname, { rootDir = LOCAL_FRONTEND_DIR } = {}) {
+  const filename = localFrontendFile(pathname, rootDir);
+  if (!filename) return null;
+  try {
+    const body = await fs.promises.readFile(filename);
+    return {
+      local: true,
+      body,
+      contentType: contentTypeFor(filename),
+      cacheControl: pathname.startsWith('/assets/')
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache',
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+    throw error;
+  }
+}
+
+function renderFrontdoorStatus(rootDir = LOCAL_FRONTEND_DIR) {
+  return fs.existsSync(path.join(path.resolve(rootDir), 'index.html')) ? 'local-build' : 'remote-fallback';
+}
+
 async function fetchFrontend(pathname) {
+  const local = await readLocalFrontend(pathname);
+  if (local) return local;
+
   const fresh = cachedStatic(pathname);
   if (fresh) return { cached: fresh };
   try {
@@ -71,7 +135,7 @@ async function fetchFrontend(pathname) {
       method: 'GET',
       headers: {
         Accept: pathname === '/' ? 'text/html,application/xhtml+xml' : '*/*',
-        'User-Agent': 'OurHome-Render-Frontdoor/1.0',
+        'User-Agent': 'OurHome-Render-Frontdoor/2.0',
       },
       signal: AbortSignal.timeout(FRONTEND_FETCH_TIMEOUT_MS),
     });
@@ -93,6 +157,13 @@ function resultBody(result) {
 async function serveFrontendPath(req, res, pathname) {
   try {
     const result = await fetchFrontend(pathname);
+    if (result.local) {
+      res.status(200);
+      res.setHeader('Content-Type', result.contentType);
+      res.setHeader('Cache-Control', result.cacheControl);
+      res.setHeader('X-OurHome-Frontdoor', 'render-local-build-v2');
+      return res.send(result.body);
+    }
     if (result.cached) {
       sendCached(res, result.cached, { stale: result.stale });
       return;
@@ -104,10 +175,10 @@ async function serveFrontendPath(req, res, pathname) {
       const value = response.headers.get(name);
       if (value) res.setHeader(name, value);
     }
-    res.setHeader('X-OurHome-Frontdoor', 'render-gateway-v2-public-shell');
+    res.setHeader('X-OurHome-Frontdoor', 'render-remote-fallback-v2');
     res.send(body);
   } catch (error) {
-    console.warn('[render-frontdoor] frontend fetch failed:', error?.message || error);
+    console.warn('[render-frontdoor] frontend unavailable:', error?.message || error);
     res.status(502).type('html').send('<!doctype html><meta charset="utf-8"><title>OurHome</title><body style="font-family:sans-serif;padding:32px">OurHome 的备用前门暂时没有取到页面，请稍后刷新。</body>');
   }
 }
@@ -120,10 +191,10 @@ async function serveRenderManifest(req, res) {
     manifest.scope = '/';
     res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-OurHome-Frontdoor', 'render-manifest-v1');
+    res.setHeader('X-OurHome-Frontdoor', result.local ? 'render-local-manifest-v2' : 'render-manifest-v2');
     res.send(JSON.stringify(manifest));
   } catch (error) {
-    console.warn('[render-frontdoor] manifest fetch failed:', error?.message || error);
+    console.warn('[render-frontdoor] manifest unavailable:', error?.message || error);
     res.status(404).json({ error: 'manifest unavailable' });
   }
 }
@@ -231,11 +302,9 @@ async function proxyApiRequest(req, res, { fetchImpl = fetch } = {}) {
 
 function installRenderFrontdoorGateway(app) {
   if (!app || app.__ourhomeRenderFrontdoor) return;
-  // Only private API alias is mounted in the normal Express stack. The public shell
-  // is intercepted before the global login middleware so navigation/assets can load.
   app.use('/api', (req, res) => proxyApiRequest(req, res));
   Object.defineProperty(app, '__ourhomeRenderFrontdoor', { value: true, enumerable: false });
-  console.log(`[render-frontdoor] fallback UI available at ${FRONTDOOR_PATH}`);
+  console.log(`[render-frontdoor] fallback UI available at ${FRONTDOOR_PATH} (${renderFrontdoorStatus()})`);
 }
 
 const originalHandle = express.application.handle;
@@ -267,9 +336,13 @@ if (!express.application.__ourhomeRenderFrontdoorListenPatch) {
 module.exports = {
   FRONTDOOR_PATH,
   FRONTEND_ORIGIN,
+  LOCAL_FRONTEND_DIR,
   API_PROXY_TIMEOUT_MS,
   requestPathname,
   isPublicFrontdoorPath,
+  localFrontendFile,
+  readLocalFrontend,
+  renderFrontdoorStatus,
   localApiUrl,
   readProxyBody,
   proxyApiRequest,
