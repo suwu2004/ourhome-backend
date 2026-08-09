@@ -18,6 +18,9 @@ require('./backgroundAiCostGuardPatch');
 // Install the dormant R2 mirror before any runtime creates a protected upload
 // client. Without explicit Cloudflare credentials this patch is a no-op.
 require('./r2ShadowPatch');
+// Add a Render-hosted fallback UI before Express starts listening. The existing
+// '/' health endpoint remains untouched; the browser entry is '/home'.
+require('./renderFrontdoorPatch');
 // The hidden journal may maintain open-thread metadata every turn, but its local
 // fallback must never turn the user-facing Happiness Diary summary into “本轮” logs.
 require('./memoryJournalPresentationPatch');
@@ -69,7 +72,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, R2 shadow storage, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, R2 shadow storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -93,6 +96,7 @@ try {
         photo_retention: 'chat-images-30d-auto-clean-v1',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,
+        render_frontdoor: 'home-gateway-v1',
       };
     }
     return originalJson.call(this, body);
