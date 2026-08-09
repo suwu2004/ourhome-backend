@@ -4,7 +4,8 @@ const express = require('express');
 
 const FRONTEND_ORIGIN = String(process.env.OURHOME_FRONTEND_ORIGIN || 'https://ourhome-frontend.vercel.app').replace(/\/+$/, '');
 const FRONTDOOR_PATH = '/home';
-const FETCH_TIMEOUT_MS = 15_000;
+const FRONTEND_FETCH_TIMEOUT_MS = 15_000;
+const API_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
 const STATIC_CACHE_MAX_BYTES = 48 * 1024 * 1024;
 const STATIC_CACHE_STALE_MS = 24 * 60 * 60 * 1000;
@@ -50,13 +51,14 @@ function cachedStatic(pathname, { allowStale = false } = {}) {
   return item;
 }
 
-function sendCached(res, item) {
+function sendCached(res, item, { stale = false } = {}) {
   res.status(item.status || 200);
   res.setHeader('Content-Type', item.contentType);
   if (item.cacheControl) res.setHeader('Cache-Control', item.cacheControl);
   if (item.etag) res.setHeader('ETag', item.etag);
   if (item.lastModified) res.setHeader('Last-Modified', item.lastModified);
   res.setHeader('X-OurHome-Frontdoor-Cache', 'render-memory');
+  if (stale) res.setHeader('X-OurHome-Frontdoor-Stale', '1');
   res.send(item.body);
 }
 
@@ -71,15 +73,12 @@ async function fetchFrontend(pathname) {
         Accept: pathname === '/' ? 'text/html,application/xhtml+xml' : '*/*',
         'User-Agent': 'OurHome-Render-Frontdoor/1.0',
       },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(FRONTEND_FETCH_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`frontend origin returned ${response.status}`);
     const body = Buffer.from(await response.arrayBuffer());
     rememberStatic(pathname, response, body);
-    return {
-      response,
-      body,
-    };
+    return { response, body };
   } catch (error) {
     const stale = cachedStatic(pathname, { allowStale: true });
     if (stale) return { cached: stale, stale: true };
@@ -87,12 +86,15 @@ async function fetchFrontend(pathname) {
   }
 }
 
+function resultBody(result) {
+  return result.cached?.body || result.body || Buffer.alloc(0);
+}
+
 async function serveFrontendPath(req, res, pathname) {
   try {
     const result = await fetchFrontend(pathname);
     if (result.cached) {
-      sendCached(res, result.cached);
-      if (result.stale) res.setHeader('X-OurHome-Frontdoor-Stale', '1');
+      sendCached(res, result.cached, { stale: result.stale });
       return;
     }
 
@@ -110,6 +112,22 @@ async function serveFrontendPath(req, res, pathname) {
   } catch (error) {
     console.warn('[render-frontdoor] frontend fetch failed:', error?.message || error);
     res.status(502).type('html').send('<!doctype html><meta charset="utf-8"><title>OurHome</title><body style="font-family:sans-serif;padding:32px">OurHome 的备用前门暂时没有取到页面，请稍后刷新。</body>');
+  }
+}
+
+async function serveRenderManifest(req, res) {
+  try {
+    const result = await fetchFrontend('/manifest.json');
+    const manifest = JSON.parse(resultBody(result).toString('utf8'));
+    manifest.start_url = FRONTDOOR_PATH;
+    manifest.scope = '/';
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-OurHome-Frontdoor', 'render-manifest-v1');
+    res.send(JSON.stringify(manifest));
+  } catch (error) {
+    console.warn('[render-frontdoor] manifest fetch failed:', error?.message || error);
+    res.status(404).json({ error: 'manifest unavailable' });
   }
 }
 
@@ -170,12 +188,13 @@ async function proxyApiRequest(req, res, { fetchImpl = fetch } = {}) {
   try {
     const body = await readProxyBody(req);
     const headers = forwardedHeaders(req);
-    delete headers['content-length'];
     const response = await fetchImpl(localApiUrl(req), {
       method: req.method,
       headers,
       body,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      // The inner OurHome routes already own model/helper timeouts. This outer hop
+      // only prevents a permanently stuck local socket; it never retries a write.
+      signal: AbortSignal.timeout(API_PROXY_TIMEOUT_MS),
     });
     const payload = Buffer.from(await response.arrayBuffer());
     res.status(response.status);
@@ -193,7 +212,8 @@ function installRenderFrontdoorGateway(app) {
 
   app.get([FRONTDOOR_PATH, `${FRONTDOOR_PATH}/`], (req, res) => serveFrontendPath(req, res, '/'));
   app.get('/assets/*', (req, res) => serveFrontendPath(req, res, req.originalUrl.split('?')[0]));
-  for (const path of ['/manifest.json', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/favicon.ico']) {
+  app.get('/manifest.json', serveRenderManifest);
+  for (const path of ['/icon-192.png', '/icon-512.png', '/apple-touch-icon.png']) {
     app.get(path, (req, res) => serveFrontendPath(req, res, path));
   }
 
@@ -201,6 +221,8 @@ function installRenderFrontdoorGateway(app) {
   // it assumes '/' is the app shell, while Render keeps '/' as the backend health endpoint.
   app.get('/ourhome-sw.js', (req, res) => res.status(404).type('text').send('Render front door does not install the Vercel service worker.'));
 
+  // Same-origin API alias for the Render-served frontend. The request is forwarded
+  // exactly once to the already-running root route; no write retry/failover exists here.
   app.use('/api', (req, res) => proxyApiRequest(req, res));
   Object.defineProperty(app, '__ourhomeRenderFrontdoor', { value: true, enumerable: false });
   console.log(`[render-frontdoor] fallback UI available at ${FRONTDOOR_PATH}`);
@@ -218,6 +240,7 @@ if (!express.application.__ourhomeRenderFrontdoorListenPatch) {
 module.exports = {
   FRONTDOOR_PATH,
   FRONTEND_ORIGIN,
+  API_PROXY_TIMEOUT_MS,
   localApiUrl,
   readProxyBody,
   proxyApiRequest,
