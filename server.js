@@ -12,6 +12,12 @@ const { createRuntimeConfig } = require('./runtimeConfig');
 const { normalizeCalendarDayColors } = require('./calendarDayColors');
 const { createIntegrationManager, validateRemoteUrl, WEB_SEARCH_PROVIDERS } = require('./integrations');
 const { createVaultStore } = require('./vaultStore');
+const {
+  readFailoverObject,
+  storeFailoverObject,
+  verifyFailoverObjectSignature,
+  failoverObjectSignature,
+} = require('./neonFailoverFetchPatch');
 const { AgentMailError } = require('./agentMail');
 const { createAgentMailAuditStore, createAgentMailService } = require('./agentMailService');
 const { detectHardPrivacyRisks, parsePrivacyReview } = require('./emailPrivacy');
@@ -3214,6 +3220,27 @@ app.post('/login', (req, res) => {
   res.json({ token: makeToken() });
 });
 
+// Signed, unguessable URLs let <img> render a photo without exposing the login
+// bearer token. The bytes stay in Neon only while Supabase Storage is blocked.
+app.get('/failover-files/:objectKey', async (req, res) => {
+  const objectKey = String(req.params.objectKey || '');
+  if (!verifyFailoverObjectSignature(objectKey, req.query.sig)) {
+    return res.status(404).end();
+  }
+  try {
+    const object = await readFailoverObject(objectKey);
+    if (!object) return res.status(404).end();
+    res.setHeader('Content-Type', object.content_type || 'application/octet-stream');
+    res.setHeader('Content-Length', String(object.size_bytes || object.file_data?.length || 0));
+    res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.end(object.file_data);
+  } catch (error) {
+    console.error('Neon 备用图片读取失败:', String(error?.message || error).slice(0, 240));
+    return res.status(503).json({ error: '备用图片暂时没有取回来' });
+  }
+});
+
 function secretsMatch(left, right) {
   const a = Buffer.from(String(left || ''));
   const b = Buffer.from(String(right || ''));
@@ -5117,16 +5144,52 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
     const safeName = file.originalname.normalize('NFKC').replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(-120) || 'file';
     const filePath = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
-    await ensureUploadBucket();
-    let { error } = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
-    if (error && /bucket|not found/i.test(error.message || '')) {
-      uploadBucketReady = false;
+    let storageError = null;
+    try {
       await ensureUploadBucket();
-      ({ error } = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype }));
+      let result = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
+      if (result.error && /bucket|not found/i.test(result.error.message || '')) {
+        uploadBucketReady = false;
+        await ensureUploadBucket();
+        result = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
+      }
+      storageError = result.error || null;
+    } catch (error) {
+      storageError = error;
     }
-    if (error) return res.status(500).json({ error: `上传失败：${error.message}` });
-    const { data: urlData } = supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(filePath);
-    res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname });
+    if (!storageError) {
+      const { data: urlData } = supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(filePath);
+      return res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname, storage: 'supabase' });
+    }
+
+    try {
+      const saved = await storeFailoverObject({
+        objectKey: filePath,
+        bucket: UPLOAD_BUCKET,
+        contentType: file.mimetype,
+        originalName: file.originalname,
+        body: file.buffer,
+      });
+      const publicOrigin = String(
+        process.env.OURHOME_PUBLIC_BACKEND_URL
+        || process.env.RENDER_EXTERNAL_URL
+        || 'https://ourhome-backend.onrender.com',
+      ).replace(/\/+$/, '');
+      const url = `${publicOrigin}/failover-files/${encodeURIComponent(saved.objectKey)}?sig=${encodeURIComponent(failoverObjectSignature(saved.objectKey))}`;
+      console.warn(`Supabase Storage 不可用，图片已安全暂存到 Neon: ${filePath}`);
+      return res.json({
+        url,
+        type: file.mimetype,
+        name: file.originalname,
+        storage: 'neon-failover',
+        pending_sync: true,
+      });
+    } catch (fallbackError) {
+      console.error('Neon 备用上传失败:', String(fallbackError?.message || fallbackError).slice(0, 240));
+      return res.status(503).json({
+        error: `主存储暂时不可用，备用存储也没有接住这张照片：${fallbackError.message}`,
+      });
+    }
   } catch (err) {
     res.status(500).json({ error: `上传服务暂时没有准备好：${err.message}` });
   }

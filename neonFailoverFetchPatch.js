@@ -16,6 +16,9 @@ const secretWrapKey = connectionString
 const pool = enabled && connectionString
   ? new Pool({ connectionString, max: 4, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 8_000 })
   : null;
+const ROW_KEY = Symbol('ourhome-neon-row-key');
+const MAX_FAILOVER_OBJECT_BYTES = 12 * 1024 * 1024;
+const MAX_FAILOVER_OBJECT_TOTAL_BYTES = 220 * 1024 * 1024;
 
 function isSupabaseRestUrl(value) {
   const base = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
@@ -151,7 +154,7 @@ function inferDefaults(row, sampleRows) {
 }
 
 function rowKey(row) {
-  return String(row?.id ?? crypto.randomUUID());
+  return String(row?.[ROW_KEY] ?? row?.id ?? crypto.randomUUID());
 }
 
 async function loadRows(client, table) {
@@ -174,7 +177,13 @@ async function loadRows(client, table) {
     `,
     values: [table],
   });
-  return result.rows.map(item => item.payload);
+  return result.rows.map(item => {
+    const payload = item.payload;
+    if (payload && typeof payload === 'object') {
+      Object.defineProperty(payload, ROW_KEY, { value: String(item.row_key), enumerable: false });
+    }
+    return payload;
+  });
 }
 
 async function recordChange(client, table, operation, row, key = null) {
@@ -185,6 +194,82 @@ async function recordChange(client, table, operation, row, key = null) {
     values: [table, resolvedKey, operation, operation === 'delete' ? null : JSON.stringify(row)],
   });
   return resolvedKey;
+}
+
+async function withFailoverClient(work) {
+  if (!pool) throw new Error('Neon 备用存储尚未启用');
+  const client = await pool.connect();
+  try {
+    return await work(client);
+  } finally {
+    client.release();
+  }
+}
+
+function failoverObjectSignature(objectKey) {
+  if (!secretWrapKey) return '';
+  return crypto.createHmac('sha256', secretWrapKey)
+    .update(`ourhome-failover-object:${String(objectKey || '')}`)
+    .digest('base64url')
+    .slice(0, 36);
+}
+
+function verifyFailoverObjectSignature(objectKey, signature) {
+  const expected = failoverObjectSignature(objectKey);
+  const actual = String(signature || '');
+  if (!expected || expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
+}
+
+async function storeFailoverObjectWithClient(client, {
+  objectKey,
+  bucket = 'uploads',
+  contentType = 'application/octet-stream',
+  originalName = '',
+  body,
+}) {
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body || []);
+  if (!objectKey || bytes.length === 0) throw new Error('备用文件内容为空');
+  if (bytes.length > MAX_FAILOVER_OBJECT_BYTES) throw new Error('备用文件超过 12MB 限制');
+  const usage = await client.query({
+    text: `select coalesce(sum(size_bytes), 0)::bigint as total
+           from public.ourhome_failover_objects
+           where uploaded_to_supabase_at is null`,
+  });
+  const currentBytes = Number(usage.rows[0]?.total || 0);
+  if (currentBytes + bytes.length > MAX_FAILOVER_OBJECT_TOTAL_BYTES) {
+    throw new Error('Neon 照片暂存区已接近上限，请先等待主存储恢复');
+  }
+  await client.query({
+    text: `insert into public.ourhome_failover_objects
+             (object_key,bucket,content_type,original_name,size_bytes,file_data,created_at,updated_at)
+           values ($1,$2,$3,$4,$5,$6,now(),now())
+           on conflict (object_key) do update
+             set bucket=excluded.bucket,
+                 content_type=excluded.content_type,
+                 original_name=excluded.original_name,
+                 size_bytes=excluded.size_bytes,
+                 file_data=excluded.file_data,
+                 updated_at=now(),
+                 upload_error=null`,
+    values: [String(objectKey), String(bucket), String(contentType), String(originalName), bytes.length, bytes],
+  });
+  return { objectKey: String(objectKey), size: bytes.length, signature: failoverObjectSignature(objectKey) };
+}
+
+async function storeFailoverObject(input) {
+  return withFailoverClient(client => storeFailoverObjectWithClient(client, input));
+}
+
+async function readFailoverObject(objectKey) {
+  return withFailoverClient(async client => {
+    const result = await client.query({
+      text: `select object_key,bucket,content_type,original_name,size_bytes,file_data,created_at
+             from public.ourhome_failover_objects where object_key=$1 limit 1`,
+      values: [String(objectKey)],
+    });
+    return result.rows[0] || null;
+  });
 }
 
 function jsonResponse(body, status = 200, extraHeaders = {}) {
@@ -249,6 +334,116 @@ async function activateApiProfile(client, profileId) {
   return jsonResponse(activated);
 }
 
+function vaultBalanceDelta(account, type, amount, reverse = false) {
+  let delta;
+  const debt = Boolean(account?.is_debt) || account?.type === 'debt';
+  if (debt) delta = type === 'expense' ? amount : -amount;
+  else delta = type === 'income' ? amount : -amount;
+  return reverse ? -delta : delta;
+}
+
+async function touchVaultSyncState(client, now) {
+  const rows = await loadRows(client, 'vault_sync_state');
+  const current = rows.find(row => row?.id === 'global') || { id: 'global' };
+  await recordChange(client, 'vault_sync_state', 'upsert', {
+    ...current,
+    initialized: true,
+    updated_at: now,
+  }, rowKey(current));
+}
+
+async function createVaultTransaction(client, body = {}) {
+  const [accounts, groups, categories, transactions, history] = await Promise.all([
+    loadRows(client, 'vault_accounts'),
+    loadRows(client, 'vault_account_groups'),
+    loadRows(client, 'vault_categories'),
+    loadRows(client, 'vault_transactions'),
+    loadRows(client, 'vault_account_history'),
+  ]);
+  const account = accounts.find(row => String(row?.id) === String(body.p_account_id || ''));
+  const type = body.p_type === 'income' || body.p_type === 'expense' ? body.p_type : '';
+  const amount = Number(body.p_amount);
+  if (!account) return postgrestError('找不到指定账户', 'P0002');
+  if (!type || !Number.isFinite(amount) || amount <= 0) return postgrestError('收支类型或金额不正确', '22023');
+
+  const now = new Date().toISOString();
+  const group = groups.find(row => String(row?.id) === String(account.group_id || ''));
+  const categoryName = String(body.p_category_name || '').trim().slice(0, 80) || '其他';
+  const category = categories.find(row => row?.type === type && row?.name === categoryName) || null;
+  const delta = vaultBalanceDelta(account, type, amount);
+  const nextAccount = { ...account, balance: Number(account.balance || 0) + delta, updated_at: now };
+  const transaction = inferDefaults({
+    date: String(body.p_date || now.slice(0, 10)),
+    type,
+    amount,
+    category_id: category?.id || null,
+    category_name: categoryName,
+    account_id: account.id,
+    account_name_snapshot: account.name || null,
+    group_name_snapshot: group?.name || null,
+    tag: String(body.p_tag || '').slice(0, 40),
+    note: String(body.p_note || '').slice(0, 500),
+    source: String(body.p_source || 'manual').slice(0, 40) || 'manual',
+    created_at: now,
+  }, transactions);
+  const historyRow = inferDefaults({
+    account_id: account.id,
+    balance: nextAccount.balance,
+    change: delta,
+    reason: 'transaction',
+    created_at: now,
+  }, history);
+
+  await client.query('begin');
+  try {
+    await recordChange(client, 'vault_accounts', 'upsert', nextAccount, rowKey(account));
+    await recordChange(client, 'vault_account_history', 'upsert', historyRow);
+    await recordChange(client, 'vault_transactions', 'upsert', transaction);
+    await touchVaultSyncState(client, now);
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(transaction.id);
+}
+
+async function deleteVaultTransaction(client, body = {}) {
+  const [transactions, accounts, history] = await Promise.all([
+    loadRows(client, 'vault_transactions'),
+    loadRows(client, 'vault_accounts'),
+    loadRows(client, 'vault_account_history'),
+  ]);
+  const transaction = transactions.find(row => String(row?.id) === String(body.p_transaction_id || ''));
+  if (!transaction) return jsonResponse(false);
+  const account = accounts.find(row => String(row?.id) === String(transaction.account_id || '')) || null;
+  const now = new Date().toISOString();
+
+  await client.query('begin');
+  try {
+    if (account) {
+      const delta = vaultBalanceDelta(account, transaction.type, Number(transaction.amount || 0), true);
+      const nextAccount = { ...account, balance: Number(account.balance || 0) + delta, updated_at: now };
+      const historyRow = inferDefaults({
+        account_id: account.id,
+        balance: nextAccount.balance,
+        change: delta,
+        reason: 'delete_transaction',
+        created_at: now,
+      }, history);
+      await recordChange(client, 'vault_accounts', 'upsert', nextAccount, rowKey(account));
+      await recordChange(client, 'vault_account_history', 'upsert', historyRow);
+    }
+    await recordChange(client, 'vault_transactions', 'delete', null, rowKey(transaction));
+    await touchVaultSyncState(client, now);
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(true);
+}
+
 async function handleRpcRequest(client, rpcName, body) {
   if (rpcName === 'ourhome_get_api_profile_secret') {
     const profiles = await loadRows(client, 'api_profiles');
@@ -278,6 +473,14 @@ async function handleRpcRequest(client, rpcName, body) {
 
   if (rpcName === 'ourhome_activate_api_profile') {
     return activateApiProfile(client, body?.p_id);
+  }
+
+  if (rpcName === 'ourhome_vault_create_transaction') {
+    return createVaultTransaction(client, body);
+  }
+
+  if (rpcName === 'ourhome_vault_delete_transaction') {
+    return deleteVaultTransaction(client, body);
   }
 
   return postgrestError(`Supabase RPC ${rpcName} is unavailable while the emergency database is active.`);
@@ -340,11 +543,15 @@ async function handleTableRequest(client, url, method, headers, body) {
     const saved = [];
     for (const raw of incoming) {
       let next = inferDefaults(raw, [...allRows, ...saved]);
+      let changeKey = null;
       if (merge) {
         const existing = allRows.find(row => onConflict.every(column => comparable(row?.[column]) === comparable(next?.[column])));
-        if (existing) next = { ...existing, ...next, updated_at: next.updated_at || new Date().toISOString() };
+        if (existing) {
+          changeKey = rowKey(existing);
+          next = { ...existing, ...next, updated_at: next.updated_at || new Date().toISOString() };
+        }
       }
-      await recordChange(client, table, 'upsert', next);
+      await recordChange(client, table, 'upsert', next, changeKey);
       saved.push(next);
     }
     const result = projectRows(saved, url.searchParams.get('select'));
@@ -413,10 +620,17 @@ module.exports = {
   activateApiProfile,
   applyFilters,
   applyOrder,
+  createVaultTransaction,
+  deleteVaultTransaction,
   decryptedSecret,
+  failoverObjectSignature,
   handleRpcRequest,
   inferDefaults,
   matchFilter,
   projectRows,
+  readFailoverObject,
   readWindow,
+  storeFailoverObject,
+  storeFailoverObjectWithClient,
+  verifyFailoverObjectSignature,
 };
