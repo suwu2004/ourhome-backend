@@ -3,6 +3,7 @@ const DEFAULT_SIGNED_SECONDS = 24 * 60 * 60;
 const DEFAULT_EXPORT_SIGNED_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_OBJECT_CACHE_SECONDS = 30 * 24 * 60 * 60;
 const SIGNED_CACHE_SAFETY_MS = 5 * 60 * 1000;
+const STORAGE_QUOTA_COOLDOWN_MS = 60 * 1000;
 const UPLOAD_URL_RE = /https?:\/\/[^\s"'<>\\]+\/storage\/v1\/object\/(?:public|sign)\/uploads\/[^\s"'<>\\]+/g;
 
 function encodeStoragePath(path) {
@@ -54,6 +55,19 @@ function canonicalizeUploadReferences(value, bucket = DEFAULT_BUCKET, seen = new
 function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEFAULT_SIGNED_SECONDS }) {
   const cache = new Map();
   const fileApi = supabase.storage.from(bucket);
+  let storageUnavailableUntil = 0;
+
+  function storageUnavailable(error) {
+    const status = Number(error?.statusCode || error?.status || error?.status_code || 0);
+    const message = String(error?.message || error || '');
+    return status === 402 || /payment required|quota|exceeded/i.test(message);
+  }
+
+  function rememberStorageUnavailable(error) {
+    if (!storageUnavailable(error)) return false;
+    storageUnavailableUntil = Date.now() + STORAGE_QUOTA_COOLDOWN_MS;
+    return true;
+  }
 
   function cached(path, force = false) {
     if (force) return '';
@@ -73,7 +87,9 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
   async function signOne(path, { force = false } = {}) {
     const existing = cached(path, force);
     if (existing) return existing;
+    if (Date.now() < storageUnavailableUntil) return '';
     const { data, error } = await fileApi.createSignedUrl(path, expiresIn);
+    rememberStorageUnavailable(error);
     if (error || !data?.signedUrl) return '';
     remember(path, data.signedUrl);
     return data.signedUrl;
@@ -89,10 +105,12 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
       else missing.push(path);
     });
     if (!missing.length) return result;
+    if (Date.now() < storageUnavailableUntil) return result;
 
     if (typeof fileApi.createSignedUrls === 'function') {
       try {
         const { data, error } = await fileApi.createSignedUrls(missing, expiresIn);
+        if (rememberStorageUnavailable(error)) return result;
         if (!error && Array.isArray(data)) {
           data.forEach((item, index) => {
             const path = item?.path || missing[index];
@@ -102,7 +120,8 @@ function createUploadSigner({ supabase, bucket = DEFAULT_BUCKET, expiresIn = DEF
             }
           });
         }
-      } catch {
+      } catch (error) {
+        if (rememberStorageUnavailable(error)) return result;
         // 某些旧版 storage-js 没有批量签名，下面逐条补齐。
       }
     }
