@@ -268,6 +268,19 @@ function formatReadResponse(rows, headers, total, offset = 0) {
   return jsonResponse(rows, 200, { 'Content-Range': `${offset}-${end}/${total}` });
 }
 
+function readWindow(params, headers) {
+  const range = String(headers.get('range') || '').match(/^(\d+)-(\d+)$/);
+  const offsetParam = params.get('offset');
+  const limitParam = params.get('limit');
+  const offset = Math.max(0, Number(offsetParam == null || offsetParam === '' ? range?.[1] : offsetParam) || 0);
+  const queryLimit = limitParam == null || limitParam === '' ? NaN : Number(limitParam);
+  const rangeLimit = range ? Number(range[2]) - Number(range[1]) + 1 : NaN;
+  const limit = Number.isFinite(queryLimit)
+    ? queryLimit
+    : (Number.isFinite(rangeLimit) ? rangeLimit : null);
+  return { offset, limit };
+}
+
 async function handleTableRequest(client, url, method, headers, body) {
   const table = decodeURIComponent(url.pathname.split('/rest/v1/')[1] || '').replace(/^\/+|\/+$/g, '');
   if (table.startsWith('rpc/')) {
@@ -282,12 +295,8 @@ async function handleTableRequest(client, url, method, headers, body) {
 
   if (method === 'GET' || method === 'HEAD') {
     const ordered = applyOrder(matched, url.searchParams.get('order'));
-    const range = String(headers.get('range') || '').match(/^(\d+)-(\d+)$/);
-    const offset = Math.max(0, Number(url.searchParams.get('offset')) || Number(range?.[1]) || 0);
-    const queryLimit = Number(url.searchParams.get('limit'));
-    const rangeLimit = range ? Number(range[2]) - Number(range[1]) + 1 : NaN;
-    const limitValue = Number.isFinite(queryLimit) ? queryLimit : rangeLimit;
-    const limited = Number.isFinite(limitValue) && limitValue >= 0 ? ordered.slice(offset, offset + limitValue) : ordered.slice(offset);
+    const { offset, limit } = readWindow(url.searchParams, headers);
+    const limited = Number.isFinite(limit) && limit >= 0 ? ordered.slice(offset, offset + limit) : ordered.slice(offset);
     const projected = projectRows(limited, url.searchParams.get('select'));
     if (method === 'HEAD') return jsonResponse(null, 200, { 'Content-Range': `0-0/${matched.length}` });
     return formatReadResponse(projected, headers, matched.length, offset);
@@ -375,4 +384,5 @@ module.exports = {
   inferDefaults,
   matchFilter,
   projectRows,
+  readWindow,
 };

@@ -102,6 +102,7 @@ try {
         memory_journal: body.memory_journal || 'local-semantic-summary-v2',
         upload_privacy: 'main-client-private-guard-v1',
         background_recovery: 'force-signed-url-refresh-v1',
+        neon_failover_reads: 'unbounded-snapshot-v2',
         photo_retention: 'chat-images-30d-auto-clean-v1',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,

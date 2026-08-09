@@ -9,6 +9,7 @@ const {
   inferDefaults,
   matchFilter,
   projectRows,
+  readWindow,
 } = require('../neonFailoverFetchPatch');
 
 test('matches PostgREST scalar, null, range, list, and ilike filters', () => {
@@ -30,6 +31,17 @@ test('filters, orders, and projects snapshot rows', () => {
   const filtered = applyFilters(rows, params);
   const ordered = applyOrder(filtered, params.get('order'));
   assert.deepEqual(projectRows(ordered.slice(0, 1), params.get('select')), [{ id: 3, content: 'new' }]);
+});
+
+test('a read without limit returns the full snapshot instead of an empty page', () => {
+  const unlimited = readWindow(new URLSearchParams('order=updated_at.desc'), new Headers());
+  assert.deepEqual(unlimited, { offset: 0, limit: null });
+
+  const explicit = readWindow(new URLSearchParams('offset=5&limit=3'), new Headers());
+  assert.deepEqual(explicit, { offset: 5, limit: 3 });
+
+  const ranged = readWindow(new URLSearchParams(), new Headers({ Range: '10-19' }));
+  assert.deepEqual(ranged, { offset: 10, limit: 10 });
 });
 
 test('infers numeric and UUID ids without mutating input', () => {
