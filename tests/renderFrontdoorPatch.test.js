@@ -122,6 +122,11 @@ test('same-origin /api URL maps to the existing root backend route', () => {
   );
 });
 
+test('server authentication lets the Render /api gateway receive login before inner route auth', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(source, /req\.path === '\/api' \|\| req\.path\.startsWith\('\/api\/'\)/);
+});
+
 test('JSON body is reconstructed after express.json consumed the request stream', async () => {
   const body = await readProxyBody({
     method: 'POST',
