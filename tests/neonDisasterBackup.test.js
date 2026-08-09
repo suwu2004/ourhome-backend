@@ -6,6 +6,7 @@ const path = require('node:path');
 const bridge = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_add_neon_disaster_backup_bridge.sql'), 'utf8');
 const extension = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_expand_neon_disaster_backup.sql'), 'utf8');
 const schedule = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_schedule_neon_disaster_backup.sql'), 'utf8');
+const pendingSecrets = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_add_neon_failover_secret_changes.sql'), 'utf8');
 
 test('Neon disaster backup migration never commits a database credential', () => {
   assert.doesNotMatch(bridge, /postgres(?:ql)?:\/\//i);
@@ -29,6 +30,14 @@ test('the extended snapshot encrypts runtime secrets and still excludes device p
   assert.match(extension, /ourhome_failover_secrets/);
   assert.doesNotMatch(extension, /extra_tables[^;]*'push_subscriptions'/s);
   assert.doesNotMatch(extension, /ourhome_neon_backup_url'\s*\)/);
+});
+
+test('credentials changed during failover stay encrypted in a snapshot-independent journal', () => {
+  assert.match(pendingSecrets, /ourhome_failover_secret_changes/);
+  assert.match(pendingSecrets, /ciphertext bytea/);
+  assert.match(pendingSecrets, /operation in \('upsert', 'delete'\)/);
+  assert.match(pendingSecrets, /revoke all/);
+  assert.doesNotMatch(pendingSecrets, /postgres(?:ql)?:\/\//i);
 });
 
 test('backup is single-flight and each remote table replacement is transactional', () => {
