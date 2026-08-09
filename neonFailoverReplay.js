@@ -21,6 +21,17 @@ function conflictColumn(change) {
   throw new Error(`${change?.table_name || 'unknown'}:${change?.row_key || 'unknown'} 没有可安全回迁的主键`);
 }
 
+function timestamp(value) {
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function primaryRowIsNewer(primary, change) {
+  const primaryAt = timestamp(primary?.updated_at || primary?.created_at);
+  const pendingAt = timestamp(change?.payload?.updated_at || change?.changed_at);
+  return primaryAt != null && pendingAt != null && primaryAt > pendingAt;
+}
+
 async function responseError(response) {
   const text = await response.text().catch(() => '');
   return `Supabase HTTP ${response.status}${text ? `: ${text.slice(0, 240)}` : ''}`;
@@ -71,9 +82,20 @@ function createNeonFailoverReplay({
     const key = conflictColumn(change);
     const encodedTable = encodeURIComponent(change.table_name);
     const encodedKey = encodeURIComponent(key);
+    const value = encodeURIComponent(change.row_key);
+    const currentResponse = await fetchImpl(
+      `${base}/rest/v1/${encodedTable}?select=*&${encodedKey}=eq.${value}&limit=1`,
+      { headers: primaryHeaders(supabaseKey) },
+    );
+    if (!currentResponse.ok) throw new Error(await responseError(currentResponse));
+    const currentRows = await currentResponse.json().catch(() => []);
+    if (primaryRowIsNewer(currentRows?.[0], change)) {
+      const error = new Error('Supabase 中的同一条数据更新得更晚，已保留 Neon 原件并暂停自动回迁');
+      error.code = 'primary_row_newer';
+      throw error;
+    }
     let response;
     if (change.operation === 'delete') {
-      const value = encodeURIComponent(change.row_key);
       response = await fetchImpl(`${base}/rest/v1/${encodedTable}?${encodedKey}=eq.${value}`, {
         method: 'DELETE',
         headers: primaryHeaders(supabaseKey, { Prefer: 'return=minimal' }),
@@ -141,4 +163,4 @@ function createNeonFailoverReplay({
   return { status, replay };
 }
 
-module.exports = { conflictColumn, createNeonFailoverReplay };
+module.exports = { conflictColumn, createNeonFailoverReplay, primaryRowIsNewer };
