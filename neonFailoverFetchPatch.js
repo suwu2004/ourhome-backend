@@ -214,12 +214,39 @@ async function decryptedSecret(client, { secretId = null, name = null } = {}) {
       from public.ourhome_failover_secrets
       where ($1::text is not null and secret_id = $1)
          or ($2::text is not null and secret_name = $2)
-      order by updated_at desc
+      order by source_updated_at desc nulls last, backed_up_at desc
       limit 1
     `,
     values: [secretId, name, secretWrapKey],
   });
   return result.rows[0]?.secret ?? null;
+}
+
+async function activateApiProfile(client, profileId) {
+  const profiles = await loadRows(client, 'api_profiles');
+  const target = profiles.find(profile => String(profile?.id) === String(profileId || ''));
+  if (!target) return postgrestError('找不到这个 API 站点', 'P0002');
+
+  const now = new Date().toISOString();
+  const activated = { ...target, is_active: true, updated_at: now };
+
+  await client.query('begin');
+  try {
+    for (const profile of profiles) {
+      if (!profile?.is_active || String(profile.id) === String(target.id)) continue;
+      await recordChange(client, 'api_profiles', 'upsert', {
+        ...profile,
+        is_active: false,
+        updated_at: now,
+      }, rowKey(profile));
+    }
+    await recordChange(client, 'api_profiles', 'upsert', activated, rowKey(target));
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
+  return jsonResponse(activated);
 }
 
 async function handleRpcRequest(client, rpcName, body) {
@@ -247,6 +274,10 @@ async function handleRpcRequest(client, rpcName, body) {
   if (rpcName === 'ourhome_get_or_create_vapid_keys') {
     const existing = await decryptedSecret(client, { name: 'ourhome_vapid_keys' });
     return jsonResponse(parseJsonSecret(existing) || parseJsonSecret(body?.p_secret));
+  }
+
+  if (rpcName === 'ourhome_activate_api_profile') {
+    return activateApiProfile(client, body?.p_id);
   }
 
   return postgrestError(`Supabase RPC ${rpcName} is unavailable while the emergency database is active.`);
@@ -379,8 +410,11 @@ if (typeof upstreamFetch === 'function' && pool) {
 }
 
 module.exports = {
+  activateApiProfile,
   applyFilters,
   applyOrder,
+  decryptedSecret,
+  handleRpcRequest,
   inferDefaults,
   matchFilter,
   projectRows,

@@ -26,4 +26,5 @@ test('production health exposes the main-client upload privacy guard', () => {
   assert.match(bootstrap, /upload_privacy:\s*'main-client-private-guard-v1'/);
   assert.match(bootstrap, /background_recovery:\s*'force-signed-url-refresh-v1'/);
   assert.match(bootstrap, /neon_failover_reads:\s*'unbounded-snapshot-v2'/);
+  assert.match(bootstrap, /neon_api_profiles:\s*'secret-read-activate-v1'/);
 });
