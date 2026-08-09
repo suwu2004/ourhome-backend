@@ -6,7 +6,7 @@ const express = require('express');
 
 const FRONTEND_ORIGIN = String(process.env.OURHOME_FRONTEND_ORIGIN || 'https://ourhome-frontend.vercel.app').replace(/\/+$/, '');
 const FRONTDOOR_PATH = '/home';
-const LOCAL_FRONTEND_DIR = path.resolve(process.env.OURHOME_RENDER_FRONTEND_DIR || path.join(__dirname, '.render-frontend-dist'));
+const LOCAL_FRONTEND_DIR = path.resolve(process.env.OURHOME_RENDER_FRONTEND_DIR || path.join(__dirname, 'render-frontend-dist'));
 const FRONTEND_FETCH_TIMEOUT_MS = 15_000;
 const API_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
