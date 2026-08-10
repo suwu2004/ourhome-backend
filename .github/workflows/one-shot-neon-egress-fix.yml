@@ -1,0 +1,39 @@
+name: One-shot Neon failover egress fix
+
+on:
+  push:
+    branches:
+      - agent/neon-failover-egress-20260810
+    paths:
+      - .github/one-shot-neon-egress-fix.py
+      - .github/workflows/one-shot-neon-egress-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.event.head_commit.message == 'Stage Neon failover egress fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/neon-failover-egress-20260810
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply guarded SQL-read patch
+        run: python .github/one-shot-neon-egress-fix.py
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: git diff --check
+      - name: Commit verified product changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add neonFailoverFetchPatch.js runtimeBootstrap.js tests/neonFailoverFetchPatch.test.js tests/runtimeUploadPrivacyGuard.test.js
+          git diff --cached --quiet && exit 0
+          git commit -m "Push Neon failover reads into SQL"
+          git push origin HEAD:agent/neon-failover-egress-20260810
