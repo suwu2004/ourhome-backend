@@ -7,6 +7,7 @@ const bridge = fs.readFileSync(path.join(__dirname, '..', 'migrations', '2026080
 const extension = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_expand_neon_disaster_backup.sql'), 'utf8');
 const schedule = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_schedule_neon_disaster_backup.sql'), 'utf8');
 const pendingSecrets = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_add_neon_failover_secret_changes.sql'), 'utf8');
+const stableSecretWrap = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260810_stabilize_neon_secret_wrap_v2.sql'), 'utf8');
 
 test('Neon disaster backup migration never commits a database credential', () => {
   assert.doesNotMatch(bridge, /postgres(?:ql)?:\/\//i);
@@ -38,6 +39,25 @@ test('credentials changed during failover stay encrypted in a snapshot-independe
   assert.match(pendingSecrets, /operation in \('upsert', 'delete'\)/);
   assert.match(pendingSecrets, /revoke all/);
   assert.doesNotMatch(pendingSecrets, /postgres(?:ql)?:\/\//i);
+});
+
+test('V2 secret wrapping is stable across equivalent Neon connection URLs', () => {
+  assert.doesNotMatch(stableSecretWrap, /postgres(?:ql)?:\/\/[^'\s]*@/i);
+  assert.match(stableSecretWrap, /split_part\(btrim\(p_neon_url\), '\?', 1\)/);
+  assert.match(stableSecretWrap, /replace\([^;]*'-pooler\.', '\.'\)/s);
+  assert.match(stableSecretWrap, /'\^postgres:\/\/'/);
+  assert.match(stableSecretWrap, /'\/\+\$'/);
+  assert.match(stableSecretWrap, /ourhome-neon-failover-secrets-v2/);
+});
+
+test('V2 backup replaces ciphertext transactionally and keeps the existing scheduled entry point', () => {
+  assert.match(stableSecretWrap, /rename to ourhome_backup_extended_to_neon_legacy/);
+  assert.match(stableSecretWrap, /snapshot_result := public\.ourhome_backup_extended_to_neon_legacy\(\)/);
+  assert.match(stableSecretWrap, /secret_result := public\.ourhome_backup_neon_secrets_v2\(\)/);
+  assert.match(stableSecretWrap, /delete from public\.ourhome_failover_secrets/);
+  assert.match(stableSecretWrap, /dblink_exec\(conn_name, 'begin'\)/);
+  assert.match(stableSecretWrap, /dblink_exec\(conn_name, 'commit'\)/);
+  assert.match(stableSecretWrap, /dblink_exec\(conn_name, 'rollback'\)/);
 });
 
 test('backup is single-flight and each remote table replacement is transactional', () => {
