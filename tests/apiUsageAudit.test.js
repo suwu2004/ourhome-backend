@@ -11,8 +11,9 @@ test('Chat only displays provider-native reasoning and never forces or synthesiz
   assert.doesNotMatch(thinking, /deterministicFallbackThought/);
   assert.doesNotMatch(thinking, /guaranteeVisibleThinking/);
   assert.doesNotMatch(thinking, /appendVisibleThinkingProtocol/);
-  assert.match(thinking, /native-only-thinking-v7/);
-  assert.match(thinking, /delete body\.thinking/);
+  assert.match(thinking, /native-only-thinking-v8/);
+  assert.doesNotMatch(thinking, /delete body\.thinking/);
+  assert.match(thinking, /prepareMainChatRequest/);
   assert.match(thinking, /headers\.delete\('anthropic-beta'\)/);
   assert.match(thinking, /text: '不想'/);
 });
