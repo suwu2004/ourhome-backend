@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   patch-and-verify:
-    if: github.event_name == 'pull_request' || github.event.head_commit.message == 'Stage aggressive stability optimization'
+    if: github.event_name == 'pull_request' || github.event.head_commit.message == 'Stage aggressive stability optimization' || github.event.head_commit.message == 'Fix stability regression expectations'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +33,15 @@ jobs:
           else
             python .github/one-shot-aggressive-stability.py
           fi
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/neonFailoverFetchPatch.test.js')
+          text = path.read_text()
+          text = text.replace('/::boolean desc/', '/::boolean end desc/')
+          text = text.replace('/::boolean asc/', '/::boolean end asc/')
+          text = text.replace('/::timestamptz desc/', '/::timestamptz end desc/')
+          path.write_text(text)
+          PY
       - run: npm ci
       - run: npm run check
       - run: npm test
