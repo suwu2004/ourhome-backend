@@ -1,9 +1,11 @@
 'use strict';
 
-// Render starts the service with `node server.js`. Keep every runtime compatibility
-// layer on this one path so direct Render startup and `npm start` behave the same.
-// Arm the Supabase-402 fallback before any module captures the global fetch.
-// Requiring it again from `npm start` is harmless because Node caches modules.
+// Keep every runtime compatibility layer aligned across direct `node server.js`
+// startup and `npm start`. Requiring a patch again from npm preload is harmless
+// because Node caches modules. Protect the outer Chat send first, then suppress
+// repeated real Supabase REST 402s before the Neon fallback captures fetch.
+require('./chatIdempotencyPatch');
+require('./supabaseQuotaCircuitPatch');
 require('./neonFailoverFetchPatch');
 require('./theaterMemoryPatch');
 require('./memoryLayerPatch');
@@ -80,7 +82,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, R2 shadow storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, R2 shadow storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -90,7 +92,9 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        runtime_bootstrap: 'direct-server-start-v2-cost-guard',
+        runtime_bootstrap: 'direct-server-start-v4-adaptive-stability',
+        chat_idempotency: 'request-id-single-execution-v1',
+        supabase_quota_circuit: 'rest-402-adaptive-v2',
         toybox: 'toy-bear-gomoku-v4',
         toybox_cloud_history: 'drawing-auto-save-v1',
         toybox_stale_cleanup: 'one-hour-user-rounds-v1',
@@ -103,7 +107,7 @@ try {
         calendar_day_colors: 'cloud-settings-v1',
         upload_privacy: 'main-client-private-guard-v1',
         background_recovery: 'quota-cooldown-signed-url-v2',
-        neon_failover_reads: 'sql-filtered-v3',
+        neon_failover_reads: 'sql-filtered-coalesced-v4',
         neon_failover_writes: 'journal-v5-serialized-compacted-defaults',
         neon_chat_persistence: 'visible-current-turn-v1',
         neon_api_profiles: 'encrypted-secret-write-v3-normalized-wrap',

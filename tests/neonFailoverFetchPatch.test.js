@@ -16,6 +16,7 @@ const {
   deleteServiceConnection,
   decryptedSecret,
   deriveSecretWrapKey,
+  failoverReadKey,
   handleTableRequest,
   inferDefaults,
   inferTableDefaults,
@@ -29,6 +30,7 @@ const {
   saveAgentMailWebhookSecret,
   saveApiProfile,
   saveServiceConnection,
+  shareFailoverRead,
   storeFailoverObjectWithClient,
   transitionIntimacyFlow,
 } = require('../neonFailoverFetchPatch');
@@ -96,7 +98,7 @@ test('simple failover reads push filters, time ordering and pagination into Neon
   const client = {
     async query(statement) {
       calls.push(statement);
-      assert.match(statement.text, /sql-filtered-v3/);
+      assert.match(statement.text, /sql-filtered-coalesced-v4/);
       assert.match(statement.text, /payload -> 'session_id'/);
       assert.match(statement.text, /payload -> 'visible'/);
       assert.match(statement.text, /payload ->> 'created_at'/);
@@ -123,12 +125,24 @@ test('simple failover reads push filters, time ordering and pagination into Neon
   assert.deepEqual(await response.json(), [{ id: 9001, content: 'latest' }]);
 });
 
-test('API profile health reads use SQL-side boolean filtering and limit one', () => {
-  const plan = buildSqlReadPlan(new URLSearchParams('is_active=eq.true&limit=1'), new Headers());
-  assert.ok(plan);
-  assert.deepEqual(plan.values, ['true']);
-  assert.equal(plan.limit, 1);
-  assert.match(plan.clauses[0], /payload -> 'is_active'/);
+test('high-frequency API, integration and memo orders stay on the SQL fast path', () => {
+  const apiPlan = buildSqlReadPlan(new URLSearchParams('is_active=eq.true&order=is_active.desc,updated_at.desc&limit=1'), new Headers());
+  assert.ok(apiPlan);
+  assert.deepEqual(apiPlan.values, ['true']);
+  assert.equal(apiPlan.limit, 1);
+  assert.match(apiPlan.clauses[0], /payload -> 'is_active'/);
+  assert.match(apiPlan.orderSql[0], /::boolean end desc/);
+  assert.match(apiPlan.orderSql[1], /::timestamptz end desc/);
+
+  const integrationPlan = buildSqlReadPlan(new URLSearchParams('order=kind.asc,updated_at.desc'), new Headers());
+  assert.ok(integrationPlan);
+  assert.match(integrationPlan.orderSql[0], /payload ->> 'kind'/);
+  assert.match(integrationPlan.orderSql[1], /::timestamptz end desc/);
+
+  const memoPlan = buildSqlReadPlan(new URLSearchParams('order=completed.asc,updated_at.desc&limit=60'), new Headers());
+  assert.ok(memoPlan);
+  assert.match(memoPlan.orderSql[0], /::boolean end asc/);
+  assert.equal(memoPlan.limit, 60);
 });
 
 test('complex PostgREST expressions keep the legacy JS fallback for correctness', async () => {
@@ -137,7 +151,7 @@ test('complex PostgREST expressions keep the legacy JS fallback for correctness'
   const client = {
     async query(statement) {
       calls.push(statement);
-      if (/sql-filtered-v3/.test(statement.text)) throw new Error('complex filter must not use SQL fast path');
+      if (/sql-filtered-coalesced-v4/.test(statement.text)) throw new Error('complex filter must not use SQL fast path');
       if (/with latest_changes/.test(statement.text)) {
         return { rows: [{ row_key: '1', payload: { id: 1, role: 'user', visible: true } }] };
       }
@@ -158,12 +172,41 @@ test('complex PostgREST expressions keep the legacy JS fallback for correctness'
 test('SQL read loader preserves empty pages and total counts', async () => {
   const client = {
     async query(statement) {
-      assert.match(statement.text, /sql-filtered-v3/);
+      assert.match(statement.text, /sql-filtered-coalesced-v4/);
       return { rows: [{ row_key: null, payload: null, total: 12 }] };
     },
   };
   const result = await loadReadRows(client, 'messages', new URLSearchParams('visible=eq.true&offset=20&limit=10'), new Headers());
   assert.deepEqual(result, { rows: [], total: 12, offset: 20 });
+});
+
+test('identical in-flight failover reads share one Neon execution and return independent responses', async () => {
+  const key = failoverReadKey(
+    new URL('https://project.supabase.co/rest/v1/settings?select=*'),
+    'GET',
+    new Headers({ Accept: 'application/json' }),
+  );
+  let executions = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const work = async () => {
+    executions += 1;
+    await gate;
+    return new Response(JSON.stringify([{ id: 'global' }]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const leftPromise = shareFailoverRead(key, work);
+  const rightPromise = shareFailoverRead(key, work);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(executions, 1);
+  release();
+  const [left, right] = await Promise.all([leftPromise, rightPromise]);
+  assert.notEqual(left, right);
+  assert.deepEqual(await left.json(), [{ id: 'global' }]);
+  assert.deepEqual(await right.json(), [{ id: 'global' }]);
 });
 
 test('infers numeric and UUID ids without mutating input', () => {

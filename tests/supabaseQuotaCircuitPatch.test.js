@@ -62,6 +62,59 @@ test('one real 402 opens a cooldown so following REST traffic reaches Neon witho
   assert.equal(upstreamCalls, 1, 'cooldown traffic must not touch Supabase again');
 });
 
+test('repeated real 402 recovery probes back off from 30s toward a five-minute ceiling', async () => {
+  let clock = 1_000;
+  let upstreamCalls = 0;
+  const fetchImpl = async () => {
+    upstreamCalls += 1;
+    return jsonResponse(402, { message: 'quota' });
+  };
+  const circuit = createSupabaseQuotaCircuitFetch({
+    fetchImpl,
+    supabaseUrl: BASE,
+    cooldownMs: 30_000,
+    now: () => clock,
+  });
+
+  await circuit.fetch(DATA_URL, { headers: AUTH_HEADERS });
+  assert.equal(circuit.state().currentCooldownMs, 30_000);
+  assert.equal(circuit.state().backoffLevel, 1);
+
+  clock += 31_000;
+  await circuit.fetch(DATA_URL, { headers: AUTH_HEADERS });
+  assert.equal(circuit.state().currentCooldownMs, 60_000);
+  assert.equal(circuit.state().backoffLevel, 2);
+  assert.equal(upstreamCalls, 2, 'one original 402 plus one recovery probe');
+
+  clock += 31_000;
+  const stillCooling = await circuit.fetch(DATA_URL, { headers: AUTH_HEADERS });
+  assert.equal(stillCooling.headers.get('X-OurHome-Supabase-Circuit'), 'open');
+  assert.equal(upstreamCalls, 2, 'adaptive cooldown suppresses premature probes');
+
+  clock += 30_000;
+  await circuit.fetch(DATA_URL, { headers: AUTH_HEADERS });
+  assert.equal(circuit.state().currentCooldownMs, 120_000);
+  assert.equal(circuit.state().backoffLevel, 3);
+});
+
+test('manual recovery probes do not make the automatic quota backoff harsher', async () => {
+  let clock = 5_000;
+  const fetchImpl = async () => jsonResponse(402, { message: 'quota' });
+  const circuit = createSupabaseQuotaCircuitFetch({
+    fetchImpl,
+    supabaseUrl: BASE,
+    cooldownMs: 30_000,
+    now: () => clock,
+  });
+
+  await circuit.fetch(DATA_URL, { headers: AUTH_HEADERS });
+  assert.equal(circuit.state().backoffLevel, 1);
+  clock += 1_000;
+  await circuit.fetch(PROBE_URL, { headers: AUTH_HEADERS });
+  assert.equal(circuit.state().backoffLevel, 1);
+  assert.equal(circuit.state().currentCooldownMs, 30_000);
+});
+
 test('after cooldown, concurrent traffic shares one read-only probe before returning to Supabase', async () => {
   let clock = 10_000;
   let upstreamCalls = 0;
