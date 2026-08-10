@@ -4,7 +4,6 @@ const crypto = require('crypto');
 
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
-const DEFAULT_TOPIC = 'ourhome-owner';
 
 function clean(value) {
   return String(value || '').trim();
@@ -77,17 +76,25 @@ function inferRoute(data = {}) {
   return 'home';
 }
 
+class NativePushError extends Error {
+  constructor(message, { status = 0, code = '' } = {}) {
+    super(message);
+    this.name = 'NativePushError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function createNativePushSender({ env = process.env, fetchImpl = global.fetch, now = () => Date.now() } = {}) {
   const account = readServiceAccount(env);
-  const topic = clean(env.FCM_TOPIC || DEFAULT_TOPIC) || DEFAULT_TOPIC;
   let cachedAccessToken = '';
   let cachedAccessTokenExpiresAt = 0;
 
   async function getAccessToken() {
     const nowMs = now();
     if (cachedAccessToken && cachedAccessTokenExpiresAt - nowMs > 60_000) return cachedAccessToken;
-    if (!account) throw new Error('Firebase service account is not configured');
-    if (typeof fetchImpl !== 'function') throw new Error('fetch is unavailable');
+    if (!account) throw new NativePushError('Firebase service account is not configured');
+    if (typeof fetchImpl !== 'function') throw new NativePushError('fetch is unavailable');
 
     const assertion = createServiceAccountJwt(account, nowMs);
     const response = await fetchImpl(account.tokenUri, {
@@ -100,7 +107,10 @@ function createNativePushSender({ env = process.env, fetchImpl = global.fetch, n
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.access_token) {
-      throw new Error(payload.error_description || payload.error || `Firebase OAuth failed (${response.status})`);
+      throw new NativePushError(
+        String(payload.error_description || payload.error || `Firebase OAuth failed (${response.status})`),
+        { status: response.status },
+      );
     }
     const expiresInSeconds = Number(payload.expires_in || 3600);
     cachedAccessToken = String(payload.access_token);
@@ -108,8 +118,11 @@ function createNativePushSender({ env = process.env, fetchImpl = global.fetch, n
     return cachedAccessToken;
   }
 
-  async function send(title, body, data = {}) {
+  async function sendToToken(token, title, body, data = {}) {
+    const registrationToken = clean(token);
     if (!account) return { configured: false, sent: 0, failed: 0, reason: 'missing-firebase-service-account' };
+    if (!registrationToken) throw new NativePushError('Missing FCM registration token', { code: 'missing-token' });
+
     const accessToken = await getAccessToken();
     const messageData = {
       title: clean(title) || 'OurHome',
@@ -127,7 +140,7 @@ function createNativePushSender({ env = process.env, fetchImpl = global.fetch, n
         },
         body: JSON.stringify({
           message: {
-            topic,
+            token: registrationToken,
             data: messageData,
             android: { priority: 'HIGH' },
           },
@@ -137,21 +150,21 @@ function createNativePushSender({ env = process.env, fetchImpl = global.fetch, n
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = payload?.error?.message || payload?.error || `FCM send failed (${response.status})`;
-      throw new Error(String(detail));
+      const fcmCode = payload?.error?.details?.find?.(item => item?.errorCode)?.errorCode || payload?.error?.status || '';
+      throw new NativePushError(String(detail), { status: response.status, code: String(fcmCode) });
     }
-    return { configured: true, sent: 1, failed: 0, name: payload.name || '', topic };
+    return { configured: true, sent: 1, failed: 0, name: payload.name || '' };
   }
 
   return {
     configured: Boolean(account),
-    topic,
-    send,
+    sendToToken,
   };
 }
 
 module.exports = {
-  DEFAULT_TOPIC,
   FCM_SCOPE,
+  NativePushError,
   createNativePushSender,
   createServiceAccountJwt,
   inferRoute,
