@@ -108,7 +108,7 @@ if (typeof originalFetch === 'function') {
       const body = JSON.parse(init.body);
 
       // Legacy server code still asks a tiny “think or not” question for some
-      // models. Resolve it locally so this branch can never become a paid call.
+      // models. Resolve it locally so this can never become a paid provider call.
       if (isThinkingDecisionRequest(url, body)) return fixedNoThinkResponse();
 
       if (isMainChatRequest(url, body)) {
