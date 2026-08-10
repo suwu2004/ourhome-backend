@@ -103,7 +103,7 @@ try {
         calendar_day_colors: 'cloud-settings-v1',
         upload_privacy: 'main-client-private-guard-v1',
         background_recovery: 'quota-cooldown-signed-url-v2',
-        neon_failover_reads: 'unbounded-snapshot-v2',
+        neon_failover_reads: 'sql-filtered-v3',
         neon_failover_writes: 'journal-v5-serialized-compacted-defaults',
         neon_chat_persistence: 'visible-current-turn-v1',
         neon_api_profiles: 'encrypted-secret-write-v3-normalized-wrap',

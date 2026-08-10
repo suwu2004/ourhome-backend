@@ -226,6 +226,186 @@ async function loadRows(client, table) {
   });
 }
 
+
+const SQL_READ_RESERVED_PARAMS = new Set(['select', 'order', 'limit', 'offset', 'on_conflict', 'columns']);
+const SQL_READ_FILTER_OPS = new Set(['eq', 'neq', 'is', 'in', 'like', 'ilike']);
+const SQL_READ_ORDER_FIELDS = new Set([
+  'created_at', 'updated_at', 'changed_at', 'source_updated_at', 'backed_up_at',
+  'remind_at', 'last_run_at', 'claimed_at', 'completed_at', 'retry_after', 'date',
+]);
+
+function safeJsonField(value) {
+  const field = String(value || '');
+  return /^[a-zA-Z_][\w]*$/.test(field) ? field : '';
+}
+
+function decodedFilterValue(value) {
+  try { return decodeURIComponent(String(value || '')); }
+  catch { return String(value || ''); }
+}
+
+function sqlJsonEquality(column, expected, values, { negate = false } = {}) {
+  const field = safeJsonField(column);
+  if (!field) return null;
+  if (expected === null || typeof expected === 'number' || typeof expected === 'boolean') {
+    values.push(JSON.stringify(expected));
+    const operator = negate ? 'is distinct from' : '=';
+    return `(payload -> '${field}') ${operator} $${values.length + 1}::jsonb`;
+  }
+  values.push(String(expected));
+  const operator = negate ? 'is distinct from' : '=';
+  return `(payload ->> '${field}') ${operator} $${values.length + 1}::text`;
+}
+
+function buildSqlReadPlan(params, headers = new Headers()) {
+  if (params.has('and') || params.has('or')) return null;
+  const values = [];
+  const clauses = [];
+
+  for (const [column, expression] of params.entries()) {
+    if (SQL_READ_RESERVED_PARAMS.has(column)) continue;
+    const field = safeJsonField(column);
+    if (!field) return null;
+    const dot = String(expression || '').indexOf('.');
+    const op = dot < 0 ? 'eq' : expression.slice(0, dot);
+    const raw = dot < 0 ? expression : expression.slice(dot + 1);
+    if (!SQL_READ_FILTER_OPS.has(op)) return null;
+
+    if (op === 'is') {
+      if (raw === 'null') {
+        clauses.push(`((payload -> '${field}') is null or (payload -> '${field}') = 'null'::jsonb)`);
+        continue;
+      }
+      if (raw === 'true' || raw === 'false') {
+        const clause = sqlJsonEquality(field, raw === 'true', values);
+        if (!clause) return null;
+        clauses.push(clause);
+        continue;
+      }
+      return null;
+    }
+
+    if (op === 'in') {
+      const items = parseInList(raw);
+      if (!items.length) {
+        clauses.push('false');
+        continue;
+      }
+      const alternatives = [];
+      for (const item of items) {
+        const clause = sqlJsonEquality(field, item, values);
+        if (!clause) return null;
+        alternatives.push(clause);
+      }
+      clauses.push(`(${alternatives.join(' or ')})`);
+      continue;
+    }
+
+    if (op === 'like' || op === 'ilike') {
+      const decoded = decodedFilterValue(raw);
+      // The legacy matcher only treats % and * as wildcards. SQL LIKE also
+      // treats underscore as a wildcard, so preserve correctness by falling back.
+      if (decoded.includes('_')) return null;
+      values.push(decoded.replace(/\*/g, '%'));
+      clauses.push(`coalesce(payload ->> '${field}', '') ${op === 'ilike' ? 'ilike' : 'like'} $${values.length + 1}::text`);
+      continue;
+    }
+
+    const expected = scalar(decodedFilterValue(raw));
+    const clause = sqlJsonEquality(field, expected, values, { negate: op === 'neq' });
+    if (!clause) return null;
+    clauses.push(clause);
+  }
+
+  const order = String(params.get('order') || '').trim();
+  const orderSql = [];
+  if (order) {
+    for (const part of order.split(',').filter(Boolean)) {
+      const bits = part.split('.');
+      const field = safeJsonField(bits[0]);
+      if (!field || !SQL_READ_ORDER_FIELDS.has(field)) return null;
+      const direction = bits[1] === 'desc' ? 'desc' : 'asc';
+      if (bits[1] && bits[1] !== 'asc' && bits[1] !== 'desc') return null;
+      if (bits.some(bit => ![field, 'asc', 'desc', 'nullsfirst', 'nullslast'].includes(bit))) return null;
+      const explicitNullsFirst = bits.includes('nullsfirst');
+      const nulls = explicitNullsFirst
+        ? (direction === 'desc' ? 'nulls last' : 'nulls first')
+        : (direction === 'desc' ? 'nulls first' : 'nulls last');
+      orderSql.push(`(payload ->> '${field}')::timestamptz ${direction} ${nulls}`);
+    }
+  }
+
+  const { offset, limit } = readWindow(params, headers);
+  return { clauses, orderSql, offset, limit, values };
+}
+
+async function loadReadRows(client, table, params, headers = new Headers()) {
+  const plan = buildSqlReadPlan(params, headers);
+  if (!plan) return null;
+  const values = [table, ...plan.values];
+  const where = plan.clauses.length ? `and ${plan.clauses.join(' and ')}` : '';
+  const order = plan.orderSql.length ? `order by ${plan.orderSql.join(', ')}` : '';
+  let limit = '';
+  if (Number.isFinite(plan.limit) && plan.limit >= 0) {
+    values.push(plan.limit);
+    limit = `limit $${values.length}`;
+  }
+  let offset = '';
+  if (plan.offset > 0) {
+    values.push(plan.offset);
+    offset = `offset $${values.length}`;
+  }
+
+  const result = await client.query({
+    text: `
+      /* sql-filtered-v3 */
+      with latest_changes as (
+        select distinct on (row_key) row_key, operation, payload
+        from public.ourhome_failover_changes
+        where table_name = $1 and applied_to_supabase_at is null
+        order by row_key, id desc
+      ), base as (
+        select row_key, payload from public.ourhome_backup_rows where table_name = $1
+      ), combined as (
+        select coalesce(c.row_key, b.row_key) row_key,
+               coalesce(c.operation, 'snapshot') operation,
+               coalesce(c.payload, b.payload) payload
+        from base b full join latest_changes c using (row_key)
+      ), filtered as (
+        select row_key, payload
+        from combined
+        where operation <> 'delete' ${where}
+      )
+      select page.row_key, page.payload, totals.total
+      from (select count(*)::integer total from filtered) totals
+      left join lateral (
+        select row_key, payload from filtered
+        ${order}
+        ${limit}
+        ${offset}
+      ) page on true
+    `,
+    values,
+  });
+
+  // Keep a compatibility fallback for test doubles and old proxies that do not
+  // return the page+total shape. Production pg returns this shape directly.
+  if (!Array.isArray(result?.rows) || !result.rows.length || !Object.prototype.hasOwnProperty.call(result.rows[0], 'total')) {
+    return null;
+  }
+  const total = Number(result.rows[0]?.total || 0);
+  const rows = result.rows
+    .filter(item => item?.payload != null)
+    .map(item => {
+      const payload = normalizeFailoverRow(table, item.payload);
+      if (payload && typeof payload === 'object') {
+        Object.defineProperty(payload, ROW_KEY, { value: String(item.row_key), enumerable: false });
+      }
+      return payload;
+    });
+  return { rows, total, offset: plan.offset };
+}
+
 async function recordChange(client, table, operation, row, key = null) {
   const resolvedKey = key || rowKey(row);
   await client.query({
@@ -970,6 +1150,14 @@ async function handleTableRequest(client, url, method, headers, body) {
     return postgrestError('This Supabase request is unavailable while the emergency database is active.');
   }
   const execute = async () => {
+    if (method === 'GET' || method === 'HEAD') {
+      const optimized = await loadReadRows(client, table, url.searchParams, headers);
+      if (optimized) {
+        if (method === 'HEAD') return jsonResponse(null, 200, { 'Content-Range': `0-0/${optimized.total}` });
+        return formatReadResponse(projectRows(optimized.rows, url.searchParams.get('select')), headers, optimized.total, optimized.offset);
+      }
+    }
+
     const allRows = await loadRows(client, table);
     const matched = applyFilters(allRows, url.searchParams);
     const prefer = headers.get('prefer') || '';
@@ -1071,6 +1259,7 @@ module.exports = {
   activateApiProfile,
   applyFilters,
   applyOrder,
+  buildSqlReadPlan,
   claimDailyJournal,
   commitContextLedger,
   createVaultTransaction,
@@ -1083,6 +1272,7 @@ module.exports = {
   handleTableRequest,
   inferDefaults,
   inferTableDefaults,
+  loadReadRows,
   matchFilter,
   normalizeFailoverRow,
   normalizeNeonConnectionIdentity,

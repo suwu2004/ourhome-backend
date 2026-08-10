@@ -25,7 +25,7 @@ test('production health exposes the main-client upload privacy guard', () => {
   const bootstrap = source('runtimeBootstrap.js');
   assert.match(bootstrap, /upload_privacy:\s*'main-client-private-guard-v1'/);
   assert.match(bootstrap, /background_recovery:\s*'quota-cooldown-signed-url-v2'/);
-  assert.match(bootstrap, /neon_failover_reads:\s*'unbounded-snapshot-v2'/);
+  assert.match(bootstrap, /neon_failover_reads:\s*'sql-filtered-v3'/);
   assert.match(bootstrap, /neon_failover_writes:\s*'journal-v5-serialized-compacted-defaults'/);
   assert.match(bootstrap, /neon_chat_persistence:\s*'visible-current-turn-v1'/);
   assert.match(bootstrap, /neon_api_profiles:\s*'encrypted-secret-write-v3-normalized-wrap'/);

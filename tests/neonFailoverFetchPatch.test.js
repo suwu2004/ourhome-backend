@@ -7,6 +7,7 @@ const {
   activateApiProfile,
   applyFilters,
   applyOrder,
+  buildSqlReadPlan,
   claimDailyJournal,
   commitContextLedger,
   createVaultTransaction,
@@ -18,6 +19,7 @@ const {
   handleTableRequest,
   inferDefaults,
   inferTableDefaults,
+  loadReadRows,
   matchFilter,
   normalizeFailoverRow,
   normalizeNeonConnectionIdentity,
@@ -87,6 +89,81 @@ test('a read without limit returns the full snapshot instead of an empty page', 
 
   const ranged = readWindow(new URLSearchParams(), new Headers({ Range: '10-19' }));
   assert.deepEqual(ranged, { offset: 10, limit: 10 });
+});
+
+test('simple failover reads push filters, time ordering and pagination into Neon SQL', async () => {
+  const calls = [];
+  const client = {
+    async query(statement) {
+      calls.push(statement);
+      assert.match(statement.text, /sql-filtered-v3/);
+      assert.match(statement.text, /payload -> 'session_id'/);
+      assert.match(statement.text, /payload -> 'visible'/);
+      assert.match(statement.text, /payload ->> 'created_at'/);
+      assert.match(statement.text, /limit \$\d+/);
+      return {
+        rows: [{
+          row_key: '9001',
+          payload: { id: 9001, session_id: 22, role: 'user', content: 'latest', visible: true, created_at: '2026-08-10T09:00:00Z' },
+          total: 7,
+        }],
+      };
+    },
+  };
+  const response = await handleTableRequest(
+    client,
+    new URL('https://project.supabase.co/rest/v1/messages?session_id=eq.22&visible=eq.true&order=created_at.desc&limit=1&select=id,content'),
+    'GET',
+    new Headers(),
+    null,
+  );
+  assert.equal(calls.length, 1, 'optimized GET must not load the full table first');
+  assert.deepEqual(calls[0].values.slice(0, 3), ['messages', '22', 'true']);
+  assert.equal(response.headers.get('Content-Range'), '0-0/7');
+  assert.deepEqual(await response.json(), [{ id: 9001, content: 'latest' }]);
+});
+
+test('API profile health reads use SQL-side boolean filtering and limit one', () => {
+  const plan = buildSqlReadPlan(new URLSearchParams('is_active=eq.true&limit=1'), new Headers());
+  assert.ok(plan);
+  assert.deepEqual(plan.values, ['true']);
+  assert.equal(plan.limit, 1);
+  assert.match(plan.clauses[0], /payload -> 'is_active'/);
+});
+
+test('complex PostgREST expressions keep the legacy JS fallback for correctness', async () => {
+  assert.equal(buildSqlReadPlan(new URLSearchParams('or=(role.eq.user,visible.eq.true)&limit=2'), new Headers()), null);
+  const calls = [];
+  const client = {
+    async query(statement) {
+      calls.push(statement);
+      if (/sql-filtered-v3/.test(statement.text)) throw new Error('complex filter must not use SQL fast path');
+      if (/with latest_changes/.test(statement.text)) {
+        return { rows: [{ row_key: '1', payload: { id: 1, role: 'user', visible: true } }] };
+      }
+      throw new Error(`Unexpected query: ${statement.text}`);
+    },
+  };
+  const response = await handleTableRequest(
+    client,
+    new URL('https://project.supabase.co/rest/v1/messages?or=(role.eq.user,visible.eq.true)&limit=2'),
+    'GET',
+    new Headers(),
+    null,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(response.status, 200);
+});
+
+test('SQL read loader preserves empty pages and total counts', async () => {
+  const client = {
+    async query(statement) {
+      assert.match(statement.text, /sql-filtered-v3/);
+      return { rows: [{ row_key: null, payload: null, total: 12 }] };
+    },
+  };
+  const result = await loadReadRows(client, 'messages', new URLSearchParams('visible=eq.true&offset=20&limit=10'), new Headers());
+  assert.deepEqual(result, { rows: [], total: 12, offset: 20 });
 });
 
 test('infers numeric and UUID ids without mutating input', () => {
