@@ -98,3 +98,5 @@ if 'node --check nativePush.js' not in check:
     check = check.replace(anchor, 'node --check nativePush.js && ' + anchor, 1)
     package['scripts']['check'] = check
     package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + '\n')
+
+# push-trigger marker: 2026-08-10
