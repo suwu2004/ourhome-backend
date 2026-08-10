@@ -62,9 +62,9 @@ test('迁移保留旧记忆并提供提炼、过期和审计机制', () => {
   assert.doesNotMatch(migration, /delete\s+from\s+public\.memory_marks/i);
 });
 
-test('生产启动先保护 Chat 幂等，再按记忆、token、原生思考、审计、非 Chat 省钱和后台本地保护顺序加载', () => {
+test('生产启动先保护 Chat 幂等，再以 402 熔断保护 Supabase/Neon，最后加载记忆、token、原生思考、审计和省钱守卫', () => {
   assert.equal(
     packageJson.scripts.start,
-    'node -r ./chatIdempotencyPatch.js -r ./neonFailoverFetchPatch.js -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./nonChatBudgetPatch.js -r ./backgroundAiCostGuardPatch.js server.js',
+    'node -r ./chatIdempotencyPatch.js -r ./supabaseQuotaCircuitPatch.js -r ./neonFailoverFetchPatch.js -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./nonChatBudgetPatch.js -r ./backgroundAiCostGuardPatch.js server.js',
   );
 });
