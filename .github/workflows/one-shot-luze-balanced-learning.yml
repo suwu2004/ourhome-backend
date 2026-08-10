@@ -1,0 +1,39 @@
+name: One-shot balanced Luze learning
+
+on:
+  push:
+    branches:
+      - agent/luze-balanced-learning-20260810
+    paths:
+      - .github/one-shot-luze-balanced-learning.py
+      - .github/workflows/one-shot-luze-balanced-learning.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.event.head_commit.message == 'Apply balanced Luze learning patch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/luze-balanced-learning-20260810
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply guarded patch
+        run: python .github/one-shot-luze-balanced-learning.py
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: git diff --check
+      - name: Commit verified product changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add luzePrivateRoomPatch.js tests/luzeBalancedLearning.test.js
+          git diff --cached --quiet && exit 0
+          git commit -m "Balance Luze learning between home and curiosity"
+          git push origin HEAD:agent/luze-balanced-learning-20260810
