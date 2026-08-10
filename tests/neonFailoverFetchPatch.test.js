@@ -7,20 +7,52 @@ const {
   activateApiProfile,
   applyFilters,
   applyOrder,
+  claimDailyJournal,
+  commitContextLedger,
   createVaultTransaction,
   deleteVaultTransaction,
   deleteApiProfile,
   deleteServiceConnection,
   decryptedSecret,
+  deriveSecretWrapKey,
   inferDefaults,
   matchFilter,
+  normalizeNeonConnectionIdentity,
   projectRows,
+  queryWithWrapKeyFallback,
   readWindow,
   saveAgentMailWebhookSecret,
   saveApiProfile,
   saveServiceConnection,
   storeFailoverObjectWithClient,
+  transitionIntimacyFlow,
 } = require('../neonFailoverFetchPatch');
+
+test('normalizes equivalent Neon pooled and direct connection URLs to one V2 key', () => {
+  const pooled = 'postgresql://owner:secret@ep-home-pooler.us-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+  const direct = 'postgres://owner:secret@ep-home.us-west-2.aws.neon.tech/neondb?sslmode=require';
+
+  assert.equal(normalizeNeonConnectionIdentity(pooled), normalizeNeonConnectionIdentity(direct));
+  assert.equal(
+    deriveSecretWrapKey(normalizeNeonConnectionIdentity(pooled), 'v2'),
+    deriveSecretWrapKey(normalizeNeonConnectionIdentity(direct), 'v2'),
+  );
+  assert.notEqual(deriveSecretWrapKey(pooled, 'v1'), deriveSecretWrapKey(direct, 'v1'));
+});
+
+test('secret decryption retries transition keys without exposing the ciphertext', async () => {
+  const attempts = [];
+  const result = await queryWithWrapKeyFallback({
+    async query(statement) {
+      attempts.push(statement.values.at(-1));
+      if (statement.values.at(-1) === 'new-key') throw new Error('Wrong key or corrupt data');
+      return { rows: [{ secret: 'kept-private' }] };
+    },
+  }, { text: 'select pgp_sym_decrypt(ciphertext, $2)', values: ['secret-id'] }, ['new-key', 'legacy-key']);
+
+  assert.deepEqual(attempts, ['new-key', 'legacy-key']);
+  assert.equal(result.rows[0].secret, 'kept-private');
+});
 
 test('matches PostgREST scalar, null, range, list, and ilike filters', () => {
   const row = { id: 12, visible: true, parent_id: null, title: 'OurHome 小剧场' };
@@ -188,6 +220,68 @@ function vaultJournalClient(initialTables) {
     },
   };
 }
+
+test('daily journal claims remain idempotent and retry stale runs in Neon', async () => {
+  const client = vaultJournalClient({ daily_journal_runs: [] });
+  const first = await claimDailyJournal(client, { p_run_date: '2026-08-10' });
+  const duplicate = await claimDailyJournal(client, { p_run_date: '2026-08-10' });
+
+  assert.equal(await first.json(), true);
+  assert.equal(await duplicate.json(), false);
+  assert.equal(client.journal.filter(change => change.table === 'daily_journal_runs').length, 1);
+
+  const retryClient = vaultJournalClient({
+    daily_journal_runs: [{ run_date: '2026-08-10', status: 'partial', attempt_count: 2, claimed_at: 'old' }],
+  });
+  const retry = await claimDailyJournal(retryClient, { p_run_date: '2026-08-10' });
+  assert.equal(await retry.json(), true);
+  assert.equal(retryClient.journal[0].payload.attempt_count, 3);
+  assert.equal(retryClient.journal[0].payload.status, 'running');
+});
+
+test('context ledger commits preserve optimistic concurrency in Neon', async () => {
+  const client = vaultJournalClient({ session_context_ledgers: [] });
+  const created = await commitContextLedger(client, {
+    p_session_id: 22,
+    p_expected_version: 0,
+    p_summary: 'continuity',
+    p_summarized_through_message_id: 100,
+    p_summarized_message_count: 10,
+    p_summarized_chars: 500,
+  });
+  const createdRows = await created.json();
+  assert.equal(createdRows[0].version, 1);
+  assert.equal(createdRows[0].summary, 'continuity');
+
+  const conflict = await commitContextLedger(client, {
+    p_session_id: 22,
+    p_expected_version: 0,
+    p_summary: 'stale writer',
+  });
+  assert.deepEqual(await conflict.json(), []);
+});
+
+test('intimacy state transitions keep version checks during quota failover', async () => {
+  const client = vaultJournalClient({ intimacy_flow_states: [] });
+  const created = await transitionIntimacyFlow(client, {
+    p_session_id: 22,
+    p_expected_version: 0,
+    p_next_state: { phase: 'steady' },
+  });
+  assert.deepEqual(await created.json(), {
+    session_id: 22,
+    version: 1,
+    state: { phase: 'steady' },
+    updated_at: client.journal[0].payload.updated_at,
+  });
+
+  const conflict = await transitionIntimacyFlow(client, {
+    p_session_id: 22,
+    p_expected_version: 0,
+    p_next_state: { phase: 'stale' },
+  });
+  assert.equal(await conflict.text(), '');
+});
 
 test('API profile create, activation, settings update and deletion stay atomic in Neon', async () => {
   const client = vaultJournalClient({

@@ -10,9 +10,33 @@ const { Pool } = require('pg');
 const upstreamFetch = globalThis.fetch;
 const enabled = /^(1|true|yes|on)$/i.test(String(process.env.OURHOME_NEON_FAILOVER_ENABLED || ''));
 const connectionString = String(process.env.OURHOME_NEON_DATABASE_URL || '').trim();
-const secretWrapKey = connectionString
-  ? crypto.createHash('sha256').update(`${connectionString}:ourhome-neon-failover-secrets-v1`).digest('hex')
-  : '';
+
+function normalizeNeonConnectionIdentity(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^postgres:\/\//i, 'postgresql://')
+    .split('?')[0]
+    .replace(/-pooler\./gi, '.')
+    .replace(/\/+$/, '');
+}
+
+function deriveSecretWrapKey(value, version = 'v2') {
+  const material = String(value || '').trim();
+  if (!material) return '';
+  return crypto.createHash('sha256')
+    .update(`${material}:ourhome-neon-failover-secrets-${version}`)
+    .digest('hex');
+}
+
+// Neon emits equivalent pooled/direct URLs with different hostnames and query
+// parameters.  The old key used the complete URL, so Supabase and Render could
+// derive different keys for the same database.  V2 uses a stable identity while
+// retaining the Render-side V1 key as a transition-only decrypt candidate.
+const secretWrapKeys = [...new Set([
+  deriveSecretWrapKey(normalizeNeonConnectionIdentity(connectionString), 'v2'),
+  deriveSecretWrapKey(connectionString, 'v1'),
+].filter(Boolean))];
+const secretWrapKey = secretWrapKeys[0] || '';
 const pool = enabled && connectionString
   ? new Pool({ connectionString, max: 4, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 8_000 })
   : null;
@@ -292,8 +316,24 @@ function parseJsonSecret(value) {
   try { return JSON.parse(value); } catch { return value; }
 }
 
+async function queryWithWrapKeyFallback(client, statement, wrapKeys = secretWrapKeys) {
+  const candidates = wrapKeys.length ? wrapKeys : [''];
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      return await client.query({
+        ...statement,
+        values: [...(statement.values || []), candidate],
+      });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('Neon 备用密钥无法解包');
+}
+
 async function decryptedSecret(client, { secretId = null, name = null } = {}) {
-  const pending = await client.query({
+  const pending = await queryWithWrapKeyFallback(client, {
     text: `
       select operation,
              case when operation = 'upsert' then pgp_sym_decrypt(ciphertext, $3) end as secret
@@ -303,12 +343,12 @@ async function decryptedSecret(client, { secretId = null, name = null } = {}) {
       order by updated_at desc
       limit 1
     `,
-    values: [secretId, name, secretWrapKey],
+    values: [secretId, name],
   });
   if (pending.rows[0]) {
     return pending.rows[0].operation === 'delete' ? null : pending.rows[0].secret;
   }
-  const result = await client.query({
+  const result = await queryWithWrapKeyFallback(client, {
     text: `
       select pgp_sym_decrypt(ciphertext, $3) as secret
       from public.ourhome_failover_secrets
@@ -317,7 +357,7 @@ async function decryptedSecret(client, { secretId = null, name = null } = {}) {
       order by source_updated_at desc nulls last, backed_up_at desc
       limit 1
     `,
-    values: [secretId, name, secretWrapKey],
+    values: [secretId, name],
   });
   return result.rows[0]?.secret ?? null;
 }
@@ -699,6 +739,81 @@ async function deleteVaultTransaction(client, body = {}) {
   return jsonResponse(true);
 }
 
+async function claimDailyJournal(client, body = {}) {
+  const runDate = String(body.p_run_date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(runDate)) return postgrestError('自动日记日期不正确', '22007');
+  const rows = await loadRows(client, 'daily_journal_runs');
+  const current = rows.find(row => String(row?.run_date || '').slice(0, 10) === runDate) || null;
+  const staleClaim = current?.status === 'running'
+    && Date.parse(current.claimed_at || 0) < Date.now() - 20 * 60 * 1000;
+  const claimable = !current || ['failed', 'partial'].includes(current.status) || staleClaim;
+  if (!claimable) return jsonResponse(false);
+
+  const now = new Date().toISOString();
+  const next = {
+    ...(current || {}),
+    run_date: runDate,
+    status: 'running',
+    attempt_count: current ? Math.max(0, Number(current.attempt_count) || 0) + 1 : 1,
+    last_error: null,
+    claimed_at: now,
+    updated_at: now,
+    completed_at: null,
+  };
+  await recordChange(client, 'daily_journal_runs', 'upsert', next, current ? rowKey(current) : runDate);
+  return jsonResponse(true);
+}
+
+async function commitContextLedger(client, body = {}) {
+  const sessionId = Number(body.p_session_id);
+  const expectedVersion = Math.max(0, Number(body.p_expected_version) || 0);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return postgrestError('聊天窗口编号不正确', '22023');
+  const rows = await loadRows(client, 'session_context_ledgers');
+  const current = rows.find(row => Number(row?.session_id) === sessionId) || null;
+  if ((current && Number(current.version || 0) !== expectedVersion) || (!current && expectedVersion !== 0)) {
+    return jsonResponse([]);
+  }
+
+  const now = new Date().toISOString();
+  const next = {
+    ...(current || {}),
+    session_id: sessionId,
+    summary: String(body.p_summary || ''),
+    summarized_through_message_id: body.p_summarized_through_message_id || null,
+    summarized_message_count: Math.max(0, Number(body.p_summarized_message_count) || 0),
+    summarized_chars: Math.max(0, Number(body.p_summarized_chars) || 0),
+    version: expectedVersion + 1,
+    retry_after: body.p_retry_after || null,
+    last_error: String(body.p_last_error || '').slice(0, 800) || null,
+    last_attempt_at: now,
+    updated_at: now,
+  };
+  await recordChange(client, 'session_context_ledgers', 'upsert', next, current ? rowKey(current) : String(sessionId));
+  return jsonResponse([next]);
+}
+
+async function transitionIntimacyFlow(client, body = {}) {
+  const sessionId = Number(body.p_session_id);
+  const expectedVersion = Math.max(0, Number(body.p_expected_version) || 0);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return postgrestError('聊天窗口编号不正确', '22023');
+  const rows = await loadRows(client, 'intimacy_flow_states');
+  const current = rows.find(row => Number(row?.session_id) === sessionId) || null;
+  if ((current && Number(current.version || 0) !== expectedVersion) || (!current && expectedVersion !== 0)) {
+    return jsonResponse(null);
+  }
+
+  const now = new Date().toISOString();
+  const next = {
+    ...(current || {}),
+    session_id: sessionId,
+    version: expectedVersion + 1,
+    state: body.p_next_state && typeof body.p_next_state === 'object' ? body.p_next_state : {},
+    updated_at: now,
+  };
+  await recordChange(client, 'intimacy_flow_states', 'upsert', next, current ? rowKey(current) : String(sessionId));
+  return jsonResponse({ session_id: sessionId, version: next.version, state: next.state, updated_at: now });
+}
+
 async function handleRpcRequest(client, rpcName, body) {
   if (rpcName === 'ourhome_get_api_profile_secret') {
     const profiles = await loadRows(client, 'api_profiles');
@@ -756,6 +871,18 @@ async function handleRpcRequest(client, rpcName, body) {
 
   if (rpcName === 'ourhome_vault_delete_transaction') {
     return deleteVaultTransaction(client, body);
+  }
+
+  if (rpcName === 'ourhome_claim_daily_journal') {
+    return claimDailyJournal(client, body);
+  }
+
+  if (rpcName === 'ourhome_context_ledger_commit') {
+    return commitContextLedger(client, body);
+  }
+
+  if (rpcName === 'ourhome_intimacy_transition') {
+    return transitionIntimacyFlow(client, body);
   }
 
   return postgrestError(`Supabase RPC ${rpcName} is unavailable while the emergency database is active.`);
@@ -895,6 +1022,8 @@ module.exports = {
   activateApiProfile,
   applyFilters,
   applyOrder,
+  claimDailyJournal,
+  commitContextLedger,
   createVaultTransaction,
   deleteVaultTransaction,
   deleteApiProfile,
@@ -904,7 +1033,10 @@ module.exports = {
   handleRpcRequest,
   inferDefaults,
   matchFilter,
+  normalizeNeonConnectionIdentity,
+  deriveSecretWrapKey,
   projectRows,
+  queryWithWrapKeyFallback,
   readFailoverObject,
   readWindow,
   primaryFetch: upstreamFetch,
@@ -913,5 +1045,6 @@ module.exports = {
   saveServiceConnection,
   storeFailoverObject,
   storeFailoverObjectWithClient,
+  transitionIntimacyFlow,
   verifyFailoverObjectSignature,
 };

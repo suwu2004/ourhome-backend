@@ -26,8 +26,9 @@ test('production health exposes the main-client upload privacy guard', () => {
   assert.match(bootstrap, /upload_privacy:\s*'main-client-private-guard-v1'/);
   assert.match(bootstrap, /background_recovery:\s*'quota-cooldown-signed-url-v2'/);
   assert.match(bootstrap, /neon_failover_reads:\s*'unbounded-snapshot-v2'/);
-  assert.match(bootstrap, /neon_failover_writes:\s*'journal-v3-vault-settings-rpc'/);
-  assert.match(bootstrap, /neon_api_profiles:\s*'encrypted-secret-write-v2'/);
+  assert.match(bootstrap, /neon_failover_writes:\s*'journal-v4-vault-ledger-automation-rpc'/);
+  assert.match(bootstrap, /neon_api_profiles:\s*'encrypted-secret-write-v3-normalized-wrap'/);
+  assert.match(bootstrap, /neon_secret_wrap:\s*'normalized-v2-transition-v1'/);
   assert.match(bootstrap, /neon_replay:\s*'primary-probe-idempotent-v1'/);
   assert.match(bootstrap, /api_model_catalog:\s*'saved-model-fallback-v1'/);
   assert.match(bootstrap, /storage_failover:\s*'neon-object-spool-v1'/);
