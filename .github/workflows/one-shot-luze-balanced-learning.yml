@@ -7,13 +7,21 @@ on:
     paths:
       - .github/one-shot-luze-balanced-learning.py
       - .github/workflows/one-shot-luze-balanced-learning.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/one-shot-luze-balanced-learning.py
+      - .github/workflows/one-shot-luze-balanced-learning.yml
+      - luzePrivateRoomPatch.js
+      - tests/luzeBalancedLearning.test.js
 
 permissions:
   contents: write
 
 jobs:
   patch-and-verify:
-    if: github.event.head_commit.message == 'Apply balanced Luze learning patch'
+    if: github.event_name == 'pull_request' || github.event.head_commit.message == 'Apply balanced Luze learning patch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
