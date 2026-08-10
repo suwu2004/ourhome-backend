@@ -7,13 +7,16 @@ on:
     paths:
       - .github/one-shot-aggressive-stability.py
       - .github/workflows/one-shot-aggressive-stability.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   patch-and-verify:
-    if: github.event.head_commit.message == 'Stage aggressive stability optimization'
+    if: github.event_name == 'pull_request' || github.event.head_commit.message == 'Stage aggressive stability optimization'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,8 +26,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Apply guarded optimization patch
-        run: python .github/one-shot-aggressive-stability.py
+      - name: Apply guarded optimization patch once
+        run: |
+          if grep -q "rest-402-adaptive-v2" runtimeBootstrap.js && grep -q "sql-filtered-coalesced-v4" runtimeBootstrap.js; then
+            echo "Optimization already applied; verification only."
+          else
+            python .github/one-shot-aggressive-stability.py
+          fi
       - run: npm ci
       - run: npm run check
       - run: npm test
@@ -37,5 +45,3 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "Reduce quota churn and failover egress"
           git push origin HEAD:agent/aggressive-stability-optimization-20260810
-
-# trigger after workflow registration
