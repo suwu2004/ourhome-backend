@@ -2,8 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildMemoryPromptBlock,
   extractTheaterRequestContext,
   injectMemoryIntoBody,
+  mergeTheaterFacts,
   normalizeTheaterMemory,
   sampleTheaterHistory,
   shouldRefreshMemory,
@@ -46,15 +48,16 @@ test('injects layered memory before theater history and replaces an old block', 
   assert.ok(text.indexOf('【角色与剧情记忆】') < text.indexOf('【较早剧情提要】'));
 });
 
-test('normalizes and caps theater memory lists', () => {
+test('normalizes and caps theater memory lists with v2 budgets', () => {
   const memory = normalizeTheaterMemory({
-    plot_facts: Array.from({ length: 30 }, (_, index) => `事实 ${index}`),
-    open_threads: Array.from({ length: 15 }, (_, index) => `线索 ${index}`),
+    plot_facts: Array.from({ length: 70 }, (_, index) => `事实 ${index}`),
+    open_threads: Array.from({ length: 20 }, (_, index) => `线索 ${index}`),
     turns_since_refresh: 99,
   });
-  assert.equal(memory.plot_facts.length, 24);
-  assert.equal(memory.open_threads.length, 10);
-  assert.equal(memory.turns_since_refresh, 20);
+  assert.equal(memory.version, 2);
+  assert.equal(memory.plot_facts.length, 60);
+  assert.equal(memory.open_threads.length, 16);
+  assert.equal(memory.turns_since_refresh, 30);
 });
 
 test('history sampling preserves the beginning and latest events', () => {
@@ -77,4 +80,18 @@ test('refreshes every third turn or immediately after a significant event', () =
   assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 1 }, '普通聊天', '普通回复'), false);
   assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 2 }, '普通聊天', '普通回复'), true);
   assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 0 }, '我答应和你结婚', '他愣住了'), true);
+});
+
+test('incremental theater facts merge without deleting old unique events', () => {
+  const merged = mergeTheaterFacts(['第一次见面是在雨夜', '答应会回来'], ['答应会回来', '一起搬进新家'], 60);
+  assert.deepEqual(merged, ['第一次见面是在雨夜', '答应会回来', '一起搬进新家']);
+});
+
+test('memory prompt separates archived and recent plot facts', () => {
+  const facts = Array.from({ length: 45 }, (_, index) => `事件 ${index + 1}`);
+  const prompt = buildMemoryPromptBlock({ plot_facts: facts });
+  assert.match(prompt, /长期事件档案/);
+  assert.match(prompt, /近期核心剧情事实/);
+  assert.match(prompt, /事件 1/);
+  assert.match(prompt, /事件 45/);
 });

@@ -69,9 +69,23 @@ function normalizeList(value, limit = 12, itemMax = 260) {
   return [...new Set(list.map(item => compactLine(item, itemMax)).filter(Boolean))].slice(0, limit);
 }
 
+function mergeTheaterFacts(previous = [], next = [], limit = 60) {
+  const merged = [];
+  const seen = new Set();
+  for (const raw of [...(Array.isArray(previous) ? previous : []), ...(Array.isArray(next) ? next : [])]) {
+    const item = compactLine(raw, 300);
+    if (!item) continue;
+    const key = item.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged.slice(Math.max(0, merged.length - Math.max(1, limit)));
+}
+
 function emptyTheaterMemory() {
   return {
-    version: 1,
+    version: 2,
     character_anchor: '',
     relationship_memory: '',
     plot_facts: [],
@@ -88,14 +102,14 @@ function emptyTheaterMemory() {
 
 function normalizeTheaterMemory(value = {}) {
   return {
-    version: 1,
-    character_anchor: compactBlock(value.character_anchor, 4200),
-    relationship_memory: compactBlock(value.relationship_memory, 2600),
-    plot_facts: normalizeList(value.plot_facts, 24, 320),
-    current_state: compactBlock(value.current_state, 1800),
-    open_threads: normalizeList(value.open_threads, 10, 260),
-    locked_notes: compactBlock(value.locked_notes, 3200),
-    turns_since_refresh: Math.max(0, Math.min(20, Number.parseInt(value.turns_since_refresh, 10) || 0)),
+    version: 2,
+    character_anchor: compactBlock(value.character_anchor, 4600),
+    relationship_memory: compactBlock(value.relationship_memory, 4200),
+    plot_facts: normalizeList(value.plot_facts, 60, 300),
+    current_state: compactBlock(value.current_state, 2400),
+    open_threads: normalizeList(value.open_threads, 16, 280),
+    locked_notes: compactBlock(value.locked_notes, 4200),
+    turns_since_refresh: Math.max(0, Math.min(30, Number.parseInt(value.turns_since_refresh, 10) || 0)),
     message_count: Math.max(0, Number.parseInt(value.message_count, 10) || 0),
     last_message_id: value.last_message_id ? String(value.last_message_id) : null,
     updated_at: value.updated_at || null,
@@ -128,7 +142,12 @@ function buildMemoryPromptBlock(memoryValue) {
   if (memory.locked_notes) sections.push(`【锁定记忆·不可自动改写】\n${memory.locked_notes}`);
   if (memory.character_anchor) sections.push(`【角色锚点】\n${memory.character_anchor}`);
   if (memory.relationship_memory) sections.push(`【关系记忆】\n${memory.relationship_memory}`);
-  if (memory.plot_facts.length) sections.push(`【已发生剧情事实】\n${memory.plot_facts.map(item => `- ${item}`).join('\n')}`);
+  if (memory.plot_facts.length) {
+    const recentFacts = memory.plot_facts.slice(-36);
+    const archivedFacts = memory.plot_facts.slice(0, Math.max(0, memory.plot_facts.length - recentFacts.length));
+    if (archivedFacts.length) sections.push(`【长期事件档案】\n这些都是已经发生过的旧剧情，不能因为时间久就否认或改写。\n${archivedFacts.map(item => `- ${item}`).join('\n')}`);
+    sections.push(`【近期核心剧情事实】\n${recentFacts.map(item => `- ${item}`).join('\n')}`);
+  }
   if (memory.current_state) sections.push(`【当前场景状态】\n${memory.current_state}`);
   if (memory.open_threads.length) sections.push(`【未完成线索】\n${memory.open_threads.map(item => `- ${item}`).join('\n')}`);
   if (!sections.length) return '';
@@ -225,6 +244,7 @@ module.exports = {
   isInteractiveTheaterRequest,
   extractTheaterRequestContext,
   normalizeList,
+  mergeTheaterFacts,
   emptyTheaterMemory,
   normalizeTheaterMemory,
   parseMemoryRow,
