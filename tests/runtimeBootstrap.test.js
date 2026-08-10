@@ -9,6 +9,8 @@ const bootstrapSource = fs.readFileSync(path.join(repoRoot, 'runtimeBootstrap.js
 
 test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(runtimeConfigSource, /^require\('\.\/runtimeBootstrap'\);/);
+  assert.match(bootstrapSource, /require\('\.\/chatIdempotencyPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/supabaseQuotaCircuitPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/neonFailoverFetchPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/memoryLayerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/modelTokenLimitPatch'\);/);
@@ -44,7 +46,9 @@ test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护�
   assert.ok(cleanupIndex < intimacyIndex);
 });
 
-test('健康接口会暴露新版 direct server start 费用保护标记', () => {
+test('健康接口会暴露 direct server start 的稳定性保护标记', () => {
   assert.match(bootstrapSource, /runtime_bootstrap/);
-  assert.match(bootstrapSource, /direct-server-start-v2-cost-guard/);
+  assert.match(bootstrapSource, /direct-server-start-v3-stability-guards/);
+  assert.match(bootstrapSource, /chat_idempotency: 'request-id-single-execution-v1'/);
+  assert.match(bootstrapSource, /supabase_quota_circuit: 'rest-402-cooldown-v1'/);
 });
