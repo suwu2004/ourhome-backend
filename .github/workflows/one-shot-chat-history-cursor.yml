@@ -1,6 +1,8 @@
 name: One-shot stable chat history cursor
 
 on:
+  push:
+    branches: [agent/chat-history-paging-20260810]
   pull_request:
     branches: [main]
 
@@ -9,12 +11,12 @@ permissions:
 
 jobs:
   patch-and-verify:
-    if: github.head_ref == 'agent/chat-history-paging-20260810'
+    if: github.event_name == 'push' || github.head_ref == 'agent/chat-history-paging-20260810'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
+          ref: agent/chat-history-paging-20260810
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -37,4 +39,4 @@ jobs:
           git add server.js chatHistoryPaging.js tests/chatHistoryPaging.test.js
           git diff --cached --quiet && exit 0
           git commit -m "Use stable chat history cursor"
-          git push origin HEAD:${{ github.head_ref }}
+          git push origin HEAD:agent/chat-history-paging-20260810
