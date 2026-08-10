@@ -37,3 +37,5 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "Reduce quota churn and failover egress"
           git push origin HEAD:agent/aggressive-stability-optimization-20260810
+
+# trigger after workflow registration
