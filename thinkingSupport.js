@@ -4,11 +4,11 @@ const NATIVE_THINKING_BLOCK_TYPES = new Set([
   'analysis',
   'thinking_summary',
   'reasoning_summary',
-  'summary',
 ]);
 const NATIVE_THINKING_FIELD_NAMES = [
   'reasoning_content',
   'reasoning',
+  'reasoning_details',
   'thinking',
   'analysis',
   'thinking_summary',
@@ -44,6 +44,7 @@ function normalizeThinkingText(value) {
     for (const key of [
       'reasoning_content',
       'reasoning',
+      'reasoning_details',
       'thinking',
       'analysis',
       'thinking_summary',
@@ -52,6 +53,7 @@ function normalizeThinkingText(value) {
       'summary',
       'text',
       'content',
+      'value',
     ]) {
       const text = normalizeThinkingText(value[key]);
       if (text) return text;
@@ -107,41 +109,50 @@ function uniqueThinking(candidates) {
   return unique.join('\n').slice(0, MAX_THINKING_CHARS);
 }
 
-function collectVisibleThinking(value, target) {
-  target.push(...extractTaggedThinking(value));
-  target.push(...extractBracketedThinking(value));
-}
-
 function extractThinkingText(result = {}) {
   const nativeCandidates = [];
-  const simulatedCandidates = [];
   const addNative = value => {
     const text = normalizeThinkingText(value);
     if (text) nativeCandidates.push(text);
   };
+  const addNativeFields = value => {
+    if (!value || typeof value !== 'object') return;
+    for (const field of NATIVE_THINKING_FIELD_NAMES) addNative(value[field]);
+  };
+  const scanBlocks = blocks => {
+    for (const block of Array.isArray(blocks) ? blocks : []) {
+      if (!block || typeof block !== 'object') continue;
+      const type = String(block.type || '').toLowerCase();
+      if (NATIVE_THINKING_BLOCK_TYPES.has(type) || block.thought === true) addNative(block);
+      if (Array.isArray(block.content)) scanBlocks(block.content);
+      if (Array.isArray(block.parts)) scanBlocks(block.parts);
+      if (Array.isArray(block.summary) && NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block.summary);
+    }
+  };
 
-  for (const field of NATIVE_THINKING_FIELD_NAMES) addNative(result?.[field]);
-  for (const field of NATIVE_THINKING_FIELD_NAMES) addNative(result?.message?.[field]);
+  addNativeFields(result);
+  addNativeFields(result.message);
+  scanBlocks(result.content);
+  scanBlocks(result.message?.content);
+  scanBlocks(result.output);
 
-  const contentBlocks = Array.isArray(result?.content) ? result.content : [];
-  for (const block of contentBlocks) {
-    const type = String(block?.type || '').toLowerCase();
-    if (NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block);
-    if (type === 'text' || type === 'output_text' || !type) collectVisibleThinking(block?.text || block?.content, simulatedCandidates);
-  }
-
-  if (typeof result?.content === 'string') collectVisibleThinking(result.content, simulatedCandidates);
-  collectVisibleThinking(result?.text || result?.output_text, simulatedCandidates);
-
-  for (const choice of Array.isArray(result?.choices) ? result.choices : []) {
+  for (const choice of Array.isArray(result.choices) ? result.choices : []) {
     const message = choice?.message || choice?.delta || {};
-    for (const field of NATIVE_THINKING_FIELD_NAMES) addNative(message?.[field]);
-    collectVisibleThinking(message?.content || choice?.text, simulatedCandidates);
+    addNativeFields(choice);
+    addNativeFields(message);
+    scanBlocks(message.content);
   }
 
-  // 模型或中转站明确返回原生 reasoning/thinking 时，完整展示它；
-  // 只有原生思考为空时，才退回模型在正文里生成的可见思考标记。
-  return uniqueThinking(nativeCandidates) || uniqueThinking(simulatedCandidates);
+  for (const candidate of Array.isArray(result.candidates) ? result.candidates : []) {
+    addNativeFields(candidate);
+    addNativeFields(candidate?.content);
+    scanBlocks(candidate?.content?.parts);
+  }
+
+  // Native-only rule: ordinary answer text, <thinking> tags and bracketed
+  // “visible thought” prose are never promoted into the thinking panel.
+  // If the provider does not return explicit reasoning/thinking metadata, this is empty.
+  return uniqueThinking(nativeCandidates);
 }
 
 module.exports = {
