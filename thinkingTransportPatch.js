@@ -1,9 +1,10 @@
 'use strict';
 
-// OurHome Chat now treats visible reasoning as optional provider metadata.
-// We never ask the provider for an extra visible chain, never synthesize one,
-// and never force extended-thinking parameters. If the selected model/provider
-// naturally returns reasoning/thinking, server.js will still extract and save it.
+// OurHome Chat treats visible reasoning as optional provider metadata.
+// Never buy a separate “visible thought” completion and never ask ordinary
+// non-thinking models to simulate one in prose. If the selected provider/model
+// already supports a native thinking request, preserve that request and pass the
+// provider's native reasoning response through unchanged for server.js to extract.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -65,7 +66,7 @@ function isThinkingDecisionRequest(url, body) {
 
 function fixedNoThinkResponse() {
   return new Response(JSON.stringify({
-    id: 'ourhome-no-forced-thinking',
+    id: 'ourhome-no-synthetic-thinking',
     type: 'message',
     role: 'assistant',
     content: [{ type: 'text', text: '不想' }],
@@ -80,6 +81,23 @@ function fixedNoThinkResponse() {
   });
 }
 
+function prepareMainChatRequest(url, body, headersInit) {
+  const nextBody = { ...body, system: sanitizeChatSystem(body?.system) };
+  const headers = new Headers(headersInit || undefined);
+
+  // Do not delete nextBody.thinking here. server.js only supplies it for the
+  // selected model path that requested native extended thinking. Removing it was
+  // the reason genuine provider thinking disappeared from some Chat replies.
+  // Relay-only simulated thinking lives in the system prompt and is stripped above.
+  // Some relays reject Anthropic's beta header while still accepting the native
+  // body shape, so keep that header only for Anthropic's official endpoint.
+  if (!/^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(String(url || ''))) {
+    headers.delete('anthropic-beta');
+  }
+
+  return { body: nextBody, headers };
+}
+
 if (typeof originalFetch === 'function') {
   globalThis.fetch = async function nativeThinkingOnlyFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
@@ -89,21 +107,16 @@ if (typeof originalFetch === 'function') {
     try {
       const body = JSON.parse(init.body);
 
-      // Old server code still asks a tiny "think or not" question for some models.
-      // Resolve it locally as "no" so it can never become a paid provider call.
+      // Legacy server code still asks a tiny “think or not” question for some
+      // models. Resolve it locally so this can never become a paid provider call.
       if (isThinkingDecisionRequest(url, body)) return fixedNoThinkResponse();
 
       if (isMainChatRequest(url, body)) {
-        // Remove every legacy mechanism that forced visible thinking. We intentionally
-        // leave provider responses untouched: native reasoning, when present, survives.
-        const headers = new Headers(init.headers || undefined);
-        headers.delete('anthropic-beta');
-        delete body.thinking;
-        body.system = sanitizeChatSystem(body.system);
+        const prepared = prepareMainChatRequest(url, body, init.headers);
         return originalFetch(input, {
           ...init,
-          headers,
-          body: JSON.stringify(body),
+          headers: prepared.headers,
+          body: JSON.stringify(prepared.body),
         });
       }
     } catch (error) {
@@ -119,7 +132,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function nativeThinkingHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, thinking_transport: 'native-only-thinking-v7' };
+      body = { ...body, thinking_transport: 'native-only-thinking-v8' };
     }
     return originalJson.call(this, body);
   };
@@ -131,4 +144,5 @@ module.exports = {
   isMainChatRequest,
   isThinkingDecisionRequest,
   sanitizeChatSystem,
+  prepareMainChatRequest,
 };

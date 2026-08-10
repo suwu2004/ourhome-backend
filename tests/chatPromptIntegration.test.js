@@ -27,13 +27,14 @@ test('旧的想不想判断只在本地返回不想，不再向上游发请求',
   assert.match(thinkingTransportPatch, /return fixedNoThinkResponse\(\)/);
 });
 
-test('Chat 不再注入可见思考协议，只保留上游自然返回的 reasoning', () => {
+test('Chat 不再注入可见思考协议，并保留真实原生 thinking 请求', () => {
   assert.doesNotMatch(thinkingTransportPatch, /VISIBLE_THINKING_PROTOCOL/);
   assert.doesNotMatch(thinkingTransportPatch, /appendVisibleThinkingProtocol/);
   assert.match(thinkingTransportPatch, /stripLegacyThinkingInstruction/);
-  assert.match(thinkingTransportPatch, /delete body\.thinking/);
+  assert.doesNotMatch(thinkingTransportPatch, /delete body\.thinking/);
+  assert.match(thinkingTransportPatch, /prepareMainChatRequest/);
+  assert.match(thinkingTransportPatch, /Do not delete nextBody\.thinking here/);
   assert.match(thinkingTransportPatch, /headers\.delete\('anthropic-beta'\)/);
-  assert.match(thinkingTransportPatch, /native reasoning, when present, survives/);
 });
 
 test('上游没有 reasoning 时就不显示想一想，不再本地伪造思考', () => {
@@ -42,12 +43,13 @@ test('上游没有 reasoning 时就不显示想一想，不再本地伪造思考
   assert.doesNotMatch(thinkingTransportPatch, /fallbackResponse\s*=\s*await\s+originalFetch/);
   assert.doesNotMatch(thinkingTransportPatch, /injectReasoningContent/);
   assert.doesNotMatch(thinkingTransportPatch, /deterministicFallbackThought/);
-  assert.match(thinkingTransportPatch, /native-only-thinking-v7/);
+  assert.match(thinkingTransportPatch, /native-only-thinking-v8/);
 });
 
-test('server 仍兼容官方 Anthropic thinking，但生产传输层会按当前规则移除强制参数', () => {
+test('server 兼容官方 Anthropic 原生 thinking，传输层不再误删', () => {
   assert.match(server, /if \(isOfficialAnthropicApi\(settings\)\) \{/);
-  assert.match(thinkingTransportPatch, /delete body\.thinking/);
+  assert.doesNotMatch(thinkingTransportPatch, /delete body\.thinking/);
+  assert.match(thinkingTransportPatch, /selected model path that requested native extended thinking/);
 });
 
 test('不同中转站的 thinking 返回格式会统一提取', () => {
