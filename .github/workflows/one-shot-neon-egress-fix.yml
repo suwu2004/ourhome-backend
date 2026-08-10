@@ -37,3 +37,5 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "Push Neon failover reads into SQL"
           git push origin HEAD:agent/neon-failover-egress-20260810
+
+# trigger after workflow registration
