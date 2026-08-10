@@ -15,8 +15,11 @@ const {
   deleteServiceConnection,
   decryptedSecret,
   deriveSecretWrapKey,
+  handleTableRequest,
   inferDefaults,
+  inferTableDefaults,
   matchFilter,
+  normalizeFailoverRow,
   normalizeNeonConnectionIdentity,
   projectRows,
   queryWithWrapKeyFallback,
@@ -92,6 +95,71 @@ test('infers numeric and UUID ids without mutating input', () => {
   assert.match(numeric.created_at, /^\d{4}-/);
   const uuid = inferDefaults({ title: 'letter' }, [{ id: '0ddf4fa8-bc42-4e14-9ae7-b02d1309ad75' }]);
   assert.match(uuid.id, /^[0-9a-f-]{36}$/i);
+});
+
+test('Neon materializes the messages visible default for new and legacy pending Chat rows', () => {
+  const inserted = inferTableDefaults('messages', {
+    session_id: 22,
+    role: 'user',
+    content: 'current turn',
+  }, [{ id: 8876, created_at: '2026-08-10T00:00:00Z', visible: true }]);
+  assert.equal(inserted.id, 8877);
+  assert.equal(inserted.visible, true);
+  assert.equal(normalizeFailoverRow('messages', { id: 8874, role: 'user' }).visible, true);
+  assert.equal(normalizeFailoverRow('messages', { id: 8874, role: 'user', visible: false }).visible, false);
+});
+
+test('a failover Chat insert is visible to the immediate history query and serialized by table', async () => {
+  const journal = [];
+  const commands = [];
+  const base = [{ id: 8876, session_id: 22, role: 'assistant', content: 'previous', visible: true, created_at: '2026-08-10T00:00:00Z' }];
+  const client = {
+    async query(statement) {
+      if (typeof statement === 'string') {
+        commands.push(statement);
+        return { rows: [] };
+      }
+      if (/pg_advisory_xact_lock/.test(statement.text)) {
+        commands.push('lock');
+        return { rows: [] };
+      }
+      if (/with latest_changes/.test(statement.text)) {
+        const rows = new Map(base.map(row => [String(row.id), row]));
+        for (const change of journal) rows.set(change.key, change.payload);
+        return { rows: [...rows].map(([row_key, payload]) => ({ row_key, payload })) };
+      }
+      if (/insert into public\.ourhome_failover_changes/.test(statement.text)) {
+        journal.push({
+          key: statement.values[1],
+          payload: JSON.parse(statement.values[3]),
+        });
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected query: ${statement.text}`);
+    },
+  };
+
+  const insertedResponse = await handleTableRequest(
+    client,
+    new URL('https://project.supabase.co/rest/v1/messages?select=id,session_id,role,content,visible'),
+    'POST',
+    new Headers({ Accept: 'application/vnd.pgrst.object+json' }),
+    { session_id: 22, role: 'user', content: 'current turn' },
+  );
+  const inserted = await insertedResponse.json();
+  assert.equal(inserted.visible, true);
+  assert.deepEqual(commands, ['begin', 'lock', 'commit']);
+
+  const historyResponse = await handleTableRequest(
+    client,
+    new URL('https://project.supabase.co/rest/v1/messages?session_id=eq.22&visible=eq.true&order=created_at.asc'),
+    'GET',
+    new Headers(),
+    null,
+  );
+  const history = await historyResponse.json();
+  assert.equal(history.at(-1).content, 'current turn');
+  assert.equal(history.at(-1).visible, true);
 });
 
 test('encrypted failover secrets use columns that exist in the Neon vault snapshot', async () => {
