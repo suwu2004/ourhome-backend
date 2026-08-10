@@ -47,9 +47,8 @@ test('remote push maps OurHome events to rooms', () => {
   assert.equal(inferRoute({}), 'home');
 });
 
-test('FCM sender authenticates once, sends a high-priority data message, and reuses the token', async () => {
+test('FCM sender authenticates once, sends private high-priority device messages, and reuses OAuth token', async () => {
   const env = serviceAccountEnv();
-  env.FCM_TOPIC = 'ourhome-owner-test';
   let oauthCalls = 0;
   const messages = [];
   const fetchImpl = async (url, options) => {
@@ -67,15 +66,16 @@ test('FCM sender authenticates once, sends a high-priority data message, and reu
 
   const sender = createNativePushSender({ env, fetchImpl, now: () => 1_800_000_000_000 });
   assert.equal(sender.configured, true);
-  const first = await sender.send('陆泽', '过来让我看看。', { type: 'chat_message', session_id: 8 });
-  const second = await sender.send('提醒', '记得喝水。', { type: 'schedule_event', schedule_id: 9 });
+  const first = await sender.sendToToken('device-token-a', '陆泽', '过来让我看看。', { type: 'chat_message', session_id: 8 });
+  const second = await sender.sendToToken('device-token-b', '提醒', '记得喝水。', { type: 'schedule_event', schedule_id: 9 });
 
   assert.equal(oauthCalls, 1);
   assert.equal(first.sent, 1);
   assert.equal(second.sent, 1);
   assert.equal(messages.length, 2);
   const firstBody = JSON.parse(messages[0].options.body);
-  assert.equal(firstBody.message.topic, 'ourhome-owner-test');
+  assert.equal(firstBody.message.token, 'device-token-a');
+  assert.equal('topic' in firstBody.message, false);
   assert.equal(firstBody.message.android.priority, 'HIGH');
   assert.equal(firstBody.message.data.title, '陆泽');
   assert.equal(firstBody.message.data.route, 'chat');
@@ -86,7 +86,7 @@ test('FCM sender authenticates once, sends a high-priority data message, and reu
 test('sender is a no-op without Firebase credentials', async () => {
   let called = false;
   const sender = createNativePushSender({ env: {}, fetchImpl: async () => { called = true; } });
-  const result = await sender.send('OurHome', 'hello');
+  const result = await sender.sendToToken('device-token', 'OurHome', 'hello');
   assert.equal(sender.configured, false);
   assert.deepEqual(result, { configured: false, sent: 0, failed: 0, reason: 'missing-firebase-service-account' });
   assert.equal(called, false);
