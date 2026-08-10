@@ -82,19 +82,31 @@ function createSupabaseQuotaCircuitFetch({
   let quotaBlocked = false;
   let blockedUntil = 0;
   let recoveryProbePromise = null;
+  let quotaBackoffLevel = 0;
+  let currentCooldownMs = cooldown;
 
-  const markBlocked = () => {
+  const cooldownForLevel = level => Math.min(
+    MAX_COOLDOWN_MS,
+    cooldown * (2 ** Math.max(0, Math.min(16, level) - 1)),
+  );
+
+  const markBlocked = ({ escalate = true } = {}) => {
     quotaBlocked = true;
-    blockedUntil = now() + cooldown;
+    if (quotaBackoffLevel === 0) quotaBackoffLevel = 1;
+    else if (escalate) quotaBackoffLevel = Math.min(16, quotaBackoffLevel + 1);
+    currentCooldownMs = cooldownForLevel(quotaBackoffLevel);
+    blockedUntil = now() + currentCooldownMs;
   };
 
   const markReady = () => {
     quotaBlocked = false;
     blockedUntil = 0;
+    quotaBackoffLevel = 0;
+    currentCooldownMs = cooldown;
   };
 
-  const updateFromProbeResponse = response => {
-    if (response?.status === 402) markBlocked();
+  const updateFromProbeResponse = (response, options = {}) => {
+    if (response?.status === 402) markBlocked(options);
     else if (response?.ok) markReady();
     return response;
   };
@@ -109,14 +121,14 @@ function createSupabaseQuotaCircuitFetch({
           headers: probeHeaders(input, init),
           cache: 'no-store',
         });
-        updateFromProbeResponse(response);
+        updateFromProbeResponse(response, { escalate: true });
         if (!response.ok) {
-          if (response.status !== 402) blockedUntil = now() + Math.min(cooldown, 10_000);
+          if (response.status !== 402) blockedUntil = now() + Math.min(currentCooldownMs, 10_000);
           return false;
         }
         return true;
       } catch {
-        blockedUntil = now() + Math.min(cooldown, 10_000);
+        blockedUntil = now() + Math.min(currentCooldownMs, 10_000);
         return false;
       } finally {
         recoveryProbePromise = null;
@@ -133,7 +145,9 @@ function createSupabaseQuotaCircuitFetch({
     // Its result also opens/closes this circuit immediately for normal traffic.
     if (isPrimaryProbeUrl(url, base)) {
       const response = await fetchImpl(input, init);
-      return updateFromProbeResponse(response);
+      // A manual recovery check should be immediate, but repeated button taps must
+      // not ratchet the automatic backoff higher on their own.
+      return updateFromProbeResponse(response, { escalate: false });
     }
 
     if (quotaBlocked) {
@@ -145,13 +159,20 @@ function createSupabaseQuotaCircuitFetch({
     }
 
     const response = await fetchImpl(input, init);
-    if (response.status === 402) markBlocked();
+    if (response.status === 402) markBlocked({ escalate: true });
     return response;
   };
 
   return {
     fetch: circuitFetch,
-    state: () => ({ quotaBlocked, blockedUntil, probing: Boolean(recoveryProbePromise), cooldownMs: cooldown }),
+    state: () => ({
+      quotaBlocked,
+      blockedUntil,
+      probing: Boolean(recoveryProbePromise),
+      cooldownMs: cooldown,
+      currentCooldownMs,
+      backoffLevel: quotaBackoffLevel,
+    }),
   };
 }
 

@@ -229,10 +229,29 @@ async function loadRows(client, table) {
 
 const SQL_READ_RESERVED_PARAMS = new Set(['select', 'order', 'limit', 'offset', 'on_conflict', 'columns']);
 const SQL_READ_FILTER_OPS = new Set(['eq', 'neq', 'is', 'in', 'like', 'ilike']);
-const SQL_READ_ORDER_FIELDS = new Set([
-  'created_at', 'updated_at', 'changed_at', 'source_updated_at', 'backed_up_at',
-  'remind_at', 'last_run_at', 'claimed_at', 'completed_at', 'retry_after', 'date',
+const SQL_READ_ORDER_TYPES = new Map([
+  ['created_at', 'timestamp'], ['updated_at', 'timestamp'], ['changed_at', 'timestamp'],
+  ['source_updated_at', 'timestamp'], ['backed_up_at', 'timestamp'], ['remind_at', 'timestamp'],
+  ['last_run_at', 'timestamp'], ['claimed_at', 'timestamp'], ['completed_at', 'timestamp'],
+  ['retry_after', 'timestamp'], ['date', 'timestamp'],
+  ['is_active', 'boolean'], ['completed', 'boolean'], ['enabled', 'boolean'], ['visible', 'boolean'],
+  ['kind', 'text'], ['status', 'text'], ['category', 'text'], ['role', 'text'], ['name', 'text'], ['title', 'text'],
+  ['id', 'number'], ['session_id', 'number'], ['sort_order', 'number'], ['position', 'number'],
+  ['attempt_count', 'number'], ['version', 'number'], ['amount', 'number'], ['balance', 'number'],
 ]);
+
+function sqlOrderExpression(field, type) {
+  if (type === 'timestamp') {
+    return `case when coalesce(payload ->> '${field}', '') ~ '^\d{4}-\d{2}-\d{2}' then (payload ->> '${field}')::timestamptz end`;
+  }
+  if (type === 'boolean') {
+    return `case when payload ->> '${field}' in ('true','false') then (payload ->> '${field}')::boolean end`;
+  }
+  if (type === 'number') {
+    return `case when coalesce(payload ->> '${field}', '') ~ '^-?[0-9]+([.][0-9]+)?$' then (payload ->> '${field}')::numeric end`;
+  }
+  return `(payload ->> '${field}')`;
+}
 
 function safeJsonField(value) {
   const field = String(value || '');
@@ -323,7 +342,8 @@ function buildSqlReadPlan(params, headers = new Headers()) {
     for (const part of order.split(',').filter(Boolean)) {
       const bits = part.split('.');
       const field = safeJsonField(bits[0]);
-      if (!field || !SQL_READ_ORDER_FIELDS.has(field)) return null;
+      const orderType = field ? SQL_READ_ORDER_TYPES.get(field) : null;
+      if (!field || !orderType) return null;
       const direction = bits[1] === 'desc' ? 'desc' : 'asc';
       if (bits[1] && bits[1] !== 'asc' && bits[1] !== 'desc') return null;
       if (bits.some(bit => ![field, 'asc', 'desc', 'nullsfirst', 'nullslast'].includes(bit))) return null;
@@ -331,7 +351,7 @@ function buildSqlReadPlan(params, headers = new Headers()) {
       const nulls = explicitNullsFirst
         ? (direction === 'desc' ? 'nulls last' : 'nulls first')
         : (direction === 'desc' ? 'nulls first' : 'nulls last');
-      orderSql.push(`(payload ->> '${field}')::timestamptz ${direction} ${nulls}`);
+      orderSql.push(`${sqlOrderExpression(field, orderType)} ${direction} ${nulls}`);
     }
   }
 
@@ -358,7 +378,7 @@ async function loadReadRows(client, table, params, headers = new Headers()) {
 
   const result = await client.query({
     text: `
-      /* sql-filtered-v3 */
+      /* sql-filtered-coalesced-v4 */
       with latest_changes as (
         select distinct on (row_key) row_key, operation, payload
         from public.ourhome_failover_changes
@@ -1221,18 +1241,49 @@ async function handleTableRequest(client, url, method, headers, body) {
   return withTableMutationLock(client, table, execute);
 }
 
+const inFlightFailoverReads = new Map();
+
+function failoverReadKey(url, method, headers) {
+  return [
+    method,
+    url.href,
+    headers.get('accept') || '',
+    headers.get('range') || '',
+    headers.get('prefer') || '',
+  ].join('\n');
+}
+
+async function shareFailoverRead(key, work) {
+  let pending = inFlightFailoverReads.get(key);
+  if (!pending) {
+    pending = Promise.resolve().then(work);
+    inFlightFailoverReads.set(key, pending);
+    pending.finally(() => {
+      if (inFlightFailoverReads.get(key) === pending) inFlightFailoverReads.delete(key);
+    }).catch(() => {});
+  }
+  const response = await pending;
+  return typeof response?.clone === 'function' ? response.clone() : response;
+}
+
 async function neonFallback(input, init = {}) {
   if (!pool) return null;
   const url = new URL(requestUrl(input));
   const method = requestMethod(input, init);
   const headers = requestHeaders(input, init);
   const body = await requestJson(input, init);
-  const client = await pool.connect();
-  try {
-    return await handleTableRequest(client, url, method, headers, body);
-  } finally {
-    client.release();
+  const execute = async () => {
+    const client = await pool.connect();
+    try {
+      return await handleTableRequest(client, url, method, headers, body);
+    } finally {
+      client.release();
+    }
+  };
+  if (method === 'GET' || method === 'HEAD') {
+    return shareFailoverRead(failoverReadKey(url, method, headers), execute);
   }
+  return execute();
 }
 
 if (typeof upstreamFetch === 'function' && pool) {
@@ -1268,6 +1319,7 @@ module.exports = {
   deleteServiceConnection,
   decryptedSecret,
   failoverObjectSignature,
+  failoverReadKey,
   handleRpcRequest,
   handleTableRequest,
   inferDefaults,
@@ -1285,6 +1337,7 @@ module.exports = {
   saveAgentMailWebhookSecret,
   saveApiProfile,
   saveServiceConnection,
+  shareFailoverRead,
   storeFailoverObject,
   storeFailoverObjectWithClient,
   transitionIntimacyFlow,
