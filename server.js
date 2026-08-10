@@ -3516,7 +3516,11 @@ app.get('/sessions/:id/messages', async (req, res) => {
     .order('created_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(chatHistoryFetchLimit(paging));
-  if (paging.before) query = query.lte('created_at', paging.before.createdAt);
+  if (paging.before) {
+    query = paging.before.legacyExclusive
+      ? query.lt('created_at', paging.before.createdAt)
+      : query.lte('created_at', paging.before.createdAt);
+  }
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   return res.json(finalizeChatHistoryPage(data, paging));

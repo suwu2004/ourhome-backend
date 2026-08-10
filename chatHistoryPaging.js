@@ -27,7 +27,9 @@ function decodeChatHistoryCursor(value) {
     if (!createdAt || skip <= 0) return null;
     return { createdAt, skip };
   } catch {
-    return null;
+    const isLegacyTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(token)
+      && Number.isFinite(Date.parse(token));
+    return isLegacyTimestamp ? { createdAt: token, skip: 0, legacyExclusive: true } : null;
   }
 }
 

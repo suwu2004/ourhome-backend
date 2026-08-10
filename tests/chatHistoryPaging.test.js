@@ -23,6 +23,17 @@ test('paged history clamps page size and decodes an opaque cursor', () => {
   assert.equal(parseChatHistoryPaging({ limit: '240', before: 'broken' }).before, null);
 });
 
+test('legacy timestamp cursor bridges one in-flight page without restarting history', () => {
+  const legacy = '2026-08-10T12:00:00.000Z';
+  const paging = parseChatHistoryPaging({ limit: '240', before: legacy });
+  assert.deepEqual(paging.before, {
+    createdAt: legacy,
+    skip: 0,
+    legacyExclusive: true,
+  });
+  assert.equal(chatHistoryFetchLimit(paging), 241);
+});
+
 test('history page is returned oldest-to-newest with a hasMore marker', () => {
   const rows = [
     { id: 5, created_at: '2026-08-10T12:05:00.000Z' },
