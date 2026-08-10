@@ -24,6 +24,15 @@ jobs:
           if grep -q "mergeTheaterFacts" theaterMemoryPatch.js; then
             echo "Patch already applied; verification only."
           else
+            python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/one-shot-theater-memory-v2.py')
+          text = path.read_text()
+          old = "support = replace_once(support, \"    version: 1,\\n\", \"    version: 2,\\n\", 'empty version')"
+          new = "support = support.replace(\"    version: 1,\\n\", \"    version: 2,\\n\", 1)"
+          if old in text:
+              path.write_text(text.replace(old, new, 1))
+          PY
             python .github/one-shot-theater-memory-v2.py
           fi
       - run: npm ci
