@@ -44,7 +44,7 @@ const {
   buildAdaptiveReplyInstruction,
 } = require('./replyLength');
 const { registerReadingRoutes } = require('./readingStore');
-const { parseChatHistoryPaging, finalizeChatHistoryPage } = require('./chatHistoryPaging');
+const { parseChatHistoryPaging, chatHistoryFetchLimit, finalizeChatHistoryPage } = require('./chatHistoryPaging');
 const {
   normalizeAttachmentSummary,
   previousAttachmentLabel,
@@ -3514,11 +3514,12 @@ app.get('/sessions/:id/messages', async (req, res) => {
     .eq('session_id', id)
     .eq('visible', true)
     .order('created_at', { ascending: false })
-    .limit(paging.limit + 1);
-  if (paging.before) query = query.lt('created_at', paging.before);
+    .order('id', { ascending: false })
+    .limit(chatHistoryFetchLimit(paging));
+  if (paging.before) query = query.lte('created_at', paging.before.createdAt);
   const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  return res.json(finalizeChatHistoryPage(data, paging.limit));
+  return res.json(finalizeChatHistoryPage(data, paging));
 });
 
 app.get('/sessions/:id/summary', async (req, res) => {
