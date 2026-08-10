@@ -177,6 +177,22 @@ function inferDefaults(row, sampleRows) {
   return next;
 }
 
+// Postgres applies column defaults on a real insert.  The emergency journal
+// stores JSON instead, so the few defaults that affect later queries must be
+// materialized here.  In particular, Chat immediately reads `visible=true`
+// after saving the current user turn; omitting it makes that brand-new turn
+// disappear from both the next model prompt and a refreshed conversation.
+function normalizeFailoverRow(table, row) {
+  if (!row || typeof row !== 'object') return row;
+  const next = { ...row };
+  if (table === 'messages' && next.visible == null) next.visible = true;
+  return next;
+}
+
+function inferTableDefaults(table, row, sampleRows) {
+  return normalizeFailoverRow(table, inferDefaults(row, sampleRows));
+}
+
 function rowKey(row) {
   return String(row?.[ROW_KEY] ?? row?.id ?? crypto.randomUUID());
 }
@@ -202,7 +218,7 @@ async function loadRows(client, table) {
     values: [table],
   });
   return result.rows.map(item => {
-    const payload = item.payload;
+    const payload = normalizeFailoverRow(table, item.payload);
     if (payload && typeof payload === 'object') {
       Object.defineProperty(payload, ROW_KEY, { value: String(item.row_key), enumerable: false });
     }
@@ -213,11 +229,39 @@ async function loadRows(client, table) {
 async function recordChange(client, table, operation, row, key = null) {
   const resolvedKey = key || rowKey(row);
   await client.query({
-    text: `insert into public.ourhome_failover_changes(table_name,row_key,operation,payload)
-           values ($1,$2,$3,$4::jsonb)`,
+    // Only the newest unapplied state for a logical row is needed for replay.
+    // Compact older revisions in the same statement so frequently touched
+    // settings do not turn every failover read into an ever-growing scan.
+    text: `with inserted as (
+             insert into public.ourhome_failover_changes(table_name,row_key,operation,payload)
+             values ($1,$2,$3,$4::jsonb)
+             returning id
+           )
+           delete from public.ourhome_failover_changes older
+           using inserted
+           where older.table_name=$1
+             and older.row_key=$2
+             and older.applied_to_supabase_at is null
+             and older.id < inserted.id`,
     values: [table, resolvedKey, operation, operation === 'delete' ? null : JSON.stringify(row)],
   });
   return resolvedKey;
+}
+
+async function withTableMutationLock(client, table, work) {
+  await client.query('begin');
+  try {
+    await client.query({
+      text: `select pg_advisory_xact_lock(hashtext($1))`,
+      values: [`ourhome-neon-table:${table}`],
+    });
+    const result = await work();
+    await client.query('commit');
+    return result;
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  }
 }
 
 async function withFailoverClient(work) {
@@ -925,63 +969,68 @@ async function handleTableRequest(client, url, method, headers, body) {
   if (!/^[a-zA-Z_][\w]*$/.test(table)) {
     return postgrestError('This Supabase request is unavailable while the emergency database is active.');
   }
-  const allRows = await loadRows(client, table);
-  const matched = applyFilters(allRows, url.searchParams);
-  const prefer = headers.get('prefer') || '';
+  const execute = async () => {
+    const allRows = await loadRows(client, table);
+    const matched = applyFilters(allRows, url.searchParams);
+    const prefer = headers.get('prefer') || '';
 
-  if (method === 'GET' || method === 'HEAD') {
-    const ordered = applyOrder(matched, url.searchParams.get('order'));
-    const { offset, limit } = readWindow(url.searchParams, headers);
-    const limited = Number.isFinite(limit) && limit >= 0 ? ordered.slice(offset, offset + limit) : ordered.slice(offset);
-    const projected = projectRows(limited, url.searchParams.get('select'));
-    if (method === 'HEAD') return jsonResponse(null, 200, { 'Content-Range': `0-0/${matched.length}` });
-    return formatReadResponse(projected, headers, matched.length, offset);
-  }
+    if (method === 'GET' || method === 'HEAD') {
+      const ordered = applyOrder(matched, url.searchParams.get('order'));
+      const { offset, limit } = readWindow(url.searchParams, headers);
+      const limited = Number.isFinite(limit) && limit >= 0 ? ordered.slice(offset, offset + limit) : ordered.slice(offset);
+      const projected = projectRows(limited, url.searchParams.get('select'));
+      if (method === 'HEAD') return jsonResponse(null, 200, { 'Content-Range': `0-0/${matched.length}` });
+      return formatReadResponse(projected, headers, matched.length, offset);
+    }
 
-  if (method === 'POST') {
-    const incoming = Array.isArray(body) ? body : [body || {}];
-    const onConflict = String(url.searchParams.get('on_conflict') || 'id').split(',').filter(Boolean);
-    const merge = /resolution=merge-duplicates/i.test(prefer);
-    const saved = [];
-    for (const raw of incoming) {
-      let next = inferDefaults(raw, [...allRows, ...saved]);
-      let changeKey = null;
-      if (merge) {
-        const existing = allRows.find(row => onConflict.every(column => comparable(row?.[column]) === comparable(next?.[column])));
-        if (existing) {
-          changeKey = rowKey(existing);
-          next = { ...existing, ...next, updated_at: next.updated_at || new Date().toISOString() };
+    if (method === 'POST') {
+      const incoming = Array.isArray(body) ? body : [body || {}];
+      const onConflict = String(url.searchParams.get('on_conflict') || 'id').split(',').filter(Boolean);
+      const merge = /resolution=merge-duplicates/i.test(prefer);
+      const saved = [];
+      for (const raw of incoming) {
+        let next = inferTableDefaults(table, raw, [...allRows, ...saved]);
+        let changeKey = null;
+        if (merge) {
+          const existing = allRows.find(row => onConflict.every(column => comparable(row?.[column]) === comparable(next?.[column])));
+          if (existing) {
+            changeKey = rowKey(existing);
+            next = normalizeFailoverRow(table, { ...existing, ...next, updated_at: next.updated_at || new Date().toISOString() });
+          }
         }
+        await recordChange(client, table, 'upsert', next, changeKey);
+        saved.push(next);
       }
-      await recordChange(client, table, 'upsert', next, changeKey);
-      saved.push(next);
+      const result = projectRows(saved, url.searchParams.get('select'));
+      if (/return=minimal/i.test(prefer)) return jsonResponse(null, 201);
+      return wantsObject(headers) ? jsonResponse(result[0] || null, 201) : jsonResponse(result, 201);
     }
-    const result = projectRows(saved, url.searchParams.get('select'));
-    if (/return=minimal/i.test(prefer)) return jsonResponse(null, 201);
-    return wantsObject(headers) ? jsonResponse(result[0] || null, 201) : jsonResponse(result, 201);
-  }
 
-  if (method === 'PATCH') {
-    const updated = [];
-    for (const current of matched) {
-      const next = { ...current, ...(body || {}) };
-      if (Object.prototype.hasOwnProperty.call(current, 'updated_at') && !Object.prototype.hasOwnProperty.call(body || {}, 'updated_at')) {
-        next.updated_at = new Date().toISOString();
+    if (method === 'PATCH') {
+      const updated = [];
+      for (const current of matched) {
+        const next = normalizeFailoverRow(table, { ...current, ...(body || {}) });
+        if (Object.prototype.hasOwnProperty.call(current, 'updated_at') && !Object.prototype.hasOwnProperty.call(body || {}, 'updated_at')) {
+          next.updated_at = new Date().toISOString();
+        }
+        await recordChange(client, table, 'upsert', next, rowKey(current));
+        updated.push(next);
       }
-      await recordChange(client, table, 'upsert', next, rowKey(current));
-      updated.push(next);
+      if (/return=minimal/i.test(prefer)) return jsonResponse(null);
+      return formatReadResponse(projectRows(updated, url.searchParams.get('select')), headers, updated.length);
     }
-    if (/return=minimal/i.test(prefer)) return jsonResponse(null);
-    return formatReadResponse(projectRows(updated, url.searchParams.get('select')), headers, updated.length);
-  }
 
-  if (method === 'DELETE') {
-    for (const current of matched) await recordChange(client, table, 'delete', null, rowKey(current));
-    if (/return=minimal/i.test(prefer)) return jsonResponse(null);
-    return formatReadResponse(projectRows(matched, url.searchParams.get('select')), headers, matched.length);
-  }
+    if (method === 'DELETE') {
+      for (const current of matched) await recordChange(client, table, 'delete', null, rowKey(current));
+      if (/return=minimal/i.test(prefer)) return jsonResponse(null);
+      return formatReadResponse(projectRows(matched, url.searchParams.get('select')), headers, matched.length);
+    }
 
-  return postgrestError(`Unsupported emergency database method: ${method}`);
+    return postgrestError(`Unsupported emergency database method: ${method}`);
+  };
+
+  if (method === 'GET' || method === 'HEAD') return execute();
+  return withTableMutationLock(client, table, execute);
 }
 
 async function neonFallback(input, init = {}) {
@@ -1031,8 +1080,11 @@ module.exports = {
   decryptedSecret,
   failoverObjectSignature,
   handleRpcRequest,
+  handleTableRequest,
   inferDefaults,
+  inferTableDefaults,
   matchFilter,
+  normalizeFailoverRow,
   normalizeNeonConnectionIdentity,
   deriveSecretWrapKey,
   projectRows,
@@ -1047,4 +1099,5 @@ module.exports = {
   storeFailoverObjectWithClient,
   transitionIntimacyFlow,
   verifyFailoverObjectSignature,
+  withTableMutationLock,
 };
