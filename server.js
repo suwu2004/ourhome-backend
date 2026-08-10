@@ -44,6 +44,7 @@ const {
   buildAdaptiveReplyInstruction,
 } = require('./replyLength');
 const { registerReadingRoutes } = require('./readingStore');
+const { parseChatHistoryPaging, finalizeChatHistoryPage } = require('./chatHistoryPaging');
 const {
   normalizeAttachmentSummary,
   previousAttachmentLabel,
@@ -3501,10 +3502,23 @@ app.delete('/sessions/:id', async (req, res) => {
 
 app.get('/sessions/:id/messages', async (req, res) => {
   const { id } = req.params;
-  const { data, error } = await supabase.from('messages').select('*')
-    .eq('session_id', id).eq('visible', true).order('created_at', { ascending: true });
+  const paging = parseChatHistoryPaging(req.query);
+  if (!paging) {
+    const { data, error } = await supabase.from('messages').select('*')
+      .eq('session_id', id).eq('visible', true).order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  }
+
+  let query = supabase.from('messages').select('*')
+    .eq('session_id', id)
+    .eq('visible', true)
+    .order('created_at', { ascending: false })
+    .limit(paging.limit + 1);
+  if (paging.before) query = query.lt('created_at', paging.before);
+  const { data, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+  return res.json(finalizeChatHistoryPage(data, paging.limit));
 });
 
 app.get('/sessions/:id/summary', async (req, res) => {
