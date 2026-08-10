@@ -8,6 +8,7 @@ const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 const UPLOAD_BUCKET = process.env.SUPABASE_UPLOAD_BUCKET || 'uploads';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 const webpush = require('web-push');
+const { createNativePushSender } = require('./nativePush');
 const { createRuntimeConfig } = require('./runtimeConfig');
 const { normalizeCalendarDayColors } = require('./calendarDayColors');
 const { createIntegrationManager, validateRemoteUrl, WEB_SEARCH_PROVIDERS } = require('./integrations');
@@ -80,6 +81,8 @@ const agentMailService = createAgentMailService({
   auditStore: agentMailAuditStore,
   reviewOutgoing: reviewAgentMailOutgoing,
 });
+const nativePush = createNativePushSender();
+if (nativePush.configured) console.log(`FCM 原生推送已配置，topic: ${nativePush.topic}`);
 const weatherCache = new Map();
 const WEATHER_CACHE_MS = 15 * 60 * 1000;
 const WEATHER_STALE_MS = 6 * 60 * 60 * 1000;
@@ -5804,25 +5807,49 @@ app.post('/calendar/generate', async (req, res) => {
 
 // 给所有订阅了推送的设备发一条通知，自动清理失效的订阅
 async function sendPushToAll(title, body, data = {}) {
-  if (!PUSH_CONFIGURED) return { configured: false, sent: 0 };
-  const { data: subs } = await supabase.from('push_subscriptions').select('*');
-  const payload = JSON.stringify({ title, body, data });
+  let configured = false;
   let sent = 0;
   let failed = 0;
-  for (const sub of subs || []) {
+
+  if (PUSH_CONFIGURED) {
+    configured = true;
     try {
-      await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
-      sent++;
-    } catch (pushErr) {
-      failed++;
-      if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
-        await supabase.from('push_subscriptions').delete().eq('id', sub.id);
-      } else {
-        console.error('推送失败:', pushErr.message);
+      const { data: subs, error: subscriptionsError } = await supabase.from('push_subscriptions').select('*');
+      if (subscriptionsError) throw subscriptionsError;
+      const payload = JSON.stringify({ title, body, data });
+      for (const sub of subs || []) {
+        try {
+          await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
+          sent++;
+        } catch (pushErr) {
+          failed++;
+          if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+            await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+          } else {
+            console.error('Web Push 失败:', pushErr.message);
+          }
+        }
       }
+    } catch (error) {
+      failed++;
+      console.error('Web Push 批量发送失败:', error.message);
     }
   }
-  return { configured: true, sent, failed };
+
+  try {
+    const nativeResult = await nativePush.send(title, body, data);
+    configured = configured || Boolean(nativeResult.configured);
+    sent += Number(nativeResult.sent || 0);
+    failed += Number(nativeResult.failed || 0);
+  } catch (error) {
+    if (nativePush.configured) {
+      configured = true;
+      failed++;
+    }
+    console.error('FCM 原生推送失败:', error.message);
+  }
+
+  return { configured, sent, failed, nativeConfigured: nativePush.configured };
 }
 
 async function dailyAutomationModel(settings) {
