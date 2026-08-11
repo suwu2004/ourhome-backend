@@ -4,9 +4,12 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
-const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+// Camera originals are often larger than the stored result. Accept one bounded
+// source image in memory, then compress it before either cloud destination sees it.
+const MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
 const UPLOAD_BUCKET = process.env.SUPABASE_UPLOAD_BUCKET || 'uploads';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
+const { compressImageBuffer } = require('./imageCompression');
 const webpush = require('web-push');
 const { createNativePushSender } = require('./nativePush');
 const { createRuntimeConfig } = require('./runtimeConfig');
@@ -5201,16 +5204,19 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     if (['text/html', 'image/svg+xml', 'application/javascript', 'text/javascript'].includes(file.mimetype)) {
       return res.status(400).json({ error: '为了安全，不能上传这种文件格式' });
     }
+    const optimized = await compressImageBuffer(file.buffer, file.mimetype);
+    const uploadBody = optimized.buffer;
+    const uploadType = optimized.contentType || file.mimetype;
     const safeName = file.originalname.normalize('NFKC').replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(-120) || 'file';
     const filePath = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
     let storageError = null;
     try {
       await ensureUploadBucket();
-      let result = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
+      let result = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, uploadBody, { contentType: uploadType });
       if (result.error && /bucket|not found/i.test(result.error.message || '')) {
         uploadBucketReady = false;
         await ensureUploadBucket();
-        result = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
+        result = await supabase.storage.from(UPLOAD_BUCKET).upload(filePath, uploadBody, { contentType: uploadType });
       }
       storageError = result.error || null;
     } catch (error) {
@@ -5218,16 +5224,16 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
     if (!storageError) {
       const { data: urlData } = supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(filePath);
-      return res.json({ url: urlData.publicUrl, type: file.mimetype, name: file.originalname, storage: 'supabase' });
+      return res.json({ url: urlData.publicUrl, type: uploadType, name: file.originalname, storage: 'supabase', compressed: optimized.compressed });
     }
 
     try {
       const saved = await storeFailoverObject({
         objectKey: filePath,
         bucket: UPLOAD_BUCKET,
-        contentType: file.mimetype,
+        contentType: uploadType,
         originalName: file.originalname,
-        body: file.buffer,
+        body: uploadBody,
       });
       const publicOrigin = String(
         process.env.OURHOME_PUBLIC_BACKEND_URL
@@ -5238,10 +5244,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       console.warn(`Supabase Storage 不可用，图片已安全暂存到 Neon: ${filePath}`);
       return res.json({
         url,
-        type: file.mimetype,
+        type: uploadType,
         name: file.originalname,
         storage: 'neon-failover',
         pending_sync: true,
+        compressed: optimized.compressed,
       });
     } catch (fallbackError) {
       console.error('Neon 备用上传失败:', String(fallbackError?.message || fallbackError).slice(0, 240));

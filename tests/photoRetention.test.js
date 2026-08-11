@@ -1,10 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const sharp = require('sharp');
 const {
   collectUploadPaths,
   buildCleanupPlan,
   isImageMessage,
   uploadPath,
+  runPhotoRetentionOptimization,
 } = require('../photoRetention');
 
 const base = 'https://demo.supabase.co/storage/v1/object/public/uploads/';
@@ -28,7 +30,7 @@ test('only old unprotected image-only objects enter the cleanup plan', () => {
     { id: 4, created_at: old, attachment_url: `${base}document.pdf`, attachment_type: 'application/pdf' },
   ];
   const plan = buildCleanupPlan({ messages, protectedPaths: new Set(['album.jpg']), cutoffMs });
-  assert.deepEqual(plan, [{ path: 'food.jpg', messageIds: [1] }]);
+  assert.deepEqual(plan, [{ path: 'food.jpg', messageIds: [1], contentType: 'image/jpeg', bytes: 0 }]);
 });
 
 test('shared object stays when any message reference is newer than the cutoff', () => {
@@ -44,4 +46,46 @@ test('removed markers and non-image files never become cleanup candidates again'
   assert.equal(isImageMessage({ attachment_type: 'application/pdf', attachment_url: `${base}a.pdf` }), false);
   assert.equal(isImageMessage({ attachment_type: null, attachment_url: `${base}meal.webp` }), true);
   assert.equal(uploadPath(`${base}folder/%E7%8C%AB.jpg?token=x`), 'folder/猫.jpg');
+});
+
+test('monthly maintenance replaces old photo bytes in place and keeps its chat URL', async () => {
+  const width = 1800;
+  const height = 1200;
+  const pixels = Buffer.allocUnsafe(width * height * 3);
+  for (let index = 0; index < pixels.length; index += 3) {
+    const pixel = index / 3;
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    pixels[index] = (x * 29 + y * 3) % 256;
+    pixels[index + 1] = (x * 5 + y * 23) % 256;
+    pixels[index + 2] = (x * 17 + y * 13) % 256;
+  }
+  const original = await sharp(pixels, { raw: { width, height, channels: 3 } }).jpeg({ quality: 100 }).toBuffer();
+  const messages = [{ id: 9, created_at: old, attachment_url: `${base}kept.jpg`, attachment_type: 'image/jpeg', attachment_name: 'kept.jpg' }];
+  let updated = null;
+  const storage = {
+    async list() { return { data: [{ name: 'kept.jpg', metadata: { size: original.length } }], error: null }; },
+    async download(path) { assert.equal(path, 'kept.jpg'); return { data: original, error: null }; },
+    async update(path, body, options) { updated = { path, body, options }; return { data: { path }, error: null }; },
+  };
+  const supabase = {
+    storage: { from(bucket) { assert.equal(bucket, 'uploads'); return storage; } },
+    from(table) {
+      if (table === 'messages') {
+        return { select() { return { async not() { return { data: messages, error: null }; } }; } };
+      }
+      return { async select() { return { data: [], error: null }; } };
+    },
+  };
+  const result = await runPhotoRetentionOptimization({
+    supabase,
+    now: new Date('2026-08-11T00:00:00.000Z'),
+    retentionDays: 30,
+    batchSize: 1,
+  });
+  assert.equal(result.optimizedObjects, 1);
+  assert.equal(updated.path, 'kept.jpg');
+  assert.equal(updated.options.contentType, 'image/jpeg');
+  assert.ok(updated.body.length < original.length);
+  assert.equal(messages[0].attachment_url, `${base}kept.jpg`);
 });
