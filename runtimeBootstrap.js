@@ -115,7 +115,7 @@ try {
         neon_replay: 'primary-probe-idempotent-v1',
         api_model_catalog: 'saved-model-fallback-v1',
         storage_failover: 'neon-object-spool-v1',
-        photo_retention: 'chat-images-30d-preserving-compression-v2',
+        photo_retention: 'chat-images-30d-preserving-compression-v3-retry',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,

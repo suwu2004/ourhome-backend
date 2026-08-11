@@ -176,18 +176,32 @@ function startPhotoRetentionScheduler({
   retentionDays = DEFAULT_RETENTION_DAYS,
   firstDelayMs = 5 * 60 * 1000,
   intervalMs = 12 * 60 * 60 * 1000,
+  retryDelayMs = 15 * 60 * 1000,
+  batchSize = DEFAULT_BATCH_SIZE,
 } = {}) {
   let running = false;
+  let retryTimer = null;
+  const scheduleRetry = () => {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(run, Math.max(5 * 60 * 1000, retryDelayMs));
+    retryTimer.unref?.();
+  };
   const run = async () => {
     if (running) return;
     running = true;
     try {
-      const result = await runPhotoRetentionOptimization({ supabase, retentionDays });
+      const result = await runPhotoRetentionOptimization({ supabase, retentionDays, batchSize });
       if (result.optimizedObjects) {
         console.log(`[photo-retention] compressed ${result.optimizedObjects} old chat images; saved ${result.savedBytes} bytes`);
       }
+      // A full batch probably means more eligible photos remain. Continue soon,
+      // while keeping ordinary maintenance on the quiet twelve-hour interval.
+      if (result.candidates >= batchSize) scheduleRetry();
     } catch (error) {
       console.warn('[photo-retention] compression skipped:', error?.message || error);
+      // Quota restrictions can disappear shortly after a billing-cycle reset.
+      // One lightweight retry is enough; the scheduler never loops aggressively.
+      scheduleRetry();
     } finally {
       running = false;
     }
@@ -197,7 +211,7 @@ function startPhotoRetentionScheduler({
   first.unref?.();
   const timer = setInterval(run, Math.max(60 * 60 * 1000, intervalMs));
   timer.unref?.();
-  return { run, stop() { clearTimeout(first); clearInterval(timer); } };
+  return { run, stop() { clearTimeout(first); clearTimeout(retryTimer); clearInterval(timer); } };
 }
 
 module.exports = {
