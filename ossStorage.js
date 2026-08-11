@@ -168,11 +168,38 @@ function getOssStorage() {
   return singleton;
 }
 
+let connectionState = 'not-checked';
+
+async function probeOssStorage({ storage, env = process.env } = {}) {
+  const config = readOssStorageConfig(env);
+  if (!config.enabled) {
+    connectionState = config.mode === 'disabled' ? 'not-applicable' : 'awaiting-credentials';
+    return { ok: false, skipped: true, state: connectionState };
+  }
+  connectionState = 'checking';
+  try {
+    const target = storage || getOssStorage();
+    await target.listObjects({ limit: 1 });
+    connectionState = 'ready';
+    return { ok: true, state: connectionState };
+  } catch (error) {
+    connectionState = 'error';
+    console.warn('[oss-storage] read-only connection probe failed:', safeMessage(error));
+    return { ok: false, state: connectionState, error: safeMessage(error) };
+  }
+}
+
 function ossStorageStatus(env = process.env) {
   const config = readOssStorageConfig(env);
   if (config.enabled) return config.mode;
   if (config.mode !== 'disabled') return 'awaiting-credentials';
   return 'disabled';
+}
+
+function ossStorageHealthStatus(env = process.env) {
+  const status = ossStorageStatus(env);
+  if (!['shadow', 'primary'].includes(status)) return status;
+  return `${status}-${connectionState}`;
 }
 
 module.exports = {
@@ -182,5 +209,7 @@ module.exports = {
   toBuffer,
   createOssStorage,
   getOssStorage,
+  probeOssStorage,
   ossStorageStatus,
+  ossStorageHealthStatus,
 };
