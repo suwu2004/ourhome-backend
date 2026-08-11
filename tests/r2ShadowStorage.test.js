@@ -98,8 +98,9 @@ test('private upload patch mirrors only after primary storage succeeds and does 
   assert.match(source, /replace\(\/Bearer/);
 });
 
-test('health marker reports R2 state without account, bucket or token values', () => {
+test('retired R2 adapter is not loaded by the runtime', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
-  assert.match(source, /storage_shadow: `cloudflare-r2-\$\{r2ShadowStatus\(\)\}-v1`/);
+  assert.doesNotMatch(source, /require\('\.\/r2ShadowPatch'\)/);
+  assert.doesNotMatch(source, /r2ShadowStatus/);
   assert.doesNotMatch(source, /CLOUDFLARE_R2_API_TOKEN/);
 });
