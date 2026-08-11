@@ -8,6 +8,7 @@ const {
   uploadPath,
   runPhotoRetentionOptimization,
 } = require('../photoRetention');
+const photoRetentionSource = require('node:fs').readFileSync(require.resolve('../photoRetention'), 'utf8');
 
 const base = 'https://demo.supabase.co/storage/v1/object/public/uploads/';
 const old = '2026-06-01T00:00:00.000Z';
@@ -88,4 +89,11 @@ test('monthly maintenance replaces old photo bytes in place and keeps its chat U
   assert.equal(updated.options.contentType, 'image/jpeg');
   assert.ok(updated.body.length < original.length);
   assert.equal(messages[0].attachment_url, `${base}kept.jpg`);
+});
+
+test('quota failures and full batches receive a bounded maintenance retry', () => {
+  assert.match(photoRetentionSource, /retryDelayMs = 15 \* 60 \* 1000/);
+  assert.match(photoRetentionSource, /if \(result\.candidates >= batchSize\) scheduleRetry\(\)/);
+  assert.match(photoRetentionSource, /catch \(error\)[\s\S]*scheduleRetry\(\)/);
+  assert.match(photoRetentionSource, /Math\.max\(5 \* 60 \* 1000, retryDelayMs\)/);
 });
