@@ -24,6 +24,8 @@ require('./backgroundAiCostGuardPatch');
 // upload client. It starts in shadow mode and is promoted only after a verified,
 // no-delete migration; without explicit credentials this patch is a no-op.
 require('./ossStoragePatch');
+const { probeOssStorage } = require('./ossStorage');
+void probeOssStorage();
 // A cached Render build can occasionally contain a stale index.html beside newer
 // hashed assets. Reject that incomplete shell before the front-door module resolves
 // its local directory, so the safe Vercel-origin fallback can provide one coherent build.
@@ -87,7 +89,7 @@ console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit
 
 try {
   const express = require('express');
-  const { ossStorageStatus } = require('./ossStorage');
+  const { ossStorageHealthStatus } = require('./ossStorage');
   const originalJson = express.response.json;
   express.response.json = function runtimeBootstrapJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
@@ -118,7 +120,7 @@ try {
         storage_failover: 'neon-object-spool-v1',
         photo_retention: 'chat-images-30d-preserving-compression-v3-retry',
         storage_egress: '24h-signed-30d-cache-v1',
-        object_storage: `aliyun-oss-${ossStorageStatus()}-v1`,
+        object_storage: `aliyun-oss-${ossStorageHealthStatus()}-v1`,
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,
       };
     }

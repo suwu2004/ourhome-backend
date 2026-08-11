@@ -8,7 +8,9 @@ const path = require('node:path');
 const {
   readOssStorageConfig,
   createOssStorage,
+  probeOssStorage,
   ossStorageStatus,
+  ossStorageHealthStatus,
 } = require('../ossStorage');
 const {
   HASH_HEADER,
@@ -47,6 +49,30 @@ test('OSS integration defaults to disabled and waits safely for incomplete crede
   };
   assert.equal(readOssStorageConfig(env).primary, true);
   assert.equal(ossStorageStatus(env), 'primary');
+});
+
+test('OSS read-only probe reports readiness without writing an object', async () => {
+  let lists = 0;
+  const env = {
+    OURHOME_OSS_STORAGE_MODE: 'shadow',
+    ALIYUN_OSS_REGION: 'oss-cn-beijing',
+    ALIYUN_OSS_ACCESS_KEY_ID: 'id',
+    ALIYUN_OSS_ACCESS_KEY_SECRET: 'secret',
+    ALIYUN_OSS_BUCKET: 'bucket',
+  };
+  const result = await probeOssStorage({
+    env,
+    storage: {
+      async listObjects(options) {
+        lists += 1;
+        assert.deepEqual(options, { limit: 1 });
+        return [];
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(lists, 1);
+  assert.equal(ossStorageHealthStatus(env), 'shadow-ready');
 });
 
 test('OSS storage preserves paths, private caching and verification metadata', async () => {
@@ -128,7 +154,8 @@ test('runtime uses OSS adapter and never exposes its credentials in health metad
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
   const patch = fs.readFileSync(path.join(__dirname, '..', 'ossStoragePatch.js'), 'utf8');
   assert.match(bootstrap, /require\('\.\/ossStoragePatch'\)/);
-  assert.match(bootstrap, /object_storage: `aliyun-oss-\$\{ossStorageStatus\(\)\}-v1`/);
+  assert.match(bootstrap, /void probeOssStorage\(\)/);
+  assert.match(bootstrap, /object_storage: `aliyun-oss-\$\{ossStorageHealthStatus\(\)\}-v1`/);
   assert.doesNotMatch(bootstrap, /ALIYUN_OSS_ACCESS_KEY_SECRET/);
   assert.match(patch, /const result = await primaryCall\(path, body, options\)/);
   assert.match(patch, /await oss\.putObject\(path, body/);
