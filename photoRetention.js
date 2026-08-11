@@ -1,9 +1,10 @@
 'use strict';
 
 const { parseUploadObjectUrl } = require('./privateUploads');
+const { compressImageBuffer, DEFAULT_MIN_BYTES } = require('./imageCompression');
 
 const DEFAULT_RETENTION_DAYS = 30;
-const DEFAULT_BATCH_SIZE = 40;
+const DEFAULT_BATCH_SIZE = 64;
 const IMAGE_EXT_RE = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|webp)(?:$|[?#])/i;
 
 function isImageMessage(row) {
@@ -43,7 +44,7 @@ function olderThan(value, cutoffMs) {
   return Number.isFinite(time) && time < cutoffMs;
 }
 
-function buildCleanupPlan({ messages = [], protectedPaths = new Set(), cutoffMs }) {
+function buildCleanupPlan({ messages = [], protectedPaths = new Set(), cutoffMs, objectSizes = null, minBytes = DEFAULT_MIN_BYTES }) {
   const byPath = new Map();
   for (const row of messages) {
     const path = uploadPath(row?.attachment_url);
@@ -56,10 +57,39 @@ function buildCleanupPlan({ messages = [], protectedPaths = new Set(), cutoffMs 
   const plan = [];
   for (const [path, rows] of byPath.entries()) {
     if (protectedPaths.has(path)) continue;
+    const bytes = objectSizes?.get(path);
+    if (objectSizes && (!Number.isFinite(bytes) || bytes < minBytes)) continue;
     if (!rows.length || !rows.every(row => isImageMessage(row) && olderThan(row.created_at, cutoffMs))) continue;
-    plan.push({ path, messageIds: rows.map(row => row.id) });
+    plan.push({
+      path,
+      messageIds: rows.map(row => row.id),
+      contentType: String(rows.find(row => row.attachment_type)?.attachment_type || ''),
+      bytes: Number.isFinite(bytes) ? bytes : 0,
+    });
   }
   return plan;
+}
+
+async function listUploadObjectSizes(storage, { pageSize = 1000 } = {}) {
+  const sizes = new Map();
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await storage.list('', { limit: pageSize, offset, sortBy: { column: 'name', order: 'asc' } });
+    if (error) throw error;
+    for (const item of data || []) {
+      const size = Number(item?.metadata?.size);
+      if (item?.name && Number.isFinite(size)) sizes.set(item.name, size);
+    }
+    if (!data || data.length < pageSize) break;
+  }
+  return sizes;
+}
+
+async function blobToBuffer(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  if (typeof value?.arrayBuffer === 'function') return Buffer.from(await value.arrayBuffer());
+  throw new Error('unsupported storage download body');
 }
 
 async function readOptionalRows(supabase, table, columns) {
@@ -86,7 +116,7 @@ async function loadProtectedPaths(supabase) {
   return protectedPaths;
 }
 
-async function runPhotoRetentionCleanup({
+async function runPhotoRetentionOptimization({
   supabase,
   retentionDays = DEFAULT_RETENTION_DAYS,
   now = new Date(),
@@ -102,34 +132,44 @@ async function runPhotoRetentionCleanup({
   if (error) throw error;
 
   const protectedPaths = await loadProtectedPaths(supabase);
-  const plan = buildCleanupPlan({ messages: messages || [], protectedPaths, cutoffMs });
-  if (!plan.length) return { deletedObjects: 0, cleanedMessages: 0, protectedObjects: protectedPaths.size };
-
-  let deletedObjects = 0;
-  let cleanedMessages = 0;
   const storage = supabase.storage.from(bucket);
+  const objectSizes = await listUploadObjectSizes(storage);
+  const plan = buildCleanupPlan({ messages: messages || [], protectedPaths, cutoffMs, objectSizes })
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, Math.max(1, Number(batchSize) || DEFAULT_BATCH_SIZE));
+  if (!plan.length) return { optimizedObjects: 0, savedBytes: 0, protectedObjects: protectedPaths.size, candidates: 0 };
 
-  for (let index = 0; index < plan.length; index += batchSize) {
-    const batch = plan.slice(index, index + batchSize);
-    const paths = batch.map(item => item.path);
-    const { error: removeError } = await storage.remove(paths);
-    if (removeError) throw removeError;
-
-    const ids = batch.flatMap(item => item.messageIds);
-    const { error: updateError } = await supabase.from('messages')
-      .update({
-        attachment_url: null,
-        attachment_type: 'image/removed',
-        attachment_name: '生活照已自动整理',
-      })
-      .in('id', ids);
+  let optimizedObjects = 0;
+  let savedBytes = 0;
+  let skippedObjects = 0;
+  for (const item of plan) {
+    const { data, error: downloadError } = await storage.download(item.path);
+    if (downloadError) throw downloadError;
+    const original = await blobToBuffer(data);
+    const optimized = await compressImageBuffer(original, item.contentType, { minBytes: 1 });
+    if (!optimized.compressed) {
+      skippedObjects += 1;
+      continue;
+    }
+    const { error: updateError } = await storage.update(item.path, optimized.buffer, {
+      contentType: optimized.contentType || item.contentType,
+      upsert: true,
+    });
     if (updateError) throw updateError;
-    deletedObjects += paths.length;
-    cleanedMessages += ids.length;
+    optimizedObjects += 1;
+    savedBytes += optimized.savedBytes || Math.max(0, original.length - optimized.buffer.length);
   }
-
-  return { deletedObjects, cleanedMessages, protectedObjects: protectedPaths.size };
+  return {
+    optimizedObjects,
+    savedBytes,
+    skippedObjects,
+    protectedObjects: protectedPaths.size,
+    candidates: plan.length,
+  };
 }
+
+// Keep the old export name for the deployed patch and any maintenance scripts.
+const runPhotoRetentionCleanup = runPhotoRetentionOptimization;
 
 function startPhotoRetentionScheduler({
   supabase,
@@ -142,12 +182,12 @@ function startPhotoRetentionScheduler({
     if (running) return;
     running = true;
     try {
-      const result = await runPhotoRetentionCleanup({ supabase, retentionDays });
-      if (result.deletedObjects) {
-        console.log(`[photo-retention] removed ${result.deletedObjects} old chat images; ${result.cleanedMessages} message references retired`);
+      const result = await runPhotoRetentionOptimization({ supabase, retentionDays });
+      if (result.optimizedObjects) {
+        console.log(`[photo-retention] compressed ${result.optimizedObjects} old chat images; saved ${result.savedBytes} bytes`);
       }
     } catch (error) {
-      console.warn('[photo-retention] cleanup skipped:', error?.message || error);
+      console.warn('[photo-retention] compression skipped:', error?.message || error);
     } finally {
       running = false;
     }
@@ -166,7 +206,9 @@ module.exports = {
   uploadPath,
   collectUploadPaths,
   buildCleanupPlan,
+  listUploadObjectSizes,
   loadProtectedPaths,
+  runPhotoRetentionOptimization,
   runPhotoRetentionCleanup,
   startPhotoRetentionScheduler,
 };

@@ -45,9 +45,9 @@ require('./luzeLearningResiliencePatch');
 // provider latency (or had no practical cap). Extend/cap only those exact calls;
 // never retry them here, so this guard cannot create an extra provider charge.
 require('./runtimeTimeoutGuardPatch');
-// Ordinary chat photos are disposable after 30 days unless another durable feature
-// (photo memories, avatars/backgrounds, favorites or Toybox) still references them.
-// This is storage maintenance only and never calls an AI provider.
+// After 30 days, large ordinary chat photos are compressed in place. Durable
+// features (photo memories, avatars/backgrounds, favorites or Toybox) are skipped.
+// This keeps the conversation visible and never calls an AI provider.
 require('./photoRetentionPatch');
 
 // The rolling ledger runs after the cost guards. Its default path is local-first;
@@ -115,7 +115,7 @@ try {
         neon_replay: 'primary-probe-idempotent-v1',
         api_model_catalog: 'saved-model-fallback-v1',
         storage_failover: 'neon-object-spool-v1',
-        photo_retention: 'chat-images-30d-auto-clean-v1',
+        photo_retention: 'chat-images-30d-preserving-compression-v2',
         storage_egress: '24h-signed-30d-cache-v1',
         storage_shadow: `cloudflare-r2-${r2ShadowStatus()}-v1`,
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,

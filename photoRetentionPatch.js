@@ -12,10 +12,10 @@ if (!globalThis.__ourhomePhotoRetentionScheduler && process.env.OURHOME_DISABLE_
     const supabase = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    // Use the same private-storage wrapper as ordinary uploads so a successful
-    // 30-day cleanup also retires the optional R2 shadow object.
+    // Use the same private-storage wrapper as ordinary uploads so the optimized
+    // bytes replace the optional R2 shadow object as well.
     installPrivateBucketGuard(supabase);
     globalThis.__ourhomePhotoRetentionScheduler = startPhotoRetentionScheduler({ supabase, retentionDays });
-    console.log(`[photo-retention] automatic chat-photo cleanup enabled (${retentionDays} days)`);
+    console.log(`[photo-retention] automatic chat-photo compression enabled (${retentionDays} days)`);
   }
 }
