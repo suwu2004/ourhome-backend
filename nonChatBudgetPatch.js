@@ -6,12 +6,13 @@ const { isLikelyVisionModel } = require('./modelCompatibility');
 
 // Loaded after apiUsageAuditPatch and before backgroundAiCostGuardPatch.
 // Chat and Theater keep the exact model chosen by the user. Toy Bear keeps its
-// own existing budget selector. Lu Ze's final learning synthesis keeps the
-// selected smart model; private-room knocks plus planning/rough work stay cheap.
+// own existing budget selector. Happiness Diary prose and Lu Ze's final learning
+// notes follow the active Chat model; planning, search and other rough work stay cheap.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const modelCache = new Map();
 const SMART_BACKGROUND_PURPOSES = new Set([
+  'happiness-diary',
   'luze-learning-synthesis',
   'luze-learning-deep',
 ]);
@@ -204,7 +205,8 @@ function inferPurpose(body) {
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
   if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return 'session-summary';
   if (isTheaterRequest(body)) return 'theater';
-  if (/幸福日记|心情日历/.test(text)) return 'daily-writing';
+  if (/幸福日记/.test(text)) return 'happiness-diary';
+  if (/心情日历/.test(text)) return 'daily-mood';
   return 'non-chat-budget';
 }
 
@@ -231,8 +233,8 @@ if (typeof providerFetch === 'function') {
 
     const purpose = requestPurpose(init);
     // Interactive Chat, Toy Bear, and Theater keep their own selected model.
-    // Final learning synthesis is deliberate high-quality work; private-room
-    // consent, planning and filtering stay behind the cheap-model guard.
+    // Happiness Diary and final learning-note synthesis deliberately keep the
+    // active Chat model; consent, planning and filtering stay behind the guard.
     if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(purpose)) {
       return providerFetch(input, init);
     }
@@ -260,7 +262,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       // Legacy policy marker retained for source-level regression compatibility:
       // cheapest-except-chat-toybear-theater-v2
-      body = { ...body, non_chat_model_policy: 'tiered-learning-v3' };
+      body = { ...body, non_chat_model_policy: 'chat-writing-v4' };
     }
     return originalJson.call(this, body);
   };

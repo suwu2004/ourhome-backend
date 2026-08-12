@@ -16,10 +16,6 @@ function getSupabase() {
   return supabaseClient;
 }
 
-function compactLine(value, max = 240) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
-}
-
 function clampInt(value, min, max, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -33,7 +29,7 @@ async function readSettings() {
     .eq('id', 'global')
     .maybeSingle();
   if (error) throw error;
-  return data || {
+  const settings = data || {
     id: 'global',
     enabled: true,
     chat_access_enabled: true,
@@ -42,13 +38,13 @@ async function readSettings() {
     max_searches_per_run: 6,
     last_run_at: null,
   };
+  return { ...settings, synthesis_model: null, model_policy: 'follow-chat' };
 }
 
 async function updateSettings(body = {}) {
-  const updates = { updated_at: new Date().toISOString() };
+  const updates = { synthesis_model: null, updated_at: new Date().toISOString() };
   if (typeof body.enabled === 'boolean') updates.enabled = body.enabled;
   if (typeof body.chat_access_enabled === 'boolean') updates.chat_access_enabled = body.chat_access_enabled;
-  if (Object.prototype.hasOwnProperty.call(body, 'synthesis_model')) updates.synthesis_model = compactLine(body.synthesis_model, 240) || null;
   if (body.runs_per_day !== undefined) updates.runs_per_day = clampInt(body.runs_per_day, 0, 4, 2);
   if (body.max_searches_per_run !== undefined) updates.max_searches_per_run = clampInt(body.max_searches_per_run, 1, 10, 6);
   const { data, error } = await getSupabase()
@@ -58,7 +54,7 @@ async function updateSettings(body = {}) {
     .select('id,enabled,chat_access_enabled,synthesis_model,runs_per_day,max_searches_per_run,last_run_at,updated_at')
     .single();
   if (error) throw error;
-  return data;
+  return { ...data, synthesis_model: null, model_policy: 'follow-chat' };
 }
 
 function registerRoutes(app) {

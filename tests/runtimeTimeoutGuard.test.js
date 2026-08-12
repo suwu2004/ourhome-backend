@@ -41,6 +41,8 @@ test('vision reader gets a 150-second ceiling without retrying', () => {
 test('daily writing gets a 120-second ceiling using purpose or exact writer prompts', () => {
   assert.equal(DAILY_WRITING_TIMEOUT_MS, 120_000);
   assert.equal(timeoutForRequest(modelInit({ purpose: 'daily-writing' })), 120_000);
+  assert.equal(timeoutForRequest(modelInit({ purpose: 'happiness-diary' })), 120_000);
+  assert.equal(timeoutForRequest(modelInit({ purpose: 'daily-mood' })), 120_000);
   assert.equal(timeoutForRequest(modelInit({ message: '现在已经到了每天收好这一天的时间。请写一篇日记。' })), 120_000);
   assert.equal(timeoutForRequest(modelInit({ message: '这是 2026-08-09 这一天，心情日历里已经写下的内容：今天很好。' })), 120_000);
 });

@@ -59,7 +59,9 @@ function timeoutForRequest(init = {}) {
   const purpose = headerPurpose(init.headers);
   if (purpose === 'luze-learning-plan') return LEARNING_PLAN_TIMEOUT_MS;
   if (purpose === 'vision-reader') return VISION_READER_TIMEOUT_MS;
-  if (purpose === 'daily-writing') return DAILY_WRITING_TIMEOUT_MS;
+  if (purpose === 'daily-writing' || purpose === 'happiness-diary' || purpose === 'daily-mood') {
+    return DAILY_WRITING_TIMEOUT_MS;
+  }
 
   const body = safeJsonBody(init);
   if (!body || typeof body !== 'object' || !body.model) return 0;

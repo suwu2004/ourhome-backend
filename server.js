@@ -317,7 +317,7 @@ function buildEndpoint(base, path) {
 }
 
 // 统一调用Claude API（密钥/网址填了就用填的，没填就用默认，不再区分"自定义/默认"两条路）
-async function callClaude({ settings, model, maxTokens, system, messages, temperature, thinking, tools }) {
+async function callClaude({ settings, model, maxTokens, system, messages, temperature, thinking, tools, purpose }) {
   const apiKey = settings?.api_key || process.env.ANTHROPIC_API_KEY;
   const apiBaseUrl = buildEndpoint(settings?.api_base_url, '/messages');
   const body = { model: model || 'claude-sonnet-4-6', max_tokens: maxTokens, messages };
@@ -338,6 +338,7 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   };
   // 这个头只在真的开了思考的时候才需要，平时带着反而可能被某些线路当成格式错误
   if (thinking) headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
+  if (purpose) headers['X-OurHome-Call-Purpose'] = String(purpose).trim().slice(0, 80);
 
   console.log(`[DEBUG send] model=${body.model} thinking=${JSON.stringify(body.thinking)} temp=${body.temperature} maxTokens=${body.max_tokens}`);
   const response = await fetch(apiBaseUrl, {
@@ -5168,9 +5169,14 @@ app.post('/letters/generate', async (req, res) => {
       contextNote = `请你以陆泽的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，要求感情细腻真实，不用署名落款。`;
     }
 
+    const isHappinessDiary = category === '幸福日记';
+    const writingModel = isHappinessDiary
+      ? (settings?.selected_model || 'claude-sonnet-4-6')
+      : (model || settings?.selected_model || 'claude-sonnet-4-6');
     const result = await callClaude({
-      settings, model: model || 'claude-sonnet-4-6', maxTokens: 2500,
+      settings, model: writingModel, maxTokens: 2500,
       system: systemPrompt, messages: [{ role: 'user', content: contextNote }], temperature,
+      purpose: isHappinessDiary ? 'happiness-diary' : undefined,
     });
     const replyText = extractText(result);
 
@@ -5874,15 +5880,10 @@ async function sendPushToAll(title, body, data = {}) {
 }
 
 async function dailyAutomationModel(settings) {
-  const preferred = settings?.selected_model || 'claude-sonnet-4-6';
-  try {
-    const models = await fetchModelsForProfile(settings);
-    if (!models.length || models.includes(preferred)) return preferred;
-    return models.find(model => !/embedding|image|audio|tts|rerank/i.test(model)) || preferred;
-  } catch (error) {
-    console.warn('自动补写拉取模型失败，继续使用当前模型:', error.message);
-    return preferred;
-  }
+  // Diary prose belongs to the same Lu Ze the user is talking to right now.
+  // Keep the active Chat model exact; an unavailable route should fail visibly
+  // instead of silently changing the authorial voice to another catalog entry.
+  return settings?.selected_model || 'claude-sonnet-4-6';
 }
 
 async function loadDailyConversation(day) {
@@ -5909,6 +5910,7 @@ async function writeScheduledDiary(settings, model, day, transcript) {
     system,
     messages: [{ role: 'user', content: prompt }],
     temperature: settings?.temperature || 0.8,
+    purpose: 'happiness-diary',
   });
   const replyText = extractText(result).trim();
   if (!replyText) throw new Error('模型没有返回日记内容');
@@ -5951,6 +5953,7 @@ async function writeScheduledMood(settings, model, day, transcript) {
     system,
     messages: [{ role: 'user', content: prompt }],
     temperature: settings?.temperature || 0.8,
+    purpose: 'daily-mood',
   });
   const replyText = extractText(result).trim();
   if (!replyText) throw new Error('模型没有返回心情内容');

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { inferPurpose, preservesRequestedModel } = require('../nonChatBudgetPatch');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'nonChatBudgetPatch.js'), 'utf8');
 
@@ -14,6 +15,16 @@ test('Theater requests are recognized as interactive model-controlled calls', ()
   assert.match(source, /function isTheaterRequest\(body\)/);
   assert.match(source, /小剧场\|互动写作引擎\|剧本名/);
   assert.match(source, /if \(isTheaterRequest\(body\)\) return 'theater'/);
+});
+
+test('Happiness Diary and finished learning notes keep the active Chat model', () => {
+  assert.equal(preservesRequestedModel('happiness-diary'), true);
+  assert.equal(preservesRequestedModel('luze-learning-synthesis'), true);
+  assert.equal(preservesRequestedModel('daily-mood'), false);
+  assert.equal(preservesRequestedModel('luze-learning-plan'), false);
+  assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请写今天的幸福日记' }] }), 'happiness-diary');
+  assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请给心情日历留一句话' }] }), 'daily-mood');
+  assert.match(source, /non_chat_model_policy: 'chat-writing-v4'/);
 });
 
 test('budget selector prefers explicit cheap hints and low-cost model families', () => {

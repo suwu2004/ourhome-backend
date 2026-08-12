@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { parseJsonObject, pickSearchInput, PASS_TTL_MS } = require('../luzePrivateRoomPatch');
 const { preservesRequestedModel } = require('../nonChatBudgetPatch');
 const { normalizeKinds, scoreEntry } = require('../luzePrivateRoomAssistant');
@@ -34,6 +36,15 @@ test('only real learning synthesis bypasses the cheap model guard', () => {
   assert.equal(preservesRequestedModel('luze-learning-deep'), true);
   assert.equal(preservesRequestedModel('luze-learning-plan'), false);
   assert.equal(preservesRequestedModel('memory-journal'), false);
+});
+
+test('finished learning notes always follow the active Chat model', () => {
+  const roomSource = fs.readFileSync(path.resolve(__dirname, '..', 'luzePrivateRoomPatch.js'), 'utf8');
+  const autonomySource = fs.readFileSync(path.resolve(__dirname, '..', 'luzeAutonomySettingsPatch.js'), 'utf8');
+  assert.match(roomSource, /const synthesisRuntime = await loadRuntime\(\)/);
+  assert.doesNotMatch(roomSource, /loadRuntime\(settings\.synthesis_model/);
+  assert.match(roomSource, /model_policy: 'follow-chat'/);
+  assert.match(autonomySource, /model_policy: 'follow-chat'/);
 });
 
 test('Chat private-room lookup keeps only valid room sections', () => {
