@@ -250,7 +250,8 @@ async function searchWorld(query, maxResults = 6) {
 async function learningSettings() {
   const { data, error } = await getSupabase().from('luze_learning_settings').select('*').eq('id', 'global').maybeSingle();
   if (error) throw error;
-  return data || { id: 'global', enabled: true, synthesis_model: null, runs_per_day: 2, max_searches_per_run: 6 };
+  const settings = data || { id: 'global', enabled: true, synthesis_model: null, runs_per_day: 2, max_searches_per_run: 6 };
+  return { ...settings, synthesis_model: null, model_policy: 'follow-chat' };
 }
 
 async function recentPrivateContext() {
@@ -411,7 +412,10 @@ async function runAutonomousLearning({ force = false } = {}) {
       });
     }
 
-    const synthesisRuntime = await loadRuntime(settings.synthesis_model || '');
+    // The finished note shares Chat's active provider and model so Lu Ze keeps
+    // one voice across conversation, diary and private learning. Planning and
+    // search preparation remain eligible for the cheap-model guard.
+    const synthesisRuntime = await loadRuntime();
     const note = await synthesizeLearning(synthesisRuntime, plan, search);
     const savedNote = await insertEntry({
       kind: 'note',
@@ -537,14 +541,13 @@ function registerLuzePrivateRoomRoutes(app) {
 
   app.patch('/luze-room/settings', requireRoomPass, async (req, res) => {
     try {
-      const updates = { updated_at: new Date().toISOString() };
+      const updates = { synthesis_model: null, updated_at: new Date().toISOString() };
       if (typeof req.body?.enabled === 'boolean') updates.enabled = req.body.enabled;
-      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'synthesis_model')) updates.synthesis_model = compactLine(req.body.synthesis_model, 240) || null;
       if (req.body?.runs_per_day !== undefined) updates.runs_per_day = clampInt(req.body.runs_per_day, 0, 4, 2);
       if (req.body?.max_searches_per_run !== undefined) updates.max_searches_per_run = clampInt(req.body.max_searches_per_run, 1, 10, 6);
       const { data, error } = await getSupabase().from('luze_learning_settings').update(updates).eq('id', 'global').select('*').single();
       if (error) throw error;
-      res.json(data);
+      res.json({ ...data, synthesis_model: null, model_policy: 'follow-chat' });
     } catch (error) {
       res.status(400).json({ error: error.message || '学习设置没有保存好' });
     }
