@@ -15,14 +15,20 @@
     "postinstall": "npm run check && npm run build:render-frontend"
   },
   "dependencies": {
+    "@lingo-reader/epub-parser": "^0.4.6",
     "@supabase/supabase-js": "^2.39.0",
     "ali-oss": "^6.23.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "mammoth": "^1.12.1",
     "multer": "2.2.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.23.0",
     "sharp": "^0.34.4",
     "svix": "^1.99.1",
     "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "jszip": "^3.10.1"
   }
 }
