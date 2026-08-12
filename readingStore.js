@@ -6,6 +6,7 @@ const {
   normalizeMultipartFilename,
   wrapMulterFilenameNormalization,
 } = require('./uploadFilename');
+const { extractReadingFile } = require('./readingFileParser');
 const DATE_HEADING_RE = /^\s*(20\d{2})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*(?:日)?(?:\s*[/／-]?\s*.*)?$/;
 const CHAPTER_HEADING_RE = /^\s*(?:第[零〇一二三四五六七八九十百千万\d]+[章节卷部篇回](?:(?:\s+|[：:、.．-]\s*).{1,36})?|卷[零〇一二三四五六七八九十百千万\d]+(?:(?:\s+|[：:、.．-]\s*).{1,36})?|\d{1,4}\s*[.．、]\s*(?![^\n]*[：:])\S.{0,34})\s*$/;
 const MAX_READING_CHAPTERS = 2000;
@@ -22,14 +23,16 @@ function normalizeReadingText(value) {
 
 function cleanBookTitle(value, fallback = '未命名书籍') {
   const title = String(value || '')
-    .replace(/\.(?:txt|md)$/i, '')
+    .replace(/\.(?:txt|md|docx|pdf|epub)$/i, '')
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return title.slice(0, 120) || fallback;
 }
 
-function detectBookTitle(text, sourceName) {
+function detectBookTitle(text, sourceName, preferredTitle = '') {
+  const metadataTitle = cleanBookTitle(preferredTitle, '');
+  if (metadataTitle) return metadataTitle;
   const fallback = cleanBookTitle(sourceName);
   const firstLine = text.split('\n').map(line => line.trim()).find(Boolean) || '';
   if (firstLine && firstLine.length <= 80 && !DATE_HEADING_RE.test(firstLine) && !CHAPTER_HEADING_RE.test(firstLine)) {
@@ -95,14 +98,15 @@ function chaptersFromIndexes(lines, indexes, fallbackTitle) {
   }));
 }
 
-function splitReadingText(rawText, sourceName = '未命名书籍.txt') {
+function splitReadingText(rawText, sourceName = '未命名书籍.txt', options = {}) {
   const text = normalizeReadingText(rawText);
   if (!text) throw new Error('这个文件里没有读到文字。');
   if (text.length > MAX_READING_CHARS) throw new Error('这本书太大了，先拆成几本再导入会更稳。');
 
   const safeSourceName = normalizeMultipartFilename(sourceName, '未命名书籍.txt');
   const lines = text.split('\n');
-  const title = detectBookTitle(text, safeSourceName);
+  const sourceKind = String(options.sourceKind || 'txt').toLowerCase();
+  const title = detectBookTitle(text, safeSourceName, options.preferredTitle);
   const dateIndexes = headingIndexes(lines, DATE_HEADING_RE);
   const chapterIndexes = headingIndexes(lines, CHAPTER_HEADING_RE);
   const mode = dateIndexes.length >= 2 ? 'date' : chapterIndexes.length >= 2 ? 'chapter' : 'single';
@@ -111,13 +115,57 @@ function splitReadingText(rawText, sourceName = '未命名书籍.txt') {
 
   return {
     title,
-    source_name: safeSourceName.slice(0, 240) || `${title}.txt`,
-    source_kind: 'txt',
+    source_name: safeSourceName.slice(0, 240) || `${title}.${sourceKind}`,
+    source_kind: sourceKind,
     split_mode: mode,
     total_chars: text.length,
     chapter_count: chapters.length,
     chapters,
   };
+}
+
+function chaptersFromEpub(extracted, sourceName) {
+  const safeSourceName = normalizeMultipartFilename(sourceName, '未命名书籍.epub');
+  const title = cleanBookTitle(extracted.title, cleanBookTitle(safeSourceName));
+  let totalChars = 0;
+  const chapters = [];
+  for (const row of Array.isArray(extracted.chapters) ? extracted.chapters : []) {
+    const content = normalizeReadingText(row?.content);
+    if (!content) continue;
+    totalChars += content.length;
+    if (totalChars > MAX_READING_CHARS) throw new Error('这本书太大了，先拆成几本再导入会更稳。');
+    chapters.push({
+      chapter_index: chapters.length,
+      title: cleanBookTitle(row?.title, `第 ${chapters.length + 1} 章`),
+      content,
+      char_count: content.length,
+    });
+    if (chapters.length >= MAX_READING_CHAPTERS) break;
+  }
+  if (!chapters.length) throw new Error('这个 EPUB 里没有读到正文，带 DRM 的电子书暂时无法导入。');
+  return {
+    title,
+    source_name: safeSourceName.slice(0, 240) || `${title}.epub`,
+    source_kind: 'epub',
+    split_mode: 'epub',
+    total_chars: totalChars,
+    chapter_count: chapters.length,
+    chapters,
+  };
+}
+
+async function parseReadingFile(file) {
+  const name = normalizeMultipartFilename(file?.originalname, '未命名书籍.txt');
+  const extracted = await extractReadingFile(file, {
+    maxChapters: MAX_READING_CHAPTERS,
+    maxChars: MAX_READING_CHARS,
+  });
+  if (extracted.kind === 'epub' && extracted.chapters) return chaptersFromEpub(extracted, name);
+  const text = extracted.text == null ? decodeReadingFile(file.buffer) : extracted.text;
+  return splitReadingText(text, name, {
+    sourceKind: extracted.kind,
+    preferredTitle: extracted.title,
+  });
 }
 
 function countReplacementCharacters(value) {
@@ -180,13 +228,7 @@ function createReadingStore(supabase) {
   }
 
   async function importBook(file) {
-    const name = normalizeMultipartFilename(file?.originalname, '未命名书籍.txt');
-    const lowerName = name.toLowerCase();
-    const mime = String(file?.mimetype || '').toLowerCase();
-    if (!lowerName.endsWith('.txt') && !lowerName.endsWith('.md') && !mime.startsWith('text/')) {
-      throw new Error('第一阶段先支持 TXT 或 Markdown 文本。');
-    }
-    const parsed = splitReadingText(decodeReadingFile(file.buffer), name);
+    const parsed = await parseReadingFile(file);
     const { data: book, error: bookError } = await supabase.from('reading_books').insert({
       title: parsed.title,
       source_name: parsed.source_name,
@@ -259,7 +301,7 @@ function registerReadingRoutes(app, { supabase, upload }) {
 
   app.post('/reading/books/import', upload.single('file'), async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ error: '先选择一本 TXT。' });
+      if (!req.file) return res.status(400).json({ error: '先选择一本书。' });
       res.json(await store.importBook(req.file));
     } catch (error) {
       res.status(400).json({ error: error.message || '这本书没有导入成功' });
@@ -311,6 +353,8 @@ module.exports = {
   normalizeReadingText,
   decodeReadingFile,
   splitReadingText,
+  chaptersFromEpub,
+  parseReadingFile,
   normalizeProgress,
   createReadingStore,
   registerReadingRoutes,
