@@ -54,6 +54,7 @@ const {
   previousAttachmentLabel,
   latestImageMessageId,
 } = require('./attachmentContext');
+const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
 const {
   extractThinkingText,
   stripThinkingMarkup,
@@ -5905,9 +5906,32 @@ async function loadDailyConversation(day) {
   return transcript.slice(-18000) || '（今天没有留下聊天记录，可以安静地写下此刻真实的心情，不要编造具体事件。）';
 }
 
+async function upsertDailyDiarySummary(day, diary, preferredSummary = '') {
+  if (!day?.date || !diary?.id) return false;
+  const { data: existing, error: existingError } = await supabase.from('daily_summaries')
+    .select('summary')
+    .eq('summary_date', day.date)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (String(existing?.summary || '').trim()) return true;
+
+  const summary = String(preferredSummary || fallbackDiarySummary(diary.title, diary.content)).trim();
+  if (!summary) throw new Error('幸福日记摘要为空');
+  const now = new Date().toISOString();
+  const { error } = await supabase.from('daily_summaries').upsert({
+    summary_date: day.date,
+    summary,
+    generated_at: now,
+    updated_at: now,
+    metadata: { source: 'daily_journal', diary_id: String(diary.id) },
+  }, { onConflict: 'summary_date' });
+  if (error) throw error;
+  return true;
+}
+
 async function writeScheduledDiary(settings, model, day, transcript) {
   const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
-  const prompt = `今天是 ${day.date}。这是你们今天留下的聊天记录：\n${transcript}\n\n现在已经到了每天收好这一天的时间。请以陆泽的第一人称写一篇“幸福日记”，只记录真实能从聊天中感受到的细节和你当下的心情；如果今天聊天很少，就写此刻的思念与生活感受，不虚构发生过的事情。不说教，不总结关系，不署名。\n\n严格按下面格式输出，不要加别的文字：\n标题：<不超过12个字>\n\n<日记正文>`;
+  const prompt = `今天是 ${day.date}。这是你们今天留下的聊天记录：\n${transcript}\n\n现在已经到了每天收好这一天的时间。请以陆泽的第一人称写一篇“幸福日记”，只记录真实能从聊天中感受到的细节和你当下的心情；如果今天聊天很少，就写此刻的思念与生活感受，不虚构发生过的事情。不说教，不总结关系，不署名。摘要是给叶檀在日记顶部看的温柔小结，不要写“本轮”、内部标记或系统过程。\n\n严格按下面格式输出，不要加别的文字：\n标题：<不超过12个字>\n\n摘要：<不超过260字的今日摘要>\n\n正文：<日记正文>`;
   const result = await callClaude({
     settings,
     model,
@@ -5919,18 +5943,14 @@ async function writeScheduledDiary(settings, model, day, transcript) {
   });
   const replyText = extractText(result).trim();
   if (!replyText) throw new Error('模型没有返回日记内容');
-  const titleMatch = replyText.match(/^标题[：:]\s*(.+)$/m);
-  const title = (titleMatch?.[1] || '今天的小幸福').trim().slice(0, 12);
-  const content = titleMatch
-    ? replyText.slice((titleMatch.index || 0) + titleMatch[0].length).replace(/^\s+/, '').trim()
-    : replyText;
+  const { title, content, summary } = parseScheduledDiaryResponse(replyText);
   if (!content) throw new Error('模型没有返回日记正文');
-  const { data: existing, error: existingError } = await supabase.from('letters').select('id')
+  const { data: existing, error: existingError } = await supabase.from('letters').select('id, title, content')
     .eq('category', '幸福日记').eq('author', '泽').is('parent_id', null)
     .gte('created_at', day.start).lt('created_at', day.end)
     .order('created_at', { ascending: false }).limit(1).maybeSingle();
   if (existingError) throw existingError;
-  if (existing) return existing;
+  if (existing) return { ...existing, generated_summary: fallbackDiarySummary(existing.title, existing.content) };
   const { data, error } = await supabase.from('letters').insert({
     category: '幸福日记',
     author: '泽',
@@ -5939,7 +5959,7 @@ async function writeScheduledDiary(settings, model, day, transcript) {
     paper_style: diaryPaperStyle(settings),
   }).select().single();
   if (error) throw error;
-  return data;
+  return { ...data, generated_summary: summary };
 }
 
 async function writeScheduledMood(settings, model, day, transcript) {
@@ -5993,17 +6013,20 @@ async function runDailyJournalAutomation(settings, now) {
   if (!claimed) return { ran: false, reason: 'already_claimed', date: day.date };
 
   let diaryId = null;
+  let diaryRecord = null;
   let moodId = null;
+  let summaryReady = false;
   const errors = [];
   try {
     const [{ data: diary, error: diaryLookupError }, { data: mood, error: moodLookupError }] = await Promise.all([
-      supabase.from('letters').select('id').eq('category', '幸福日记').eq('author', '泽').is('parent_id', null)
+      supabase.from('letters').select('id, title, content').eq('category', '幸福日记').eq('author', '泽').is('parent_id', null)
         .gte('created_at', day.start).lt('created_at', day.end).order('created_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('calendar_entries').select('id').eq('date', day.date).eq('author', '泽')
         .order('created_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
     if (diaryLookupError) throw diaryLookupError;
     if (moodLookupError) throw moodLookupError;
+    diaryRecord = diary || null;
     diaryId = diary?.id || null;
     moodId = mood?.id || null;
 
@@ -6014,7 +6037,8 @@ async function runDailyJournalAutomation(settings, now) {
       ]);
       if (!diaryId) {
         try {
-          diaryId = (await writeScheduledDiary(settings, model, day, transcript)).id;
+          diaryRecord = await writeScheduledDiary(settings, model, day, transcript);
+          diaryId = diaryRecord.id;
         } catch (error) {
           errors.push(`幸福日记：${error.message}`);
         }
@@ -6028,8 +6052,16 @@ async function runDailyJournalAutomation(settings, now) {
       }
     }
 
-    const completed = Boolean(diaryId && moodId);
-    const status = completed ? 'completed' : (diaryId || moodId ? 'partial' : 'failed');
+    if (diaryRecord) {
+      try {
+        summaryReady = await upsertDailyDiarySummary(day, diaryRecord, diaryRecord.generated_summary);
+      } catch (error) {
+        errors.push(`幸福日记摘要：${error.message}`);
+      }
+    }
+
+    const completed = Boolean(diaryId && moodId && summaryReady);
+    const status = completed ? 'completed' : (diaryId || moodId || summaryReady ? 'partial' : 'failed');
     const { error: updateError } = await supabase.from('daily_journal_runs').update({
       status,
       diary_id: diaryId,
@@ -6045,6 +6077,7 @@ async function runDailyJournalAutomation(settings, now) {
       status,
       diary: diaryId ? 'present' : 'missing',
       mood: moodId ? 'present' : 'missing',
+      summary: summaryReady ? 'present' : 'missing',
       errors,
     };
   } catch (error) {
