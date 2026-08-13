@@ -21,6 +21,21 @@ npm start
 - `APP_PASSWORD`：OurHome 登录密码。
 - `APP_TOKEN_SECRET`：登录令牌签名密钥，建议至少 32 个随机字节。
 
+## 图片存储与 30 天保留
+
+部署环境配置阿里云 OSS 凭据，并把 `OURHOME_OSS_STORAGE_MODE` 设为 `primary` 后，新文件只写入私有 OSS。服务启动后会把仍需保留的旧文件分批回填到 OSS；整个回填过程只复制和核验，不删除 Supabase 源文件，失败后可以安全重试。
+
+普通聊天图片满 30 天后，只有在 `messages.attachment_summary` 已经保存可复用的识图分析时才会删除图片字节。相册/照片记忆、头像和背景、收藏、时光信差以及 Toybox 引用的文件会自动加入保护集合。删除后聊天文字与识图分析继续保留；缺少分析的旧图也会继续保留。
+
+手工检查迁移时默认只做 dry-run，并自动跳过已到期、可安全清理的普通聊天图片：
+
+```bash
+npm run migrate:storage:dry
+npm run migrate:storage:apply
+```
+
+只有显式追加 `--all` 才会连已到期普通图片一起复制。生产环境保持 `OURHOME_SUPABASE_STORAGE_MIRROR=0`，避免新文件继续占用 Supabase Storage。
+
 API 密钥不再需要放入部署平台：登录 OurHome 后，在“设置 → API 站点档案”里保存即可。密钥正文存于 Supabase Vault，浏览器只能看到“已保存”状态。
 
 推送通知默认会在首次启动时生成一对新的 VAPID 密钥，并加密保存到 Supabase Vault，后续部署会继续使用同一对密钥。也可以用环境变量 `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY` 显式覆盖。手动生成方式：

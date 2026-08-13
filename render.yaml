@@ -10,6 +10,24 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: OURHOME_OSS_STORAGE_MODE
+        value: primary
+      - key: ALIYUN_OSS_REGION
+        value: oss-cn-beijing
+      - key: ALIYUN_OSS_ENDPOINT
+        value: https://oss-cn-beijing.aliyuncs.com
+      - key: ALIYUN_OSS_BUCKET
+        sync: false
+      - key: ALIYUN_OSS_ACCESS_KEY_ID
+        sync: false
+      - key: ALIYUN_OSS_ACCESS_KEY_SECRET
+        sync: false
+      - key: OURHOME_SUPABASE_STORAGE_MIRROR
+        value: "0"
+      - key: OURHOME_OSS_BACKFILL_BATCH
+        value: "32"
+      - key: CHAT_PHOTO_RETENTION_DAYS
+        value: "30"
       - key: APP_PASSWORD
         sync: false
       - key: APP_TOKEN_SECRET

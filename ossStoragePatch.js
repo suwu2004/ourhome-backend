@@ -67,7 +67,9 @@ function installOssStorageGuard(supabase, bucket = privateUploads.DEFAULT_BUCKET
         await oss.putObject(path, body, {
           contentType: options?.contentType || body?.type || 'application/octet-stream',
         });
-        if (primaryCall) queueMirror(`Supabase ${method} ${path}`, () => primaryCall(path, body, options));
+        if (primaryCall && oss.mirrorToSupabase) {
+          queueMirror(`Supabase ${method} ${path}`, () => primaryCall(path, body, options));
+        }
         return { data: { path: String(path), fullPath: `${bucket}/${path}` }, error: null };
       } catch (error) {
         return { data: null, error: storageError(error) };
@@ -86,7 +88,7 @@ function installOssStorageGuard(supabase, bucket = privateUploads.DEFAULT_BUCKET
         }
         try {
           await oss.removeObjects(paths);
-          queueMirror('Supabase remove objects', () => originalRemove(paths));
+          if (oss.mirrorToSupabase) queueMirror('Supabase remove objects', () => originalRemove(paths));
           return { data: (paths || []).map(name => ({ name })), error: null };
         } catch (error) {
           return { data: null, error: storageError(error) };
