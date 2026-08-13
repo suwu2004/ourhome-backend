@@ -17,6 +17,61 @@ function storageError(error) {
   return wrapped;
 }
 
+async function resolveOssObjects(oss, paths) {
+  const unique = [...new Set((paths || []).map(path => String(path || '')).filter(Boolean))];
+  const present = new Set();
+  await Promise.all(unique.map(async path => {
+    try {
+      if (await oss.headObject(path)) present.add(path);
+    } catch {
+      // A target probe must never hide the still-readable Supabase source.
+    }
+  }));
+  return present;
+}
+
+function createSignedUrlBridge({ oss, originalSignOne, originalSignMany }) {
+  async function signOne(path, expiresIn) {
+    const present = await resolveOssObjects(oss, [path]);
+    if (!present.has(String(path))) return originalSignOne(path, expiresIn);
+    try {
+      return { data: { signedUrl: oss.signedUrl(path, expiresIn), path }, error: null };
+    } catch (error) {
+      console.warn('[oss-storage] signed URL fallback:', safeMessage(error));
+      return originalSignOne(path, expiresIn);
+    }
+  }
+
+  async function signMany(paths, expiresIn) {
+    const ordered = (paths || []).map(path => String(path || ''));
+    const present = await resolveOssObjects(oss, ordered);
+    const missing = ordered.filter(path => path && !present.has(path));
+    let fallback = { data: [], error: null };
+    if (missing.length) {
+      try {
+        fallback = await originalSignMany(missing, expiresIn);
+      } catch (error) {
+        fallback = { data: [], error };
+      }
+    }
+    const fallbackByPath = new Map((fallback?.data || []).map((item, index) => [
+      String(item?.path || missing[index] || ''),
+      item,
+    ]));
+    return {
+      data: ordered.map(path => {
+        if (present.has(path)) {
+          return { path, signedUrl: oss.signedUrl(path, expiresIn), error: null };
+        }
+        return fallbackByPath.get(path) || { path, signedUrl: null, error: fallback?.error || 'source signing failed' };
+      }),
+      error: fallback?.error || null,
+    };
+  }
+
+  return { signOne, signMany };
+}
+
 function installOssStorageGuard(supabase, bucket = privateUploads.DEFAULT_BUCKET) {
   originalInstallPrivateBucketGuard(supabase, bucket);
 
@@ -51,6 +106,9 @@ function installOssStorageGuard(supabase, bucket = privateUploads.DEFAULT_BUCKET
     const originalList = typeof fileApi.list === 'function' ? fileApi.list.bind(fileApi) : null;
     const originalSignOne = typeof fileApi.createSignedUrl === 'function' ? fileApi.createSignedUrl.bind(fileApi) : null;
     const originalSignMany = typeof fileApi.createSignedUrls === 'function' ? fileApi.createSignedUrls.bind(fileApi) : null;
+    const signedUrlBridge = oss.primary && originalSignOne
+      ? createSignedUrlBridge({ oss, originalSignOne, originalSignMany })
+      : null;
 
     async function write(method, path, body, options = {}) {
       const primaryCall = method === 'update' ? originalUpdate : originalUpload;
@@ -97,30 +155,15 @@ function installOssStorageGuard(supabase, bucket = privateUploads.DEFAULT_BUCKET
     }
 
     if (originalSignOne) {
-      fileApi.createSignedUrl = async (path, expiresIn) => {
-        if (!oss.primary) return originalSignOne(path, expiresIn);
-        try {
-          return { data: { signedUrl: oss.signedUrl(path, expiresIn), path }, error: null };
-        } catch (error) {
-          console.warn('[oss-storage] signed URL fallback:', safeMessage(error));
-          return originalSignOne(path, expiresIn);
-        }
-      };
+      fileApi.createSignedUrl = (path, expiresIn) => oss.primary
+        ? signedUrlBridge.signOne(path, expiresIn)
+        : originalSignOne(path, expiresIn);
     }
 
     if (originalSignMany) {
-      fileApi.createSignedUrls = async (paths, expiresIn) => {
-        if (!oss.primary) return originalSignMany(paths, expiresIn);
-        try {
-          return {
-            data: (paths || []).map(path => ({ path, signedUrl: oss.signedUrl(path, expiresIn), error: null })),
-            error: null,
-          };
-        } catch (error) {
-          console.warn('[oss-storage] signed URLs fallback:', safeMessage(error));
-          return originalSignMany(paths, expiresIn);
-        }
-      };
+      fileApi.createSignedUrls = (paths, expiresIn) => oss.primary
+        ? signedUrlBridge.signMany(paths, expiresIn)
+        : originalSignMany(paths, expiresIn);
     }
 
     if (originalDownload) {
@@ -156,4 +199,4 @@ function installOssStorageGuard(supabase, bucket = privateUploads.DEFAULT_BUCKET
 
 privateUploads.installPrivateBucketGuard = installOssStorageGuard;
 
-module.exports = { installOssStorageGuard };
+module.exports = { createSignedUrlBridge, installOssStorageGuard, resolveOssObjects };

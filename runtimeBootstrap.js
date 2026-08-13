@@ -124,6 +124,7 @@ try {
         photo_retention: 'chat-images-30d-delete-bytes-keep-analysis-v4',
         storage_egress: '24h-signed-30d-cache-v1',
         object_storage: `aliyun-oss-${ossStorageHealthStatus()}-v1`,
+        object_storage_read_fallback: 'verified-target-or-supabase-source-v1',
         object_storage_backfill: `retained-files-${ossBackfillStatus()}-v1`,
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,
       };
