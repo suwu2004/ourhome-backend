@@ -22,6 +22,7 @@ const {
   migrateOne,
   selectRetainedObjects,
 } = require('../scripts/migrateSupabaseStorageToOss');
+const { createSignedUrlBridge } = require('../ossStoragePatch');
 
 function enabledConfig(mode = 'primary') {
   return {
@@ -104,6 +105,52 @@ test('OSS storage preserves paths, private caching and verification metadata', a
   assert.equal((await oss.getObject('chat/饭.jpg')).bytes.toString(), 'photo');
   assert.match(oss.signedUrl('chat/饭.jpg', 120), /expires=120/);
   assert.equal((await oss.listObjects())[0].name, 'chat/饭.jpg');
+});
+
+test('signed image reads stay on Supabase until each OSS object exists', async () => {
+  const sourceCalls = [];
+  const bridge = createSignedUrlBridge({
+    oss: {
+      async headObject(path) { return path === 'ready.jpg' ? { size: 5 } : null; },
+      signedUrl(path) { return `https://oss.example/${path}`; },
+    },
+    async originalSignOne(path) {
+      sourceCalls.push(path);
+      return { data: { path, signedUrl: `https://supabase.example/${path}` }, error: null };
+    },
+    async originalSignMany(paths) {
+      sourceCalls.push(...paths);
+      return {
+        data: paths.map(path => ({ path, signedUrl: `https://supabase.example/${path}`, error: null })),
+        error: null,
+      };
+    },
+  });
+
+  assert.equal((await bridge.signOne('waiting.jpg', 60)).data.signedUrl, 'https://supabase.example/waiting.jpg');
+  assert.equal((await bridge.signOne('ready.jpg', 60)).data.signedUrl, 'https://oss.example/ready.jpg');
+  const batch = await bridge.signMany(['ready.jpg', 'waiting.jpg'], 60);
+  assert.deepEqual(batch.data.map(item => item.signedUrl), [
+    'https://oss.example/ready.jpg',
+    'https://supabase.example/waiting.jpg',
+  ]);
+  assert.deepEqual(sourceCalls, ['waiting.jpg', 'waiting.jpg']);
+});
+
+test('OSS probe errors fall back to the Supabase image instead of returning a broken link', async () => {
+  const bridge = createSignedUrlBridge({
+    oss: {
+      async headObject() { throw new Error('temporary OSS probe failure'); },
+      signedUrl() { throw new Error('must not sign an unverified target'); },
+    },
+    async originalSignOne(path) {
+      return { data: { path, signedUrl: `https://supabase.example/${path}` }, error: null };
+    },
+    async originalSignMany(paths) {
+      return { data: paths.map(path => ({ path, signedUrl: `https://supabase.example/${path}` })), error: null };
+    },
+  });
+  assert.equal((await bridge.signOne('photo.jpg', 60)).data.signedUrl, 'https://supabase.example/photo.jpg');
 });
 
 test('migration CLI is dry-run by default and apply must be explicit', () => {
@@ -213,6 +260,7 @@ test('runtime uses OSS adapter and never exposes its credentials in health metad
   assert.match(bootstrap, /require\('\.\/ossStoragePatch'\)/);
   assert.match(bootstrap, /void probeOssStorage\(\)/);
   assert.match(bootstrap, /object_storage: `aliyun-oss-\$\{ossStorageHealthStatus\(\)\}-v1`/);
+  assert.match(bootstrap, /object_storage_read_fallback: 'verified-target-or-supabase-source-v1'/);
   assert.doesNotMatch(bootstrap, /ALIYUN_OSS_ACCESS_KEY_SECRET/);
   assert.match(patch, /const result = await primaryCall\(path, body, options\)/);
   assert.match(patch, /await oss\.putObject\(path, body/);
