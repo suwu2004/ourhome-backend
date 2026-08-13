@@ -20,15 +20,9 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
-// Install the dormant Aliyun OSS adapter before any runtime creates a protected
-// upload client. It starts in shadow mode and is promoted only after a verified,
-// no-delete migration; without explicit credentials this patch is a no-op.
-require('./ossStoragePatch');
-const { probeOssStorage } = require('./ossStorage');
-void probeOssStorage();
-// Once OSS is primary, retained legacy files are copied in small resumable
-// batches. This backfill never deletes a source object.
-const { ossBackfillStatus } = require('./ossBackfillPatch');
+// Supabase Pro is the sole live object store. Historical OSS migration modules
+// remain available for supervised recovery work, but production startup never
+// loads the adapter, probes Aliyun or starts a backfill timer.
 // A cached Render build can occasionally contain a stale index.html beside newer
 // hashed assets. Reject that incomplete shell before the front-door module resolves
 // its local directory, so the safe Vercel-origin fallback can provide one coherent build.
@@ -88,11 +82,10 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Aliyun OSS storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
-  const { ossStorageHealthStatus } = require('./ossStorage');
   const originalJson = express.response.json;
   express.response.json = function runtimeBootstrapJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
@@ -123,9 +116,8 @@ try {
         storage_failover: 'neon-object-spool-v1',
         photo_retention: 'chat-images-30d-delete-bytes-keep-analysis-v4',
         storage_egress: '24h-signed-30d-cache-v1',
-        object_storage: `aliyun-oss-${ossStorageHealthStatus()}-v1`,
-        object_storage_read_fallback: 'verified-target-or-supabase-source-v1',
-        object_storage_backfill: `retained-files-${ossBackfillStatus()}-v1`,
+        object_storage: 'supabase-pro-primary-v1',
+        object_storage_migration: 'aliyun-retired-source-retained-v1',
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,
       };
     }
