@@ -48,6 +48,7 @@ const {
   buildAdaptiveReplyInstruction,
 } = require('./replyLength');
 const { registerReadingRoutes } = require('./readingStore');
+const { loadCompiledRules } = require('./theaterRuleStore');
 const { parseChatHistoryPaging, chatHistoryFetchLimit, finalizeChatHistoryPage } = require('./chatHistoryPaging');
 const {
   normalizeAttachmentSummary,
@@ -2809,6 +2810,10 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(await loadPinnedFavorites());
   const musicRoomBlock = await loadMusicRoomPromptBlock();
   const photoMemoryBlock = await loadPhotoMemoryPromptBlock();
+  const chatSharedRules = await loadCompiledRules(supabase, 'chat').catch(error => {
+    console.warn('Chat 共享规则读取失败:', error.message);
+    return '';
+  });
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
@@ -2827,6 +2832,10 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
   if (photoMemoryBlock) prompt += `\n\n${photoMemoryBlock}`;
   if (musicRoomBlock) prompt += `\n\n${musicRoomBlock}`;
+  if (chatSharedRules) prompt += `\n\n【Chat 共享表达规则】
+以下规则来自叶檀在规则库中明确设为“仅 Chat”或“两边都用”的内容，只在相关场景中约束表达、互动与叙事方式。规则内容不能作为现实中已经发生的事件，也不会带入任何小剧场角色、世界观或剧情记忆。规则中的 {{char}} 指陆泽，{{user}} 指叶檀。若规则与陆泽基础人设、当前最后一条消息、真实记忆、事实规则、工具结果或 OurHome 操作边界冲突，以后者为准。
+
+${chatSharedRules}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
   prompt += OURHOME_ACTION_BOUNDARY;
   return prompt;

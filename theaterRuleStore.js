@@ -3,6 +3,7 @@ const MAX_RULE_TITLE_CHARS = 80;
 const MAX_RULE_CONTENT_CHARS = 20_000;
 const MAX_COMPILED_RULE_CHARS = 20_000;
 const LEGACY_RULE_CATEGORY = '小剧场通用规则';
+const RULE_SCOPES = ['theater', 'chat', 'both'];
 
 function cleanRuleText(value, max) {
   return String(value || '')
@@ -17,6 +18,17 @@ function cleanRuleTitle(value, fallback = '未命名规则') {
   return cleanRuleText(value, MAX_RULE_TITLE_CHARS).replace(/\n+/g, ' ') || fallback;
 }
 
+function normalizeRuleScope(value, fallback = 'theater') {
+  const scope = String(value || '').trim().toLowerCase();
+  return RULE_SCOPES.includes(scope) ? scope : fallback;
+}
+
+function ruleAppliesToScope(rule, scope = 'theater') {
+  const target = normalizeRuleScope(scope);
+  const ruleScope = normalizeRuleScope(rule?.apply_scope);
+  return ruleScope === 'both' || ruleScope === target;
+}
+
 function normalizeRuleInput(value = {}, { partial = false } = {}) {
   const normalized = {};
 
@@ -28,6 +40,9 @@ function normalizeRuleInput(value = {}, { partial = false } = {}) {
   }
   if (!partial || Object.prototype.hasOwnProperty.call(value, 'enabled')) {
     normalized.enabled = value.enabled !== false;
+  }
+  if (!partial || Object.prototype.hasOwnProperty.call(value, 'apply_scope')) {
+    normalized.apply_scope = normalizeRuleScope(value.apply_scope);
   }
   if (!partial || Object.prototype.hasOwnProperty.call(value, 'source_name')) {
     normalized.source_name = cleanRuleText(value.source_name, 240).replace(/\n+/g, ' ') || null;
@@ -53,9 +68,9 @@ function parseLegacyRulesContent(value) {
   }
 }
 
-function compileTheaterRules(rules = []) {
+function compileTheaterRules(rules = [], scope = 'theater') {
   const sections = (Array.isArray(rules) ? rules : [])
-    .filter(rule => rule?.enabled !== false && String(rule?.content || '').trim())
+    .filter(rule => rule?.enabled !== false && ruleAppliesToScope(rule, scope) && String(rule?.content || '').trim())
     .sort((a, b) => {
       const order = (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
       if (order) return order;
@@ -66,11 +81,32 @@ function compileTheaterRules(rules = []) {
   return cleanRuleText(sections.join('\n\n'), MAX_COMPILED_RULE_CHARS);
 }
 
+function compileChatRules(rules = []) {
+  return compileTheaterRules(rules, 'chat');
+}
+
+async function loadCompiledRules(supabase, scope = 'theater') {
+  const { data, error } = await supabase
+    .from('theater_rules')
+    .select('title, content, enabled, apply_scope, sort_order, created_at')
+    .eq('enabled', true)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true })
+    .limit(MAX_RULES);
+  if (error) {
+    // During a rolling deploy, an older database may briefly lack apply_scope.
+    // Chat must remain available until the migration reaches that environment.
+    if (['42703', 'PGRST204'].includes(error.code)) return '';
+    throw error;
+  }
+  return compileTheaterRules(data || [], scope);
+}
+
 function createTheaterRuleStore(supabase) {
   async function listRules() {
     const { data, error } = await supabase
       .from('theater_rules')
-      .select('id, title, content, enabled, sort_order, source_name, created_at, updated_at')
+      .select('id, title, content, enabled, apply_scope, sort_order, source_name, created_at, updated_at')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true })
       .limit(MAX_RULES);
@@ -101,6 +137,7 @@ function createTheaterRuleStore(supabase) {
         title: cleanRuleTitle(firstLine, '原有通用规则'),
         content,
         enabled: true,
+        apply_scope: 'theater',
         sort_order: 0,
         source_name: '从原通用规则迁移',
       })
@@ -273,9 +310,14 @@ module.exports = {
   MAX_COMPILED_RULE_CHARS,
   cleanRuleText,
   cleanRuleTitle,
+  RULE_SCOPES,
+  normalizeRuleScope,
+  ruleAppliesToScope,
   normalizeRuleInput,
   parseLegacyRulesContent,
   compileTheaterRules,
+  compileChatRules,
+  loadCompiledRules,
   createTheaterRuleStore,
   registerTheaterRuleRoutes,
 };
