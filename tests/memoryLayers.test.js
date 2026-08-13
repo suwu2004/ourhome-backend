@@ -15,6 +15,10 @@ const migration = fs.readFileSync(
   path.join(__dirname, '..', 'supabase', 'migrations', '20260806153000_layered_memory_system.sql'),
   'utf8',
 );
+const expiredStatusMigration = fs.readFileSync(
+  path.join(__dirname, '..', 'supabase', 'migrations', '20260813082000_allow_expired_memory_marks.sql'),
+  'utf8',
+);
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 test('记忆层级固定为临时、阶段、核心和归档', () => {
@@ -60,6 +64,12 @@ test('迁移保留旧记忆并提供提炼、过期和审计机制', () => {
   assert.match(migration, /status = 'expired'/);
   assert.doesNotMatch(migration, /delete\s+from\s+public\.memories/i);
   assert.doesNotMatch(migration, /delete\s+from\s+public\.memory_marks/i);
+});
+
+test('记忆标记约束接受后台整理使用的 expired 状态', () => {
+  assert.match(expiredStatusMigration, /memory_marks_status_check/);
+  assert.match(expiredStatusMigration, /'expired'/);
+  assert.doesNotMatch(expiredStatusMigration, /delete\s+from\s+public\.memory_marks/i);
 });
 
 test('生产启动先保护 Chat 幂等，再以 402 熔断保护 Supabase/Neon，最后加载记忆、token、原生思考、审计和省钱守卫', () => {
