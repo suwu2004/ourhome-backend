@@ -271,6 +271,8 @@ test('runtime uses Supabase only and never boots or probes the OSS adapter', () 
   assert.doesNotMatch(bootstrap, /ossBackfillPatch/);
   assert.match(bootstrap, /object_storage: 'supabase-pro-primary-v1'/);
   assert.match(bootstrap, /object_storage_migration: 'aliyun-retired-source-retained-v1'/);
+  assert.match(bootstrap, /image_pipeline: 'sharp-0\.35\.3-libvips-8\.18\.3-v1'/);
+  assert.match(bootstrap, /frontend_bundle: 'chat-refresh-theater-scroll-guard-v2'/);
   assert.doesNotMatch(bootstrap, /ALIYUN_OSS_ACCESS_KEY_SECRET/);
   assert.match(render, /OURHOME_OBJECT_STORAGE_PRIMARY\s*\n\s*value: supabase/);
   assert.match(render, /OURHOME_OSS_STORAGE_MODE\s*\n\s*value: disabled/);
