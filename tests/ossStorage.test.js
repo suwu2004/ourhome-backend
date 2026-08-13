@@ -14,11 +14,13 @@ const {
 } = require('../ossStorage');
 const {
   HASH_HEADER,
+  SOURCE_UPDATED_HEADER,
   parseArgs,
   sha256,
   headerValue,
   listSupabaseObjects,
   migrateOne,
+  selectRetainedObjects,
 } = require('../scripts/migrateSupabaseStorageToOss');
 
 function enabledConfig(mode = 'primary') {
@@ -27,6 +29,7 @@ function enabledConfig(mode = 'primary') {
     configured: true,
     enabled: true,
     primary: mode === 'primary',
+    mirrorToSupabase: false,
     region: 'oss-cn-hangzhou',
     accessKeyId: 'id-secret',
     accessKeySecret: 'key-secret',
@@ -106,9 +109,12 @@ test('OSS storage preserves paths, private caching and verification metadata', a
 test('migration CLI is dry-run by default and apply must be explicit', () => {
   assert.deepEqual(parseArgs([]), {
     apply: false,
+    includeExpired: false,
     bucket: 'uploads',
     concurrency: 2,
     limit: Infinity,
+    batch: Infinity,
+    retentionDays: 30,
   });
   assert.equal(parseArgs(['--apply', '--concurrency', '9', '--limit', '3']).apply, true);
   assert.equal(parseArgs(['--apply', '--concurrency', '9', '--limit', '3']).concurrency, 5);
@@ -150,6 +156,57 @@ test('migration verifies hash and skips an already-copied target', async () => {
   assert.equal(writes, 0);
 });
 
+test('migration resumes without downloading an object stamped from the same source version', async () => {
+  const bytes = Buffer.from('photo');
+  const updatedAt = '2026-08-12T03:04:05.000Z';
+  const fileApi = { async download() { throw new Error('verified marker should avoid a second download'); } };
+  const result = await migrateOne({
+    fileApi,
+    oss: {
+      async headObject() {
+        return {
+          size: bytes.length,
+          headers: {
+            [HASH_HEADER]: sha256(bytes),
+            [SOURCE_UPDATED_HEADER]: updatedAt,
+          },
+        };
+      },
+    },
+    source: { path: 'a.jpg', size: bytes.length, contentType: 'image/jpeg', updatedAt },
+    apply: true,
+  });
+  assert.equal(result.action, 'verified-marker');
+});
+
+test('retained migration skips only expired ordinary images with saved analyses', async () => {
+  const base = 'https://demo.supabase.co/storage/v1/object/public/uploads/';
+  const rows = [{
+    id: 1,
+    created_at: '2026-06-01T00:00:00.000Z',
+    attachment_url: `${base}expired.jpg`,
+    attachment_type: 'image/jpeg',
+    attachment_name: 'expired.jpg',
+    attachment_summary: '已经确认的画面描述',
+  }];
+  const supabase = {
+    from(table) {
+      if (table === 'messages') return { select() { return { async not() { return { data: rows, error: null }; } }; } };
+      return { async select() { return { data: [], error: null }; } };
+    },
+  };
+  const inventory = [
+    { path: 'expired.jpg', size: 10 },
+    { path: 'album.jpg', size: 20 },
+  ];
+  const selection = await selectRetainedObjects(supabase, inventory, {
+    retentionDays: 30,
+    now: new Date('2026-08-12T00:00:00.000Z'),
+  });
+  assert.deepEqual(selection.selected.map(item => item.path), ['album.jpg']);
+  assert.deepEqual(selection.expired.map(item => item.path), ['expired.jpg']);
+});
+
 test('runtime uses OSS adapter and never exposes its credentials in health metadata', () => {
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
   const patch = fs.readFileSync(path.join(__dirname, '..', 'ossStoragePatch.js'), 'utf8');
@@ -159,6 +216,7 @@ test('runtime uses OSS adapter and never exposes its credentials in health metad
   assert.doesNotMatch(bootstrap, /ALIYUN_OSS_ACCESS_KEY_SECRET/);
   assert.match(patch, /const result = await primaryCall\(path, body, options\)/);
   assert.match(patch, /await oss\.putObject\(path, body/);
+  assert.match(patch, /oss\.mirrorToSupabase/);
   assert.match(patch, /queueMirror\(`Supabase \$\{method\}/);
 });
 

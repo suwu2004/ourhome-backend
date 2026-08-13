@@ -2169,6 +2169,11 @@ async function buildApiMessages(history) {
     const m = list[i];
     const isLatest = i === lastIndex;
     const role = m.role === 'user' ? 'user' : 'assistant';
+    if (!m.attachment_url && m.attachment_type === 'image/removed' && m.attachment_summary) {
+      const label = previousAttachmentLabel(m);
+      result.push({ role, content: m.content ? `${m.content}\n${label}` : label });
+      continue;
+    }
     if (m.attachment_url) {
       if (!isLatest) {
         // 不是最新一条，不重新下载原文件，只留个文字提示让陆泽知道这里曾经有个附件

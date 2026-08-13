@@ -18,12 +18,14 @@ function readOssStorageConfig(env = process.env) {
   const bucket = clean(env.ALIYUN_OSS_BUCKET);
   const endpoint = clean(env.ALIYUN_OSS_ENDPOINT);
   const mode = normalizeMode(env.OURHOME_OSS_STORAGE_MODE);
+  const mirrorToSupabase = clean(env.OURHOME_SUPABASE_STORAGE_MIRROR) === '1';
   const configured = Boolean(region && accessKeyId && accessKeySecret && bucket);
   return {
     mode,
     configured,
     enabled: mode !== 'disabled' && configured,
     primary: mode === 'primary' && configured,
+    mirrorToSupabase,
     region,
     accessKeyId,
     accessKeySecret,
@@ -150,6 +152,7 @@ function createOssStorage({
   return {
     enabled: config.enabled,
     primary: config.primary,
+    mirrorToSupabase: config.mirrorToSupabase,
     mode: config.mode,
     configured: config.configured,
     bucket: config.bucket,

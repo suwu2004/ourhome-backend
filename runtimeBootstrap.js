@@ -26,6 +26,9 @@ require('./backgroundAiCostGuardPatch');
 require('./ossStoragePatch');
 const { probeOssStorage } = require('./ossStorage');
 void probeOssStorage();
+// Once OSS is primary, retained legacy files are copied in small resumable
+// batches. This backfill never deletes a source object.
+const { ossBackfillStatus } = require('./ossBackfillPatch');
 // A cached Render build can occasionally contain a stale index.html beside newer
 // hashed assets. Reject that incomplete shell before the front-door module resolves
 // its local directory, so the safe Vercel-origin fallback can provide one coherent build.
@@ -48,9 +51,9 @@ require('./luzeLearningResiliencePatch');
 // provider latency (or had no practical cap). Extend/cap only those exact calls;
 // never retry them here, so this guard cannot create an extra provider charge.
 require('./runtimeTimeoutGuardPatch');
-// After 30 days, large ordinary chat photos are compressed in place. Durable
-// features (photo memories, avatars/backgrounds, favorites or Toybox) are skipped.
-// This keeps the conversation visible and never calls an AI provider.
+// After 30 days, ordinary chat photo bytes are removed only when a durable image
+// analysis already exists. Photo memories, avatars/backgrounds, favorites and
+// Toybox assets are protected. The conversation keeps the analysis text.
 require('./photoRetentionPatch');
 
 // The rolling ledger runs after the cost guards. Its default path is local-first;
@@ -118,9 +121,10 @@ try {
         neon_replay: 'primary-probe-idempotent-v1',
         api_model_catalog: 'saved-model-fallback-v1',
         storage_failover: 'neon-object-spool-v1',
-        photo_retention: 'chat-images-30d-preserving-compression-v3-retry',
+        photo_retention: 'chat-images-30d-delete-bytes-keep-analysis-v4',
         storage_egress: '24h-signed-30d-cache-v1',
         object_storage: `aliyun-oss-${ossStorageHealthStatus()}-v1`,
+        object_storage_backfill: `retained-files-${ossBackfillStatus()}-v1`,
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,
       };
     }
