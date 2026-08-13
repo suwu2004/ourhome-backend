@@ -119,7 +119,7 @@ try {
         object_storage: 'supabase-pro-primary-v1',
         object_storage_migration: 'aliyun-retired-source-retained-v1',
         image_pipeline: 'sharp-0.35.3-libvips-8.18.3-v1',
-        frontend_bundle: 'chat-refresh-theater-scroll-guard-v2',
+        frontend_bundle: 'chat-refresh-right-theater-scroll-guard-v3',
         render_frontdoor: `home-${renderFrontdoorPatch.renderFrontdoorStatus()}-v3-native-response`,
       };
     }
