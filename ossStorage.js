@@ -12,15 +12,23 @@ function normalizeMode(value) {
 }
 
 function readOssStorageConfig(env = process.env) {
+  // Supabase is the safe default and the only active provider in production.
+  // A stale OURHOME_OSS_STORAGE_MODE value (or retained credentials in Render)
+  // must never be enough to wake the OSS client back up. Re-enabling OSS is a
+  // deliberate two-key operation for a future, supervised migration only.
+  const selectedProvider = clean(env.OURHOME_OBJECT_STORAGE_PRIMARY).toLowerCase() || 'supabase';
   const region = clean(env.ALIYUN_OSS_REGION);
   const accessKeyId = clean(env.ALIYUN_OSS_ACCESS_KEY_ID);
   const accessKeySecret = clean(env.ALIYUN_OSS_ACCESS_KEY_SECRET);
   const bucket = clean(env.ALIYUN_OSS_BUCKET);
   const endpoint = clean(env.ALIYUN_OSS_ENDPOINT);
-  const mode = normalizeMode(env.OURHOME_OSS_STORAGE_MODE);
+  const requestedMode = normalizeMode(env.OURHOME_OSS_STORAGE_MODE);
+  const mode = selectedProvider === 'oss' ? requestedMode : 'disabled';
   const mirrorToSupabase = clean(env.OURHOME_SUPABASE_STORAGE_MIRROR) === '1';
   const configured = Boolean(region && accessKeyId && accessKeySecret && bucket);
   return {
+    selectedProvider,
+    requestedMode,
     mode,
     configured,
     enabled: mode !== 'disabled' && configured,

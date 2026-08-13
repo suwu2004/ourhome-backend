@@ -26,6 +26,8 @@ const { createSignedUrlBridge } = require('../ossStoragePatch');
 
 function enabledConfig(mode = 'primary') {
   return {
+    selectedProvider: 'oss',
+    requestedMode: mode,
     mode,
     configured: true,
     enabled: true,
@@ -39,10 +41,10 @@ function enabledConfig(mode = 'primary') {
   };
 }
 
-test('OSS integration defaults to disabled and waits safely for incomplete credentials', () => {
+test('Supabase remains primary even when stale OSS mode and credentials survive', () => {
   assert.equal(readOssStorageConfig({}).enabled, false);
   assert.equal(ossStorageStatus({}), 'disabled');
-  assert.equal(ossStorageStatus({ OURHOME_OSS_STORAGE_MODE: 'shadow' }), 'awaiting-credentials');
+  assert.equal(ossStorageStatus({ OURHOME_OSS_STORAGE_MODE: 'shadow' }), 'disabled');
 
   const env = {
     OURHOME_OSS_STORAGE_MODE: 'primary',
@@ -51,6 +53,12 @@ test('OSS integration defaults to disabled and waits safely for incomplete crede
     ALIYUN_OSS_ACCESS_KEY_SECRET: 'secret',
     ALIYUN_OSS_BUCKET: 'bucket',
   };
+  assert.equal(readOssStorageConfig(env).selectedProvider, 'supabase');
+  assert.equal(readOssStorageConfig(env).requestedMode, 'primary');
+  assert.equal(readOssStorageConfig(env).primary, false);
+  assert.equal(ossStorageStatus(env), 'disabled');
+
+  env.OURHOME_OBJECT_STORAGE_PRIMARY = 'oss';
   assert.equal(readOssStorageConfig(env).primary, true);
   assert.equal(ossStorageStatus(env), 'primary');
 });
@@ -58,6 +66,7 @@ test('OSS integration defaults to disabled and waits safely for incomplete crede
 test('OSS read-only probe reports readiness without writing an object', async () => {
   let lists = 0;
   const env = {
+    OURHOME_OBJECT_STORAGE_PRIMARY: 'oss',
     OURHOME_OSS_STORAGE_MODE: 'shadow',
     ALIYUN_OSS_REGION: 'oss-cn-beijing',
     ALIYUN_OSS_ACCESS_KEY_ID: 'id',
@@ -254,18 +263,18 @@ test('retained migration skips only expired ordinary images with saved analyses'
   assert.deepEqual(selection.expired.map(item => item.path), ['expired.jpg']);
 });
 
-test('runtime uses OSS adapter and never exposes its credentials in health metadata', () => {
+test('runtime uses Supabase only and never boots or probes the OSS adapter', () => {
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
-  const patch = fs.readFileSync(path.join(__dirname, '..', 'ossStoragePatch.js'), 'utf8');
-  assert.match(bootstrap, /require\('\.\/ossStoragePatch'\)/);
-  assert.match(bootstrap, /void probeOssStorage\(\)/);
-  assert.match(bootstrap, /object_storage: `aliyun-oss-\$\{ossStorageHealthStatus\(\)\}-v1`/);
-  assert.match(bootstrap, /object_storage_read_fallback: 'verified-target-or-supabase-source-v1'/);
+  const render = fs.readFileSync(path.join(__dirname, '..', 'render.yaml'), 'utf8');
+  assert.doesNotMatch(bootstrap, /require\('\.\/ossStoragePatch'\)/);
+  assert.doesNotMatch(bootstrap, /probeOssStorage/);
+  assert.doesNotMatch(bootstrap, /ossBackfillPatch/);
+  assert.match(bootstrap, /object_storage: 'supabase-pro-primary-v1'/);
+  assert.match(bootstrap, /object_storage_migration: 'aliyun-retired-source-retained-v1'/);
   assert.doesNotMatch(bootstrap, /ALIYUN_OSS_ACCESS_KEY_SECRET/);
-  assert.match(patch, /const result = await primaryCall\(path, body, options\)/);
-  assert.match(patch, /await oss\.putObject\(path, body/);
-  assert.match(patch, /oss\.mirrorToSupabase/);
-  assert.match(patch, /queueMirror\(`Supabase \$\{method\}/);
+  assert.match(render, /OURHOME_OBJECT_STORAGE_PRIMARY\s*\n\s*value: supabase/);
+  assert.match(render, /OURHOME_OSS_STORAGE_MODE\s*\n\s*value: disabled/);
+  assert.doesNotMatch(render, /ALIYUN_OSS_ACCESS_KEY/);
 });
 
 test('hash header lookup is case-insensitive', () => {
