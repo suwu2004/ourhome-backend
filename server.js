@@ -2870,7 +2870,7 @@ ${chatSharedRules}`;
 
 // 跑一轮"可能带工具调用"的对话，直到陆泽不再调用工具为止——
 // 关键点：每一轮都要重新把工具列表带上，不然他读完东西之后想接着写，会发现手里没工具了
-async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, toolHandlers, gemini }) {
+async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messages, thinkingParam, toolsParam, toolHandlers, gemini, purpose }) {
   const MAX_TOOL_ROUNDS = 5;
   let currentMessages = messages;
   const textToolBridge = buildTextToolBridge(toolsParam);
@@ -2886,6 +2886,7 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
         messages: currentMessages,
         thinking: thinkingParam,
         tools: nativeToolsEnabled ? toolsParam : undefined,
+        purpose,
       });
     } catch (error) {
       if (!nativeToolsEnabled || !isToolCompatibilityError(error)) throw error;
@@ -2898,6 +2899,7 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
         system: systemPrompt + textToolBridge,
         messages: currentMessages,
         thinking: thinkingParam,
+        purpose,
       });
     }
   };
@@ -3209,6 +3211,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
     settings, modelName, maxTokens: firstMaxTokens,
     systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
+    purpose: 'chat',
   });
 
   return {
@@ -5660,6 +5663,7 @@ app.post('/chat', async (req, res) => {
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
       settings, modelName, maxTokens: firstMaxTokens,
       systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
+      purpose: 'chat',
     });
 
     const thinkingText = extractThinking(result);
@@ -5771,6 +5775,7 @@ app.post('/chat/regenerate', async (req, res) => {
       toolsParam,
       toolHandlers: dynamic.handlers,
       gemini: geminiRegen,
+      purpose: 'chat',
     });
 
     const thinkingText = extractThinking(result);

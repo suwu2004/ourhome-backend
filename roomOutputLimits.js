@@ -1,5 +1,7 @@
 const { outputTokenCapForModel } = require('./modelTokenLimits');
 
+const HIGH_OUTPUT_PURPOSES = new Set(['chat']);
+
 function contentText(content) {
   if (content == null) return '';
   if (typeof content === 'string' || typeof content === 'number') return String(content);
@@ -28,7 +30,9 @@ function requestText(body = {}) {
   return `${system}\n${messages}`;
 }
 
-function detectRoomScene(body = {}) {
+function detectRoomScene(body = {}, purpose = '') {
+  if (HIGH_OUTPUT_PURPOSES.has(String(purpose || '').trim().toLowerCase())) return 'chat';
+
   const text = requestText(body);
   if (!text) return null;
 
@@ -47,8 +51,8 @@ function detectRoomScene(body = {}) {
   return null;
 }
 
-function raiseRoomOutputLimit(body = {}) {
-  const scene = detectRoomScene(body);
+function raiseRoomOutputLimit(body = {}, purpose = '') {
+  const scene = detectRoomScene(body, purpose);
   if (!scene || !body.model) {
     return {
       body,
