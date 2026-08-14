@@ -18,6 +18,7 @@ function compactBody(body = {}) {
   return {
     session_id: body?.session_id == null ? '' : String(body.session_id),
     message: String(body?.message || ''),
+    content: String(body?.content || ''),
     model: String(body?.model || ''),
     attachment_url: String(body?.attachment_url || ''),
     attachment_type: String(body?.attachment_type || ''),
@@ -138,7 +139,11 @@ function patchExpressChatPost() {
   if (patched) return;
   patched = true;
   express.application.post = function patchedPost(path, ...handlers) {
-    if (path === '/chat' || path === '/theater/books/:id/chat') {
+    if (path === '/chat'
+      || path === '/chat/regenerate'
+      || path === '/messages/:id/edit-and-regenerate'
+      || path === '/theater/books/:id/chat'
+      || path === '/theater/books/:id/messages/:messageId/regenerate') {
       return originalPost.call(this, path, chatIdempotencyMiddleware, ...handlers);
     }
     return originalPost.call(this, path, ...handlers);

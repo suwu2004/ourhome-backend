@@ -50,6 +50,21 @@ function normalizeRoutingText(value) {
     .slice(-2400);
 }
 
+function chatNeedsRemoteTools(routingContext) {
+  const text = normalizeRoutingText(routingContext);
+  const genericSearch = /搜索(?:一下)?|查(?:一下|查看|找找)|帮我查/iu.test(text);
+  return WEB_RE.test(text) || (genericSearch && !LOCAL_DATA_RE.test(text));
+}
+
+function chatLocalToolNeeds(routingContext) {
+  const text = normalizeRoutingText(routingContext);
+  return {
+    reading: READING_RE.test(text),
+    toybox: TOYBOX_RE.test(text),
+    privateRoom: PRIVATE_ROOM_RE.test(text),
+  };
+}
+
 function selectChatTools(tools, routingContext) {
   if (!Array.isArray(tools) || !tools.length) return [];
   const text = normalizeRoutingText(routingContext);
@@ -65,8 +80,7 @@ function selectChatTools(tools, routingContext) {
     for (const tool of tools) if (/toybox|gomoku|drawing|harmony|secret/i.test(tool?.name || '')) selected.add(tool.name);
   }
   if (PRIVATE_ROOM_RE.test(text)) selected.add('read_luze_private_room');
-  const genericSearch = /搜索(?:一下)?|查(?:一下|查看|找找)|帮我查/iu.test(text);
-  if (WEB_RE.test(text) || (genericSearch && !LOCAL_DATA_RE.test(text))) {
+  if (chatNeedsRemoteTools(text)) {
     for (const tool of tools) {
       const name = String(tool?.name || '');
       if (name === 'web_search' || name.startsWith('mcp_')) selected.add(name);
@@ -76,4 +90,10 @@ function selectChatTools(tools, routingContext) {
   return tools.filter(tool => selected.has(tool?.name));
 }
 
-module.exports = { GROUPS, normalizeRoutingText, selectChatTools };
+module.exports = {
+  GROUPS,
+  normalizeRoutingText,
+  chatNeedsRemoteTools,
+  chatLocalToolNeeds,
+  selectChatTools,
+};

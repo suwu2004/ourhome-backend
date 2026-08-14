@@ -74,7 +74,9 @@ test('隐藏账本默认绝不继承当前 Chat 模型，付费模式也一轮�
   assert.doesNotMatch(patchSource, /CONTEXT_LEDGER_MODEL\s*\|\|\s*mainBody/);
   assert.match(patchSource, /PAID_LEDGER_MAX_CHUNKS_PER_TURN\s*=\s*1/);
   assert.match(patchSource, /X-OurHome-Call-Purpose[^\n]*context-ledger/);
-  assert.match(patchSource, /rolling-local-first-v2/);
+  assert.match(patchSource, /incremental-window-v3/);
+  assert.match(patchSource, /loadPendingOverflow/);
+  assert.doesNotMatch(patchSource, /\.range\(offset/);
 });
 
 test('注入块包含滚动账本和紧邻最近窗口的桥接旧消息', () => {

@@ -1,6 +1,7 @@
 const dns = require('dns').promises;
 const net = require('net');
 const { normalizeMcpInputSchema, mergeMcpSchemaDiagnostics } = require('./mcpSchema');
+const { selectChatTools, chatNeedsRemoteTools } = require('./chatToolRouter');
 
 const MCP_VERSION = '2025-11-25';
 const SUPPORTED_MCP_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26']);
@@ -258,10 +259,24 @@ function createIntegrationManager(runtimeConfig) {
       : tavilySearch(connection, input);
   }
 
-  async function buildDynamicTools() {
-    const localReading = runtimeConfig.getReadingAssistantBridge?.() || {};
-    const tools = Array.isArray(localReading.tools) ? [...localReading.tools] : [];
-    const handlers = localReading.handlers instanceof Map ? new Map(localReading.handlers) : new Map();
+  async function buildDynamicTools(options = {}) {
+    const hasRoutingContext = Object.prototype.hasOwnProperty.call(options, 'routingContext');
+    const routingContext = options.routingContext;
+    const localReading = runtimeConfig.getReadingAssistantBridge?.(
+      hasRoutingContext ? { routingContext } : {},
+    ) || {};
+    const localTools = Array.isArray(localReading.tools) ? [...localReading.tools] : [];
+    const tools = hasRoutingContext ? selectChatTools(localTools, routingContext) : localTools;
+    const selectedNames = new Set(tools.map(tool => tool?.name).filter(Boolean));
+    const allLocalHandlers = localReading.handlers instanceof Map ? localReading.handlers : new Map();
+    const handlers = hasRoutingContext
+      ? new Map([...allLocalHandlers].filter(([name]) => selectedNames.has(name)))
+      : new Map(allLocalHandlers);
+
+    // 普通 Chat 不需要查询 service_connections，也不需要唤醒远程 MCP。
+    // 一旦最近四条消息出现实时/联网意图，仍完整开放已配置的远程工具。
+    if (hasRoutingContext && !chatNeedsRemoteTools(routingContext)) return { tools, handlers };
+
     let connections = [];
     try { connections = await runtimeConfig.listEnabledConnectionRuntimes(); }
     catch (error) { console.error('读取联网配置失败:', error.message); }

@@ -17,7 +17,8 @@ test('Chat 与滚动账本共享 max_context_tokens 窗口', () => {
   assert.match(server, /maxTokens: settings\?\.max_context_tokens/);
   assert.match(server, /const maxContextTokens = settings\?\.max_context_tokens \|\| 0/g);
   assert.match(ledger, /select\('max_context_rounds, max_context_tokens'\)/);
-  assert.match(ledger, /selectRecentHistory\(history/);
+  assert.match(ledger, /selectRecentHistory\(candidates/);
+  assert.match(server, /loadRecentVisibleHistory\(supabase, session_id/);
 });
 
 test('Chat 最近信件只注入短悄悄话，剧场规则不再误入', () => {

@@ -4,12 +4,11 @@ const { AsyncLocalStorage } = require('async_hooks');
 const { createClient } = require('@supabase/supabase-js');
 const { isMainChatRequest } = require('./intimacyFlowSupport');
 const { selectRecentHistory } = require('./chatContextWindow');
+const { loadVisibleHistoryCandidates } = require('./chatRecentHistory');
 const {
   LEDGER_MAX_CHUNKS_PER_TURN,
   LEDGER_RETRY_MS,
   rowsChars,
-  overflowRows,
-  rowsAfterCursor,
   splitRowsIntoChunks,
   shouldRefreshLedger,
   buildLedgerUpdatePrompt,
@@ -30,7 +29,8 @@ const TARGET_ROUTES = new Set([
   '/messages/:id/rollback/undo',
 ]);
 const SETTINGS_CACHE_MS = 20_000;
-const HISTORY_PAGE_SIZE = 1000;
+const LEDGER_PENDING_ROW_LIMIT = 600;
+const LEDGER_BRIDGE_ROW_LIMIT = 80;
 const PAID_LEDGER_MAX_CHUNKS_PER_TURN = 1;
 
 const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
@@ -90,7 +90,9 @@ async function resolveRouteContext(route, req) {
   return {
     route,
     sessionId,
-    resetMode: route === '/messages/:id/rollback' || route === '/messages/:id/rollback/undo',
+    resetMode: route === '/messages/:id/edit-and-regenerate'
+      || route === '/messages/:id/rollback'
+      || route === '/messages/:id/rollback/undo',
     prepared: false,
     block: '',
   };
@@ -134,23 +136,35 @@ function installExpressContextBridge() {
   };
 }
 
-async function loadVisibleHistory(sessionId) {
-  if (!supabase || !sessionId) return [];
-  const rows = [];
-  for (let offset = 0; ; offset += HISTORY_PAGE_SIZE) {
-    const { data, error } = await supabase.from('messages')
-      .select('id,role,content,attachment_summary,created_at')
-      .eq('session_id', sessionId)
-      .eq('visible', true)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .range(offset, offset + HISTORY_PAGE_SIZE - 1);
-    if (error) throw error;
-    const page = data || [];
-    rows.push(...page);
-    if (page.length < HISTORY_PAGE_SIZE) break;
-  }
-  return rows;
+async function loadLedgerWindow(sessionId, settings) {
+  const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, {
+    maxRounds: settings.maxContextRounds,
+    columns: 'id,role,content,attachment_summary,created_at',
+  });
+  const recentKeep = selectRecentHistory(candidates, {
+    maxRounds: settings.maxContextRounds,
+    maxTokens: settings.maxContextTokens,
+  });
+  return {
+    recentKeep,
+    cutoffId: safeId(recentKeep[0]?.id),
+  };
+}
+
+async function loadPendingOverflow(sessionId, { cursorId = null, cutoffId, descending = false, limit = LEDGER_PENDING_ROW_LIMIT } = {}) {
+  if (!supabase || !sessionId || !cutoffId) return [];
+  let query = supabase.from('messages')
+    .select('id,role,content,attachment_summary,created_at')
+    .eq('session_id', sessionId)
+    .eq('visible', true)
+    .lt('id', cutoffId);
+  if (cursorId) query = query.gt('id', cursorId);
+  const { data, error } = await query
+    .order('id', { ascending: !descending })
+    .limit(Math.max(1, Math.min(LEDGER_PENDING_ROW_LIMIT, Number(limit) || LEDGER_PENDING_ROW_LIMIT)));
+  if (error) throw error;
+  const rows = data || [];
+  return descending ? [...rows].reverse() : rows;
 }
 
 async function readLedger(sessionId) {
@@ -220,20 +234,16 @@ async function prepareLedger(ctx, url, init, body) {
   ctx.prepared = true;
 
   const settings = await loadLedgerSettings();
-  const history = await loadVisibleHistory(ctx.sessionId);
-  const recentKeep = selectRecentHistory(history, {
-    maxRounds: settings.maxContextRounds,
-    maxTokens: settings.maxContextTokens,
-  }).length;
-  const overflow = overflowRows(history, recentKeep);
-  if (!overflow.length) return body;
+  const { cutoffId } = await loadLedgerWindow(ctx.sessionId, settings);
+  if (!cutoffId) return body;
 
   let ledger = await readLedger(ctx.sessionId);
   let cursorId = safeId(ledger?.summarized_through_message_id);
   let coveredCount = Math.max(0, Number(ledger?.summarized_message_count) || 0);
   let coveredChars = Math.max(0, Number(ledger?.summarized_chars) || 0);
   let summary = ledger?.summary || '';
-  let pending = rowsAfterCursor(overflow, cursorId);
+  let pending = await loadPendingOverflow(ctx.sessionId, { cursorId, cutoffId });
+  if (!pending.length && !summary) return body;
 
   if (shouldRefreshLedger(ledger, pending) && !retryBlocked(ledger)) {
     const paidModel = configuredLedgerModel();
@@ -267,7 +277,7 @@ async function prepareLedger(ctx, url, init, body) {
         coveredCount = Number(committed.summarized_message_count) || nextCount;
         coveredChars = Number(committed.summarized_chars) || nextChars;
       }
-      console.log(`[context:ledger] mode=${paidModel ? `paid:${paidModel}` : 'local-zero-cost'} session=${ctx.sessionId} covered=${coveredCount}/${overflow.length}`);
+      console.log(`[context:ledger] mode=${paidModel ? `paid:${paidModel}` : 'local-zero-cost'} session=${ctx.sessionId} covered=${coveredCount}`);
     } catch (error) {
       const retryAfter = new Date(Date.now() + LEDGER_RETRY_MS).toISOString();
       try {
@@ -289,12 +299,17 @@ async function prepareLedger(ctx, url, init, body) {
     }
   }
 
-  pending = rowsAfterCursor(overflow, cursorId);
+  pending = await loadPendingOverflow(ctx.sessionId, {
+    cursorId,
+    cutoffId,
+    descending: true,
+    limit: LEDGER_BRIDGE_ROW_LIMIT,
+  });
   ctx.block = buildLedgerBlock({
     summary,
     bridgeRows: pending,
     coveredCount,
-    overflowCount: overflow.length,
+    overflowCount: null,
   });
   return injectLedger(body, ctx.block);
 }
@@ -325,7 +340,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function contextLedgerHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, context_ledger: 'rolling-local-first-v2' };
+      body = { ...body, context_ledger: 'incremental-window-v3' };
     }
     return originalJson.call(this, body);
   };
@@ -335,7 +350,8 @@ try {
 
 module.exports = {
   configuredLedgerModel,
-  loadVisibleHistory,
+  loadLedgerWindow,
+  loadPendingOverflow,
   readLedger,
   commitLedger,
   prepareLedger,
