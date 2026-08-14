@@ -93,6 +93,13 @@ test('skin concerns are summarized semantically without copying the user sentenc
   assert.doesNotMatch(result.daily_summary.summary, /我感觉我油脂分泌好旺盛/);
 });
 
+test('casual plans to look at something do not become copied working memory', () => {
+  const raw = '是我自己今天没注意，听到巷子里面有猫叫，就想去看看怎么回事儿。';
+  const result = localMemoryJournal(journalBody(raw, '我陪你过去看一眼，先别靠得太近。'));
+  assert.equal(result.mark.should_continue, false);
+  assert.equal(result.mark.summary, '');
+});
+
 test('explicit memory journal provider calls are purpose-labelled', () => {
   assert.match(guard, /X-OurHome-Call-Purpose[^\n]*memory-journal/);
   assert.match(guard, /body: JSON\.stringify\(nextBody\)/);
