@@ -44,6 +44,8 @@ test('injects layered memory before theater history and replaces an old block', 
   assert.match(text, /【角色与剧情记忆】/u);
   assert.match(text, /称呼固定为宝宝/u);
   assert.match(text, /第一次见面发生在雨夜/u);
+  assert.match(text, /当前场景状态·时间线最前沿/u);
+  assert.match(text, /不能退回较早场景/u);
   assert.doesNotMatch(text, /旧内容/u);
   assert.ok(text.indexOf('【角色与剧情记忆】') < text.indexOf('【较早剧情提要】'));
 });
@@ -75,6 +77,21 @@ test('history sampling preserves the beginning and latest events', () => {
   assert.match(sampled, /第 60 条剧情|第 61 条剧情/u);
 });
 
+test('tight history budgets still preserve the literal newest scene', () => {
+  const rows = Array.from({ length: 120 }, (_, index) => ({
+    author: index % 2 === 0 ? '檀' : '泽',
+    content: `第 ${index + 1} 条剧情 ${'很长的场景细节'.repeat(70)}`,
+  }));
+  const sampled = sampleTheaterHistory(rows, {
+    userName: '叶檀',
+    assistantName: '陆泽',
+    maxChars: 6000,
+  });
+  assert.ok(sampled.length <= 6000);
+  assert.match(sampled, /第 120 条剧情/u);
+  assert.match(sampled, /120\. /u);
+});
+
 test('refreshes every third turn or immediately after a significant event', () => {
   assert.equal(shouldRefreshMemory({ character_anchor: '', plot_facts: [] }, '', ''), true);
   assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 1 }, '普通聊天', '普通回复'), false);
@@ -94,4 +111,5 @@ test('memory prompt separates archived and recent plot facts', () => {
   assert.match(prompt, /近期核心剧情事实/);
   assert.match(prompt, /事件 1/);
   assert.match(prompt, /事件 45/);
+  assert.match(prompt, /越靠后越新/);
 });
