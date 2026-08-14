@@ -41,6 +41,19 @@ test('小剧场生成与续写会按模型能力抬高上限', () => {
   assert.equal(raiseRoomOutputLimit(extended).body.max_tokens, 64000);
 });
 
+test('正式 Chat 通过明确用途抬到模型输出上限', () => {
+  const standard = {
+    model: '[B]claude-opus-4-5',
+    max_tokens: 4000,
+    messages: [{ role: 'user', content: '今天想和你多说一会儿。' }],
+  };
+  assert.equal(detectRoomScene(standard, 'chat'), 'chat');
+  assert.equal(raiseRoomOutputLimit(standard, 'chat').body.max_tokens, 32000);
+
+  const extended = { ...standard, model: '[CX]claude-opus-4-6' };
+  assert.equal(raiseRoomOutputLimit(extended, 'chat').body.max_tokens, 64000);
+});
+
 test('普通聊天和辅助小请求不被强行抬高', () => {
   const body = {
     model: '[B]claude-opus-4-5',

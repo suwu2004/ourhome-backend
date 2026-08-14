@@ -14,6 +14,14 @@ function isModelMessageRequest(url, body) {
     && body.model;
 }
 
+function requestPurpose(headers) {
+  try {
+    return String(new Headers(headers || undefined).get('X-OurHome-Call-Purpose') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
 if (typeof originalFetch === 'function') {
   globalThis.fetch = async function modelTokenLimitedFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
@@ -22,7 +30,7 @@ if (typeof originalFetch === 'function') {
       try {
         let body = JSON.parse(init.body);
         if (isModelMessageRequest(url, body)) {
-          const roomLimit = raiseRoomOutputLimit(body);
+          const roomLimit = raiseRoomOutputLimit(body, requestPurpose(init.headers));
           body = roomLimit.body;
 
           const requested = Number(body.max_tokens) || 0;
