@@ -121,6 +121,7 @@ try {
         background_recovery: 'quota-cooldown-signed-url-v2',
         neon_failover_reads: 'sql-filtered-coalesced-v4',
         neon_failover_writes: 'journal-v5-serialized-compacted-defaults',
+        neon_chat_persistence: 'visible-current-turn-v1',
         neon_api_profiles: 'encrypted-secret-write-v3-normalized-wrap',
         neon_secret_wrap: 'normalized-v2-transition-v1',
         neon_replay: 'primary-probe-idempotent-v1',
