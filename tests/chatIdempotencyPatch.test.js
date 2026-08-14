@@ -58,6 +58,41 @@ test('duplicate in-flight /chat requests with the same request id execute the ha
   assert.ok(left.headers.get('X-OurHome-Idempotent-Replay') === '1' || right.headers.get('X-OurHome-Idempotent-Replay') === '1');
 });
 
+test('duplicate in-flight theater Chat requests execute the paid handler once', async (t) => {
+  const app = express();
+  app.use(express.json());
+  let calls = 0;
+  app.post('/theater/books/:id/chat', async (req, res) => {
+    calls += 1;
+    await new Promise(resolve => setTimeout(resolve, 80));
+    res.json({ ok: true, calls, book: req.params.id, message: req.body.message });
+  });
+
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const port = server.address().port;
+  const options = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer theater-test',
+      'X-OurHome-Request-Id': 'theater-network-12345678',
+    },
+    body: JSON.stringify({ message: 'only once', model: 'model-a', play_mode: 'interactive' }),
+  };
+
+  const [left, right] = await Promise.all([
+    fetch(`http://127.0.0.1:${port}/theater/books/book-1/chat`, options),
+    fetch(`http://127.0.0.1:${port}/theater/books/book-1/chat`, options),
+  ]);
+  const [leftBody, rightBody] = await Promise.all([left.json(), right.json()]);
+
+  assert.equal(calls, 1);
+  assert.deepEqual(leftBody, rightBody);
+  assert.ok(left.headers.get('X-OurHome-Idempotent-Replay') === '1' || right.headers.get('X-OurHome-Idempotent-Replay') === '1');
+});
+
 test('reusing a Chat request id for different content is rejected instead of generating again', async (t) => {
   const app = express();
   app.use(express.json());
