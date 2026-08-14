@@ -7,6 +7,10 @@
 require('./chatIdempotencyPatch');
 require('./supabaseQuotaCircuitPatch');
 require('./neonFailoverFetchPatch');
+// Compact repeated near-identical theater facts before theaterMemoryPatch captures
+// the support helpers. This keeps long scenes chronological without spending an
+// extra model call just to clean duplicate memory rows.
+require('./theaterMemoryFactDedupPatch');
 require('./theaterMemoryPatch');
 require('./memoryLayerPatch');
 require('./modelTokenLimitPatch');
@@ -86,7 +90,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');

@@ -12,6 +12,8 @@ test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/chatIdempotencyPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/supabaseQuotaCircuitPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/neonFailoverFetchPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/theaterMemoryFactDedupPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/theaterMemoryPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/memoryLayerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/modelTokenLimitPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/thinkingTransportPatch'\);/);
@@ -22,6 +24,12 @@ test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/intimacyFlowAutonomyPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/chatPromptCleanupPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/intimacyFlowPatch'\);/);
+});
+
+test('剧场事实压缩先于剧场记忆主体加载', () => {
+  const dedupIndex = bootstrapSource.indexOf("require('./theaterMemoryFactDedupPatch')");
+  const theaterIndex = bootstrapSource.indexOf("require('./theaterMemoryPatch')");
+  assert.ok(dedupIndex >= 0 && theaterIndex >= 0 && dedupIndex < theaterIndex);
 });
 
 test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护、账本顺序加载', () => {
