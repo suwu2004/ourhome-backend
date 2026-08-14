@@ -1,0 +1,49 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const { selectChatTools } = require('../chatToolRouter');
+
+const names = [
+  'write_diary', 'save_memory', 'search_memories', 'search_chat_history', 'manage_memory',
+  'read_cat_vault', 'record_cat_vault_transaction', 'delete_cat_vault_transaction',
+  'read_music_room', 'search_music', 'add_music_track', 'control_music_room',
+  'read_reading_room', 'write_reading_note', 'read_toybox_room', 'start_toybox_game',
+  'read_luze_private_room', 'web_search', 'mcp_12345678_weather',
+];
+const tools = names.map(name => ({ name, description: name, input_schema: { type: 'object', properties: {} } }));
+const selectedNames = text => selectChatTools(tools, text).map(tool => tool.name);
+
+test('普通聊天不再携带几十个无关工具定义', () => {
+  assert.deepEqual(selectedNames('宝贝抱抱，今天想你了'), []);
+});
+
+test('只为明确房间意图开放对应工具组', () => {
+  const vault = selectedNames('帮我在猫の金库记一笔，咖啡 28 元');
+  assert.ok(vault.includes('record_cat_vault_transaction'));
+  assert.ok(vault.includes('read_cat_vault'));
+  assert.ok(!vault.includes('read_music_room'));
+
+  const music = selectedNames('去一起听给歌单加一首歌');
+  assert.ok(music.includes('add_music_track'));
+  assert.ok(!music.includes('record_cat_vault_transaction'));
+});
+
+test('记忆、共读、玩具熊和私人房间按关键词路由', () => {
+  assert.ok(selectedNames('你记得我以前说过的偏好吗').includes('search_memories'));
+  assert.deepEqual(selectedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
+  assert.deepEqual(selectedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
+  assert.deepEqual(selectedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
+});
+
+test('实时信息才开放联网和 MCP 工具', () => {
+  assert.deepEqual(selectedNames('查一下今天最新天气'), ['web_search', 'mcp_12345678_weather']);
+  assert.ok(!selectedNames('查一下我的聊天记录').includes('web_search'));
+});
+
+test('省略式确认会参考最近几条上下文继续开放同一房间工具', () => {
+  const selected = selectChatTools(tools, [
+    { content: '刚才那笔咖啡记账写错了，需要处理吗？' },
+    { content: '删掉吧' },
+  ]).map(tool => tool.name);
+  assert.ok(selected.includes('delete_cat_vault_transaction'));
+});

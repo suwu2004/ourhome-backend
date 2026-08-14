@@ -3,6 +3,7 @@
 const { AsyncLocalStorage } = require('async_hooks');
 const { createClient } = require('@supabase/supabase-js');
 const { isMainChatRequest } = require('./intimacyFlowSupport');
+const { selectRecentHistory } = require('./chatContextWindow');
 const {
   LEDGER_MAX_CHUNKS_PER_TURN,
   LEDGER_RETRY_MS,
@@ -57,16 +58,17 @@ function configuredLedgerModel() {
 }
 
 async function loadLedgerSettings() {
-  if (!supabase) return { maxContextRounds: 20 };
+  if (!supabase) return { maxContextRounds: 20, maxContextTokens: 0 };
   const now = Date.now();
   if (settingsCache && now - settingsCacheAt < SETTINGS_CACHE_MS) return settingsCache;
   const { data, error } = await supabase.from('settings')
-    .select('max_context_rounds')
+    .select('max_context_rounds, max_context_tokens')
     .eq('session_id', 'global')
     .maybeSingle();
   if (error) throw error;
   settingsCache = {
     maxContextRounds: Math.max(1, Math.min(500, Number(data?.max_context_rounds) || 20)),
+    maxContextTokens: Math.max(0, Math.min(1_000_000, Number(data?.max_context_tokens) || 0)),
   };
   settingsCacheAt = now;
   return settingsCache;
@@ -218,8 +220,11 @@ async function prepareLedger(ctx, url, init, body) {
   ctx.prepared = true;
 
   const settings = await loadLedgerSettings();
-  const recentKeep = Math.max(2, settings.maxContextRounds * 2);
   const history = await loadVisibleHistory(ctx.sessionId);
+  const recentKeep = selectRecentHistory(history, {
+    maxRounds: settings.maxContextRounds,
+    maxTokens: settings.maxContextTokens,
+  }).length;
   const overflow = overflowRows(history, recentKeep);
   if (!overflow.length) return body;
 
