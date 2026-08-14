@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { MAX_LOREBOOKS, assertCapacity } = require('./lorebookStore');
 
 const MAX_BOOKS_PER_COLLECTION = 60;
 const MAX_ENTRY_CONTENT_CHARS = 40_000;
@@ -123,19 +124,30 @@ async function importCollectionBooks(supabase, books, {
   const existingEntriesResult = await supabase.from('lorebook_entries').select('lorebook_id,content');
   if (existingEntriesResult.error) throw existingEntriesResult.error;
 
-  const existingNames = new Set((existingBooksResult.data || []).map(row => cleanLine(row.name, 120).toLocaleLowerCase()));
+  const existingBooks = existingBooksResult.data || [];
+  const existingNames = new Set(existingBooks.map(row => cleanLine(row.name, 120).toLocaleLowerCase()));
   const existingFingerprints = new Set((existingEntriesResult.data || []).map(row => fingerprint(row.content)));
-  const created = [];
+  const candidateNames = new Set(existingNames);
+  const candidateFingerprints = new Set(existingFingerprints);
+  const pending = [];
   const skipped = [];
 
   for (const item of books.slice(0, MAX_BOOKS_PER_COLLECTION)) {
     const nameKey = cleanLine(item.name, 120).toLocaleLowerCase();
     const contentFingerprint = fingerprint(item.entry?.content || '');
-    if (existingNames.has(nameKey) || existingFingerprints.has(contentFingerprint)) {
+    if (candidateNames.has(nameKey) || candidateFingerprints.has(contentFingerprint)) {
       skipped.push({ name: item.name, reason: 'duplicate' });
       continue;
     }
+    candidateNames.add(nameKey);
+    candidateFingerprints.add(contentFingerprint);
+    pending.push({ item, nameKey, contentFingerprint });
+  }
 
+  assertCapacity(existingBooks.length, pending.length, MAX_LOREBOOKS, '世界书');
+
+  const created = [];
+  for (const { item } of pending) {
     const bookRow = {
       name: cleanLine(item.name, 120) || '未命名世界书',
       description: cleanText(item.description, 2000),
@@ -173,8 +185,6 @@ async function importCollectionBooks(supabase, books, {
       await supabase.from('lorebooks').delete().eq('id', insertedBook.data.id);
       throw insertedEntry.error;
     }
-    existingNames.add(nameKey);
-    existingFingerprints.add(contentFingerprint);
     created.push({ ...insertedBook.data, entries: [insertedEntry.data] });
   }
 
