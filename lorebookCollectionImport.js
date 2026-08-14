@@ -30,8 +30,8 @@ function normalizeTitle(value) {
 function parseKeywordLine(value) {
   const match = String(value || '').match(/(?:请设置关键词|keywords?)\s*[:：]\s*(.+)$/i);
   if (!match) return [];
-  const text = match[1];
-  if (/^(?:无|none)\b/i.test(text.trim())) return [];
+  const text = match[1].trim();
+  if (/^无(?:$|[（(、，,\s])/u.test(text) || /^none\b/i.test(text)) return [];
   return [...new Set(text.split(/[,，、]/).map(item => cleanLine(item, 180)).filter(Boolean))].slice(0, 40);
 }
 
