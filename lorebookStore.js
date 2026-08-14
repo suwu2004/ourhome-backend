@@ -354,8 +354,13 @@ function createLorebookStore(supabase) {
   }
 
   async function listBooks() {
-    const books = await listBookSummaries();
-    const ids = books.map(book => book.id);
+    const { data: books, error } = await supabase
+      .from('lorebooks')
+      .select('*')
+      .order('created_at', { ascending: true })
+      .limit(MAX_LOREBOOKS);
+    if (error) throw error;
+    const ids = (books || []).map(book => book.id);
     let entries = [];
     if (ids.length) {
       const result = await supabase.from('lorebook_entries').select('*').in('lorebook_id', ids).order('insertion_order', { ascending: true }).limit(MAX_LOREBOOKS * MAX_ENTRIES_PER_BOOK);
@@ -367,7 +372,7 @@ function createLorebookStore(supabase) {
       const key = String(entry.lorebook_id);
       entriesByBook.set(key, [...(entriesByBook.get(key) || []), entry]);
     }
-    return books.map(book => ({ ...book, entries: entriesByBook.get(String(book.id)) || [] }));
+    return (books || []).map(book => ({ ...book, entries: entriesByBook.get(String(book.id)) || [] }));
   }
 
   async function createBook(rawBook = {}, rawEntries = []) {
