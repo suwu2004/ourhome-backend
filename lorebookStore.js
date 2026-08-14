@@ -34,6 +34,15 @@ function normalizeStringList(value, maxItems = 40) {
   return [...new Set(raw.map(item => cleanLine(item, 180)).filter(Boolean))].slice(0, maxItems);
 }
 
+function assertCapacity(currentCount, incomingCount, maxCount, label) {
+  const current = Math.max(0, Math.floor(Number(currentCount) || 0));
+  const incoming = Math.max(0, Math.floor(Number(incomingCount) || 0));
+  if (current + incoming > maxCount) {
+    throw new Error(`${label}最多保存 ${maxCount} 个；当前已有 ${current} 个，本次还要新增 ${incoming} 个。`);
+  }
+  return maxCount - current - incoming;
+}
+
 function normalizeLorebookInput(value = {}, { partial = false } = {}) {
   const normalized = {};
   const set = (key, next) => {
@@ -320,8 +329,36 @@ async function loadCompiledLorebookContext(supabase, options = {}) {
 }
 
 function createLorebookStore(supabase) {
+  async function listBookSummaries() {
+    const { data, error } = await supabase
+      .from('lorebooks')
+      .select('id,name,description,enabled,apply_scope,target_book_id,scan_depth,token_budget,recursive_scanning,source_format,source_name,created_at,updated_at')
+      .order('created_at', { ascending: true })
+      .limit(MAX_LOREBOOKS);
+    if (error) throw error;
+    return data || [];
+  }
+
+  async function getBook(id) {
+    const { data: book, error } = await supabase.from('lorebooks').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    if (!book) return null;
+    const result = await supabase
+      .from('lorebook_entries')
+      .select('*')
+      .eq('lorebook_id', id)
+      .order('insertion_order', { ascending: true })
+      .limit(MAX_ENTRIES_PER_BOOK);
+    if (result.error) throw result.error;
+    return { ...book, entries: result.data || [] };
+  }
+
   async function listBooks() {
-    const { data: books, error } = await supabase.from('lorebooks').select('*').order('created_at', { ascending: true }).limit(MAX_LOREBOOKS);
+    const { data: books, error } = await supabase
+      .from('lorebooks')
+      .select('*')
+      .order('created_at', { ascending: true })
+      .limit(MAX_LOREBOOKS);
     if (error) throw error;
     const ids = (books || []).map(book => book.id);
     let entries = [];
@@ -340,11 +377,20 @@ function createLorebookStore(supabase) {
 
   async function createBook(rawBook = {}, rawEntries = []) {
     const book = normalizeLorebookInput(rawBook);
+    const entries = rawEntries
+      .map(entry => normalizeEntryInput(entry))
+      .filter(entry => entry.content);
+    assertCapacity(0, entries.length, MAX_ENTRIES_PER_BOOK, '每本世界书的正文条目');
+
+    const countResult = await supabase.from('lorebooks').select('id', { count: 'exact', head: true });
+    if (countResult.error) throw countResult.error;
+    assertCapacity(countResult.count, 1, MAX_LOREBOOKS, '世界书');
+
     const { data, error } = await supabase.from('lorebooks').insert(book).select().single();
     if (error) throw error;
-    const entries = rawEntries.map(entry => ({ ...normalizeEntryInput(entry), lorebook_id: data.id })).filter(entry => entry.content).slice(0, MAX_ENTRIES_PER_BOOK);
-    if (entries.length) {
-      const result = await supabase.from('lorebook_entries').insert(entries).select();
+    const rows = entries.map(entry => ({ ...entry, lorebook_id: data.id }));
+    if (rows.length) {
+      const result = await supabase.from('lorebook_entries').insert(rows).select();
       if (result.error) {
         await supabase.from('lorebooks').delete().eq('id', data.id);
         throw result.error;
@@ -370,6 +416,12 @@ function createLorebookStore(supabase) {
   async function createEntry(bookId, rawValue = {}) {
     const value = { ...normalizeEntryInput(rawValue), lorebook_id: bookId };
     if (!value.content) throw new Error('世界书条目正文不能为空。');
+    const countResult = await supabase
+      .from('lorebook_entries')
+      .select('id', { count: 'exact', head: true })
+      .eq('lorebook_id', bookId);
+    if (countResult.error) throw countResult.error;
+    assertCapacity(countResult.count, 1, MAX_ENTRIES_PER_BOOK, '每本世界书的正文条目');
     const { data, error } = await supabase.from('lorebook_entries').insert(value).select().single();
     if (error) throw error;
     return data;
@@ -389,7 +441,7 @@ function createLorebookStore(supabase) {
     return Boolean(data);
   }
 
-  return { listBooks, createBook, updateBook, deleteBook, createEntry, updateEntry, deleteEntry };
+  return { listBookSummaries, getBook, listBooks, createBook, updateBook, deleteBook, createEntry, updateEntry, deleteEntry };
 }
 
 function exportLorebookV3(book) {
@@ -424,8 +476,18 @@ function exportLorebookV3(book) {
 
 function registerLorebookRoutes(app, { supabase, upload, extractImportFile }) {
   const store = createLorebookStore(supabase);
-  app.get('/lorebooks', async (_req, res) => {
-    try { res.json(await store.listBooks()); } catch (error) { res.status(500).json({ error: error.message || '世界书库没有打开' }); }
+  app.get('/lorebooks', async (req, res) => {
+    try {
+      const summaryOnly = ['1', 'true'].includes(String(req.query?.summary || '').toLowerCase());
+      res.json(summaryOnly ? await store.listBookSummaries() : await store.listBooks());
+    } catch (error) { res.status(500).json({ error: error.message || '世界书库没有打开' }); }
+  });
+  app.get('/lorebooks/:id', async (req, res) => {
+    try {
+      const book = await store.getBook(req.params.id);
+      if (!book) return res.status(404).json({ error: '找不到这本世界书' });
+      res.json(book);
+    } catch (error) { res.status(500).json({ error: error.message || '世界书没有打开' }); }
   });
   app.post('/lorebooks', async (req, res) => {
     try { res.json(await store.createBook(req.body || {}, req.body?.entries || [])); } catch (error) { res.status(400).json({ error: error.message || '世界书没有保存成功' }); }
@@ -471,7 +533,7 @@ function registerLorebookRoutes(app, { supabase, upload, extractImportFile }) {
   });
   app.get('/lorebooks/:id/export', async (req, res) => {
     try {
-      const book = (await store.listBooks()).find(item => String(item.id) === String(req.params.id));
+      const book = await store.getBook(req.params.id);
       if (!book) return res.status(404).json({ error: '找不到这本世界书' });
       res.setHeader('Content-Disposition', `attachment; filename=\"lorebook-${book.id}.json\"`);
       res.json(exportLorebookV3(book));
@@ -491,6 +553,7 @@ module.exports = {
   approximateTokens,
   clipTextToApproxTokens,
   truncateCompiledContext,
+  assertCapacity,
   safeRegex,
   entryMatches,
   selectLorebookEntries,
