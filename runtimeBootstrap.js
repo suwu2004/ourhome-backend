@@ -92,7 +92,7 @@ try {
       body = {
         ...body,
         runtime_bootstrap: 'direct-server-start-v4-adaptive-stability',
-        chat_idempotency: 'request-id-single-execution-v1',
+        chat_idempotency: 'request-id-theater-replay-v2',
         supabase_quota_circuit: 'rest-402-adaptive-v2',
         toybox: 'toy-bear-gomoku-v4',
         toybox_cloud_history: 'drawing-auto-save-v1',
@@ -102,7 +102,8 @@ try {
         luze_room_knock: 'local-zero-api-v1',
         luze_learning_resilience: 'long-timeout-local-fallback-v1',
         runtime_timeout_guard: 'single-call-timeouts-v2-helper-caps',
-        memory_journal: body.memory_journal || 'local-semantic-summary-v3-no-copy',
+        memory_journal: body.memory_journal || 'local-semantic-summary-v4-strict-working-set',
+        happiness_diary: '500-900-char-v1',
         calendar_day_colors: 'cloud-settings-v1',
         upload_privacy: 'main-client-private-guard-v1',
         background_recovery: 'quota-cooldown-signed-url-v2',

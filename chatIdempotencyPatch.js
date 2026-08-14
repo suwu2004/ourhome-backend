@@ -22,13 +22,19 @@ function compactBody(body = {}) {
     attachment_url: String(body?.attachment_url || ''),
     attachment_type: String(body?.attachment_type || ''),
     attachment_name: String(body?.attachment_name || ''),
+    play_mode: String(body?.play_mode || ''),
+    temperature: body?.temperature == null ? '' : String(body.temperature),
   };
 }
 
 function chatRequestFingerprint(req) {
   const authorization = String(req?.headers?.authorization || '');
   return crypto.createHash('sha256')
-    .update(JSON.stringify({ authorization, body: compactBody(req?.body) }))
+    .update(JSON.stringify({
+      authorization,
+      route: String(req?.originalUrl || req?.path || ''),
+      body: compactBody(req?.body),
+    }))
     .digest('hex');
 }
 
@@ -132,7 +138,7 @@ function patchExpressChatPost() {
   if (patched) return;
   patched = true;
   express.application.post = function patchedPost(path, ...handlers) {
-    if (path === '/chat') {
+    if (path === '/chat' || path === '/theater/books/:id/chat') {
       return originalPost.call(this, path, chatIdempotencyMiddleware, ...handlers);
     }
     return originalPost.call(this, path, ...handlers);

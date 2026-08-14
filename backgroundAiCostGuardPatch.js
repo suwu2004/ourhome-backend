@@ -148,7 +148,10 @@ function localMemoryJournal(body) {
   const userText = compact(extractBetween(turn, '叶檀：', '陆泽：'), 800);
   const assistantText = compact(extractBetween(turn, '陆泽：', ''), 800);
   const turnSummary = summarizeTurn(userText, assistantText);
-  const shouldContinue = shouldContinueWorkingMemory(userText, assistantText);
+  // A continuation flag without a semantic summary used to make the persistence
+  // layer fall back to the raw user sentence. Require both signals so casual
+  // phrases such as “去看看怎么回事” never become hidden working memory.
+  const shouldContinue = Boolean(turnSummary) && shouldContinueWorkingMemory(userText, assistantText);
   const markSummary = shouldContinue ? turnSummary : '';
   const dailySummary = compact([
     existing && existing !== '无' ? existing : '',

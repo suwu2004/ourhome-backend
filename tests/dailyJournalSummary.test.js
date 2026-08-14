@@ -37,4 +37,6 @@ test('nightly workflow persists a curated summary and includes it in completion'
   assert.match(server, /from\('daily_summaries'\)\.upsert/);
   assert.match(server, /const completed = Boolean\(diaryId && moodId && summaryReady\)/);
   assert.match(server, /摘要：<不超过260字的今日摘要>/);
+  assert.match(server, /正文：<500到900字的日记正文>/);
+  assert.match(server, /maxTokens: 2200/);
 });
