@@ -184,7 +184,7 @@ async function generateInitialMemory({ url, init, body, bookRow, context, rows }
     userName: context.userName,
     assistantName: context.assistantName,
   });
-  const prompt = `请为一本互动剧场建立可持续使用的角色与剧情记忆。\n\n剧本名：${bookRow.title}\n角色称呼：${context.assistantName}\n玩家称呼：${context.userName}\n\n${buildSourceSections(bookRow) || '（没有单独填写世界书）'}\n\n【历史剧情抽样】\n${sampledHistory || '（尚未开始）'}\n\n整理规则：\n1. character_anchor 只写稳定人设：身份、性格底色、说话方式、能力边界、重要禁区；不要把临时情绪写成永久性格。\n2. relationship_memory 写双方关系、固定称呼、长期相处模式与已经确认的关系变化。\n3. plot_facts 只保留已经发生且以后必须承认的事件，按时间和因果写；优先保留会影响身份、关系、承诺、秘密、伤病、地点和因果的事实，最多36条。\n4. current_state 只写剧情最新时刻的地点、时间、身体状态、情绪、关系温度与正在进行的动作。\n5. open_threads 写尚未解决的承诺、秘密、冲突和线索，最多16条。\n6. 不编造源材料里没有的事实。\n\n严格输出：\n{\n  "character_anchor": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
+  const prompt = `请为一本互动剧场建立可持续使用的角色与剧情记忆。\n\n剧本名：${bookRow.title}\n角色称呼：${context.assistantName}\n玩家称呼：${context.userName}\n\n${buildSourceSections(bookRow) || '（没有单独填写世界书）'}\n\n【历史剧情抽样】\n${sampledHistory || '（尚未开始）'}\n\n时间线规则：历史抽样行首编号越大代表发生得越晚；编号最大的可见事件最接近当前时刻。除非文本明确写了倒叙、回忆或回到过去，否则严禁把较小编号的旧场景写成 current_state。\n\n整理规则：\n1. character_anchor 只写稳定人设：身份、性格底色、说话方式、能力边界、重要禁区；不要把临时情绪写成永久性格。\n2. relationship_memory 写双方关系、固定称呼、长期相处模式与已经确认的关系变化。\n3. plot_facts 只保留已经发生且以后必须承认的事件，按时间和因果从早到晚写；优先保留会影响身份、关系、承诺、秘密、伤病、地点和因果的事实，最多36条。\n4. current_state 只写剧情最新时刻的地点、时间、身体状态、情绪、关系温度与正在进行的动作。\n5. open_threads 写尚未解决的承诺、秘密、冲突和线索，最多16条。\n6. 不编造源材料里没有的事实。\n\n严格输出：\n{\n  "character_anchor": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
 
   const response = await providerRequest(url, init, body, prompt, 2800);
   if (!response.ok) throw new Error(`初始记忆整理失败 (${response.status})`);
@@ -240,7 +240,7 @@ async function generateUpdatedMemory({ config, bookRow, context, memory, rows, l
     .map(row => `${row.author === '檀' ? context.userName : context.assistantName}：${compactBlock(row.content, 900)}`)
     .join('\n\n');
   const current = normalizeTheaterMemory(memory);
-  const prompt = `请更新这本互动剧场的持续记忆。\n\n剧本名：${bookRow.title}\n角色：${context.assistantName}\n玩家：${context.userName}\n\n【世界书锚点】\n${compactBlock(buildSourceSections(bookRow), 18000)}\n\n【现有记忆】\n${JSON.stringify(current)}\n\n【最近记录】\n${recentText || '（无）'}\n\n【最新一轮】\n${context.userName}：${compactBlock(latestUserText, 4000)}\n${context.assistantName}：${compactBlock(replyText, 7000)}\n\n更新规则：\n- locked_notes 原样保留，绝不能删改。\n- character_anchor 只在世界书明确修正时调整，不能被临时情绪污染。\n- 关系变化和重要称呼写入 relationship_memory。\n- plot_facts 只输出本轮新增、修正或重新确认的重要事实，最多18条；不要为了凑数重抄全部旧历史，不得把未发生的猜测写成事实。\n- current_state 更新到最新一刻。\n- 已解决线索从 open_threads 移除，新悬念加入，最多16条。\n- 不续写，不评价。\n\n严格输出：\n{\n  "character_anchor": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
+  const prompt = `请更新这本互动剧场的持续记忆。\n\n剧本名：${bookRow.title}\n角色：${context.assistantName}\n玩家：${context.userName}\n\n【世界书锚点】\n${compactBlock(buildSourceSections(bookRow), 18000)}\n\n【现有记忆】\n${JSON.stringify(current)}\n\n【最近记录】\n${recentText || '（无）'}\n\n【最新一轮·时间线最前沿】\n${context.userName}：${compactBlock(latestUserText, 4000)}\n${context.assistantName}：${compactBlock(replyText, 7000)}\n\n更新规则：\n- locked_notes 原样保留，绝不能删改。\n- character_anchor 只在世界书明确修正时调整，不能被临时情绪污染。\n- 关系变化和重要称呼写入 relationship_memory。\n- plot_facts 只输出本轮新增、修正或重新确认的重要事实，最多18条；不要为了凑数重抄全部旧历史，不得把未发生的猜测写成事实。事实默认按发生顺序理解，新的明确事实可以修正旧记忆里的误判。\n- current_state 必须更新到最新一刻；除非最新一轮明确倒叙或回到过去，否则绝不能退回最近记录里的旧地点、旧动作或旧关系状态。\n- 已解决线索从 open_threads 移除，新悬念加入，最多16条。\n- 不续写，不评价。\n\n严格输出：\n{\n  "character_anchor": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
 
   const response = await providerRequest(config.url, config.init, config.body, prompt, 2400);
   if (!response.ok) throw new Error(`增量记忆整理失败 (${response.status})`);
@@ -262,6 +262,10 @@ function enqueueMemoryRefresh(bookId, task) {
   const previous = memoryQueues.get(bookId) || Promise.resolve();
   const next = previous
     .catch(() => {})
+    // Yield one event-loop turn so the theater route can persist the assistant
+    // reply before the memory worker re-reads history. This removes a race where
+    // the worker repeatedly saw only the user half of the newest exchange.
+    .then(() => new Promise(resolve => setImmediate(resolve)))
     .then(task)
     .catch(error => console.warn(`[theater:memory] refresh failed book=${bookId}:`, error.message))
     .finally(() => {
@@ -271,8 +275,18 @@ function enqueueMemoryRefresh(bookId, task) {
 }
 
 async function refreshMemoryAfterTurn({ config, bookRow, context, memory, latestUserText, replyText }) {
-  const existingId = memory?.id || null;
-  const current = normalizeTheaterMemory(memory || emptyTheaterMemory());
+  // A queued task must re-read the row when it actually starts. Two fast turns can
+  // otherwise queue with the same stale snapshot; the second task would then run
+  // after the first but still overwrite its freshly saved state with old memory.
+  let freshMemory = null;
+  try {
+    freshMemory = await readMemory(bookRow.id);
+  } catch (error) {
+    console.warn(`[theater:memory] fresh baseline unavailable book=${bookRow.id}:`, error.message);
+  }
+  const baseline = freshMemory || memory || emptyTheaterMemory();
+  const existingId = freshMemory?.id || memory?.id || null;
+  const current = normalizeTheaterMemory(baseline);
   if (!shouldRefreshMemory(current, latestUserText, replyText)) {
     await saveMemory(bookRow.id, {
       ...current,
@@ -474,7 +488,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function theaterMemoryHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, theater_memory: 'anchor-plot-state-v1' };
+      body = { ...body, theater_memory: 'anchor-plot-state-v2-ordered-refresh' };
     }
     return originalJson.call(this, body);
   };
