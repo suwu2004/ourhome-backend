@@ -55,5 +55,8 @@ test('direct server start 会加载稳定性保护且顺序与 npm start 对齐'
   assert.match(bootstrapSource, /chat_idempotency: 'request-id-theater-replay-v2'/);
   assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'local-semantic-summary-v4-strict-working-set'/);
   assert.match(bootstrapSource, /happiness_diary: '500-900-char-v1'/);
+  assert.match(bootstrapSource, /chat_prompt_cost_control: 'selective-tools-context-budget-v1'/);
+  assert.match(bootstrapSource, /background_persona: 'purpose-projected-v1'/);
+  assert.match(bootstrapSource, /theater_rule_injection: 'live-scoped-library-v1'/);
   assert.match(bootstrapSource, /supabase_quota_circuit: 'rest-402-adaptive-v2'/);
 });

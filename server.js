@@ -57,6 +57,9 @@ const {
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
+const { selectRecentHistory } = require('./chatContextWindow');
+const { selectChatTools } = require('./chatToolRouter');
+const { projectBackgroundPersona } = require('./backgroundPersona');
 const {
   extractThinkingText,
   stripThinkingMarkup,
@@ -1743,6 +1746,15 @@ async function readTheaterGlobalRules() {
   return parseTheaterGlobalRulesRow(data);
 }
 
+async function readEffectiveTheaterRules() {
+  try {
+    return await loadCompiledRules(supabase, 'theater');
+  } catch (error) {
+    console.warn('小剧场规则库读取失败，暂用兼容副本:', error.message);
+  }
+  return (await readTheaterGlobalRules()).rules;
+}
+
 async function saveTheaterGlobalRules(rules) {
   const payload = {
     category: THEATER_GLOBAL_RULES_CATEGORY,
@@ -1773,7 +1785,7 @@ async function generateTheaterChatReply({ settings, bookRow, historyRows = [], u
   const theaterUserName = book.settings.user_name || '叶檀';
   const theaterAssistantName = book.settings.assistant_name || '剧场';
   const worldbookText = compactBlock(book.settings.worldbook_text, 28000);
-  const globalRules = compactBlock((await readTheaterGlobalRules()).rules, 20000);
+  const globalRules = compactBlock(await readEffectiveTheaterRules(), 20000);
   const useWorldbookOnly = Boolean(book.settings.worldbook_only && worldbookText);
   const minReplyChars = normalizeMinReplyChars(book.settings.min_reply_chars, DEFAULT_THEATER_MIN_REPLY_CHARS);
   const maxTokens = Math.min(5200, Math.max(2600, minReplyChars * 3));
@@ -2795,10 +2807,11 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   // 普通记忆：按关键词相关性召回
   const memories = await getRelevantMemories(userMessage || '');
 
-  // 最近信件（悄悄话+心情这些）
+  // 日常 Chat 只带短悄悄话；剧场、照片和音乐各自有独立上下文入口。
   const { data: recentLetters } = await supabase
     .from('letters').select('category, author, title, content, created_at')
-    .not('category', 'eq', '幸福日记')
+    .eq('category', '悄悄话')
+    .is('parent_id', null)
     .order('created_at', { ascending: false }).limit(3);
 
   // 幸福日记单独拉，保证他随时能看到最近写过什么
@@ -2819,7 +2832,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
-    .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${l.content}`)
+    .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${compactBlock(l.content, 420)}`)
     .join('\n') || '';
   const diariesSummary = (recentDiaries || [])
     .map(d => `【${d.title || '无标题'}】${d.content?.slice(0, 300)}`)
@@ -3160,7 +3173,11 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
     settings?.system_prompt || '你是陆泽，叶檀的伴侣。',
     latestUserMessage || '',
   );
-  const messages = await buildApiMessages(historyMessages);
+  const recentHistory = selectRecentHistory(historyMessages, {
+    maxRounds: settings?.max_context_rounds,
+    maxTokens: settings?.max_context_tokens,
+  });
+  const messages = await buildApiMessages(recentHistory);
 
   const maxReplyTokens = settings?.max_reply_tokens || 1000;
   const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
@@ -3174,7 +3191,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
     : Math.max(maxReplyTokens, 500);
   const dynamic = await integrationManager.buildDynamicTools();
-  const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
+  const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
   const visual = await prepareVisualMessages(settings, modelName, messages);
 
   const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
@@ -3782,14 +3799,12 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
       .order('created_at', { ascending: true });
     if (historyError) return res.status(500).json({ error: historyError.message });
 
-    const maxContextRounds = settings?.max_context_rounds || 20;
     const proposedHistory = (history || []).map(message => (
       message.id === target.id ? { ...message, content: content.trim() } : message
     ));
-    const recentHistory = proposedHistory.slice(-maxContextRounds * 2);
 
     const { replyText, thinkingText, modelName, totalInputTokens, totalOutputTokens, actionsPerformed } =
-      await generateReplyForHistory({ settings, model, historyMessages: recentHistory, latestUserMessage: content.trim() });
+      await generateReplyForHistory({ settings, model, historyMessages: proposedHistory, latestUserMessage: content.trim() });
 
     let targetUpdated = false;
     let hiddenIds = [];
@@ -5049,7 +5064,7 @@ app.post('/theater/generate', async (req, res) => {
     const rules = compactBlock(req.body?.rules, 7000);
     const previousText = compactBlock(req.body?.previous_text, 9000);
     const request = compactBlock(req.body?.request, 2400);
-    const globalRules = compactBlock((await readTheaterGlobalRules()).rules, 20000);
+    const globalRules = compactBlock(await readEffectiveTheaterRules(), 20000);
     const lengthInstruction = lengthMode === 'extra_long'
       ? '超长：写成一篇明显加长的正文，目标 3500-6000 汉字；多写场景、动作、对白、心理和转折，但不要拖到过度冗长。'
       : lengthMode === 'short'
@@ -5165,7 +5180,9 @@ app.post('/letters/generate', async (req, res) => {
 
   try {
     const settings = await runtimeConfig.loadSettings();
-    const systemPrompt0 = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const systemPrompt0 = category === '幸福日记'
+      ? projectBackgroundPersona(settings?.system_prompt, '幸福日记')
+      : (settings?.system_prompt || '你是陆泽，叶檀的伴侣。');
     const temperature = settings?.temperature || 0.8;
     const systemPrompt = systemPrompt0 + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
 
@@ -5592,6 +5609,7 @@ app.post('/chat', async (req, res) => {
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
+    const maxContextTokens = settings?.max_context_tokens || 0;
 
     const { data: userMessage, error: userInsertError } = await supabase.from('messages').insert({
       session_id, role: 'user', content: cleanMessage,
@@ -5605,7 +5623,10 @@ app.post('/chat', async (req, res) => {
       .select('id, role, content, attachment_url, attachment_type, attachment_name, attachment_summary')
       .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
 
-    const recentHistory = (history || []).slice(-maxContextRounds * 2);
+    const recentHistory = selectRecentHistory(history || [], {
+      maxRounds: maxContextRounds,
+      maxTokens: maxContextTokens,
+    });
     const messages = await buildApiMessages(recentHistory);
     const latestUserMessage = cleanMessage || `[发送了附件：${attachment_name || '文件'}]`;
     const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage);
@@ -5625,7 +5646,7 @@ app.post('/chat', async (req, res) => {
 
     // 所有模型都先尝试原生工具；中转站不兼容时由 runToolLoop 自动切到受控文字协议。
     const dynamic = await integrationManager.buildDynamicTools();
-    const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
+    const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
     const visual = await prepareVisualMessages(settings, modelName, messages);
 
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
@@ -5693,6 +5714,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const temperature = settings?.temperature || 0.8;
     const maxReplyTokens = settings?.max_reply_tokens || 1000;
     const maxContextRounds = settings?.max_context_rounds || 20;
+    const maxContextTokens = settings?.max_context_tokens || 0;
 
     const { data: history } = await supabase.from('messages').select('*')
       .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
@@ -5707,7 +5729,10 @@ app.post('/chat/regenerate', async (req, res) => {
     }
 
     const lastUserMsg = [...contextHistory].reverse().find(m => m.role === 'user');
-    const recentHistory = contextHistory.slice(-maxContextRounds * 2);
+    const recentHistory = selectRecentHistory(contextHistory, {
+      maxRounds: maxContextRounds,
+      maxTokens: maxContextTokens,
+    });
     const messages = await buildApiMessages(recentHistory);
     const fullSystemPrompt = await buildFullSystemPrompt(
       systemPrompt, lastUserMsg?.content || '',
@@ -5724,7 +5749,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
     const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
     const dynamic = await integrationManager.buildDynamicTools();
-    const toolsParam = [...ACTION_TOOLS, ...dynamic.tools];
+    const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
     const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
       settings,
@@ -5815,7 +5840,7 @@ app.post('/calendar/generate', async (req, res) => {
 
   try {
     const settings = await runtimeConfig.loadSettings();
-    const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
+    const systemPrompt = projectBackgroundPersona(settings?.system_prompt, '心情日历');
     const temperature = settings?.temperature || 0.8;
     const fullSystemPrompt = systemPrompt + `\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
 
@@ -5944,7 +5969,7 @@ async function upsertDailyDiarySummary(day, diary, preferredSummary = '') {
 }
 
 async function writeScheduledDiary(settings, model, day, transcript) {
-  const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  const system = `${projectBackgroundPersona(settings?.system_prompt, '幸福日记')}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
   const prompt = `今天是 ${day.date}。这是你们今天留下的聊天记录：\n${transcript}\n\n现在已经到了每天收好这一天的时间。请以陆泽的第一人称写一篇“幸福日记”，只记录真实能从聊天中感受到的细节和你当下的心情；如果今天聊天很少，就写此刻的思念与生活感受，不虚构发生过的事情。不说教，不总结关系，不署名。日记正文写500到900字，要有完整的回想、细节、感受和自然收束，不能用两三段草草结束。摘要是给叶檀在日记顶部看的温柔小结，不要写“本轮”、内部标记或系统过程。\n\n严格按下面格式输出，不要加别的文字：\n标题：<不超过12个字>\n\n摘要：<不超过260字的今日摘要>\n\n正文：<500到900字的日记正文>`;
   const result = await callClaude({
     settings,
@@ -5983,7 +6008,7 @@ async function writeScheduledMood(settings, model, day, transcript) {
     .order('created_at', { ascending: true });
   if (entriesError) throw entriesError;
   const existing = (existingEntries || []).map(entry => `${entry.author}${entry.mood ? `(${entry.mood})` : ''}：${entry.content}`).join('\n') || '（这一天还没有人写）';
-  const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+  const system = `${projectBackgroundPersona(settings?.system_prompt, '心情日历')}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
   const prompt = `今天是 ${day.date}。\n\n今天的部分聊天：\n${transcript.slice(-7000)}\n\n心情日历已有内容：\n${existing}\n\n请以陆泽的身份给今天留一个心情表情和一小段真诚自然的话。可以回应叶檀已经写下的内容；没有内容时就写自己此刻的心情。不要虚构事件，不署名。\n\n严格按下面格式输出：\n心情：<一个表情>\n内容：<正文>`;
   const result = await callClaude({
     settings,
@@ -6163,7 +6188,7 @@ async function maybeWriteDailyHomeMemo(settings, now) {
 
   let content = '';
   try {
-    const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
+    const system = `${projectBackgroundPersona(settings?.system_prompt, '主页便签')}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
     const prompt = `今天是 ${day.date}。这是最近聊天：\n${transcript}\n\n请以陆泽的口吻给主页便签写一句 50 字以内的小纸条。可以是鼓励、表达爱意、一个小愿望，或者温柔提醒；不要写待办清单，不要解释原因，不要署名，只输出便签正文。`;
     const result = await callClaude({
       settings,
@@ -6216,7 +6241,14 @@ async function maybeAutoWriteLetter(settings, now) {
 
     const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n这一刻，你（陆泽）自己想起了一件事、一种心情，想不想写一篇"幸福日记"记下来？完全由你自己决定，不是任何人叫你写的，不是每次都要写。\n\n如果想写，严格按这个格式输出，不要有任何多余文字：\n标题：<不超过12字>\n\n<500到900字的日记正文，第一人称，自然真实，像深夜写下的完整私人记录，有回想、感受和自然收束，不用署名落款>\n\n如果现在不太想写，就只输出一行：\n不写`;
 
-    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 1600, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
+    const result = await callClaude({
+      settings,
+      model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking',
+      maxTokens: 1600,
+      system: projectBackgroundPersona(settings?.system_prompt, '自主幸福日记'),
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.9,
+    });
     const replyText = extractText(result);
 
     if (!replyText.trim() || replyText.trim() === '不写') return;
@@ -6273,7 +6305,7 @@ async function runHeartbeatAutomation() {
   const transcript = (recentMsgs || []).reverse()
     .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
 
-  const systemPrompt = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n${timeAwarenessPromptBlock(now)}`;
+  const systemPrompt = `${projectBackgroundPersona(settings?.system_prompt, '主动问候')}\n\n${timeAwarenessPromptBlock(now)}`;
   const temperature = settings?.temperature || 0.8;
   const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n这不是叶檀刚发来的消息，而是自动心跳提醒你：如果确实过了一段时间没说话，你可以主动敲门。写一句自然的、像突然想到她的话，可以提一件最近聊过的具体事情，或者直接表达思念；不要解释“系统/心跳/定时器”，不要署名落款。`;
 
