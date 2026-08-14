@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 
 const MAX_BOOKS_PER_COLLECTION = 60;
+const MAX_TOTAL_LOREBOOKS = 80;
 const MAX_ENTRY_CONTENT_CHARS = 40_000;
 const VALID_SCOPES = new Set(['chat', 'theater', 'both']);
 
@@ -118,21 +119,35 @@ async function importCollectionBooks(supabase, books, {
   enabled = false,
 } = {}) {
   const scope = VALID_SCOPES.has(String(applyScope)) ? String(applyScope) : 'chat';
+  const incomingBooks = books.slice(0, MAX_BOOKS_PER_COLLECTION);
   const existingBooksResult = await supabase.from('lorebooks').select('id,name,source_name');
   if (existingBooksResult.error) throw existingBooksResult.error;
+  const existingBooks = existingBooksResult.data || [];
+  const remainingCapacity = Math.max(0, MAX_TOTAL_LOREBOOKS - existingBooks.length);
+  if (!remainingCapacity) {
+    return {
+      created: [],
+      skipped: incomingBooks.map(item => ({ name: item.name, reason: 'capacity' })),
+    };
+  }
+
   const existingEntriesResult = await supabase.from('lorebook_entries').select('lorebook_id,content');
   if (existingEntriesResult.error) throw existingEntriesResult.error;
 
-  const existingNames = new Set((existingBooksResult.data || []).map(row => cleanLine(row.name, 120).toLocaleLowerCase()));
+  const existingNames = new Set(existingBooks.map(row => cleanLine(row.name, 120).toLocaleLowerCase()));
   const existingFingerprints = new Set((existingEntriesResult.data || []).map(row => fingerprint(row.content)));
   const created = [];
   const skipped = [];
 
-  for (const item of books.slice(0, MAX_BOOKS_PER_COLLECTION)) {
+  for (const item of incomingBooks) {
     const nameKey = cleanLine(item.name, 120).toLocaleLowerCase();
     const contentFingerprint = fingerprint(item.entry?.content || '');
     if (existingNames.has(nameKey) || existingFingerprints.has(contentFingerprint)) {
       skipped.push({ name: item.name, reason: 'duplicate' });
+      continue;
+    }
+    if (created.length >= remainingCapacity) {
+      skipped.push({ name: item.name, reason: 'capacity' });
       continue;
     }
 
@@ -208,6 +223,7 @@ function registerLorebookCollectionRoute(app, { supabase, upload, extractImportF
 }
 
 module.exports = {
+  MAX_TOTAL_LOREBOOKS,
   canonicalHeading,
   collectCatalogTitles,
   collectConstantExceptions,
