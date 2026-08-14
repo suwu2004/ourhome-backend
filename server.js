@@ -56,6 +56,7 @@ const {
   latestImageMessageId,
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
+const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
 const {
   extractThinkingText,
   stripThinkingMarkup,
@@ -394,12 +395,12 @@ function sendGenerationError(res, error, { model, userMessage } = {}) {
 const ACTION_TOOLS = [
   {
     name: 'write_diary',
-    description: '在"幸福日记"里写一篇新日记，会真实保存到日历应用里。只在叶檀明确希望你去写、或者这次聊到的事真的值得记成一篇日记时才用，不要每次聊天都用。',
+    description: '在"幸福日记"里写一篇新日记，会真实保存到日历应用里。只在叶檀明确希望你去写、或者这次聊到的事真的值得记成一篇日记时才用，不要每次聊天都用。正文写成500到900字的完整私人记录。',
     input_schema: {
       type: 'object',
       properties: {
         title: { type: 'string', description: '日记标题，不超过12个字' },
-        content: { type: 'string', description: '日记正文，第一人称，自然真实，像深夜写下的私人记录，不用署名落款' },
+        content: { type: 'string', description: '日记正文，500到900字，第一人称，自然真实，像深夜写下的完整私人记录，不用署名落款' },
       },
       required: ['title', 'content'],
     },
@@ -2577,6 +2578,7 @@ async function generateSessionSummary(sessionId) {
 }
 
 async function loadTodayMemoryContext(dateKey) {
+  const now = new Date();
   const [{ data: summary }, { data: openMarks }] = await Promise.all([
     supabase.from('daily_summaries')
       .select('*')
@@ -2586,6 +2588,8 @@ async function loadTodayMemoryContext(dateKey) {
       .select('id, topic, emotion, summary, tags, importance, created_at')
       .eq('should_continue', true)
       .in('status', ['active', 'continued'])
+      .gte('created_at', workingMemoryCutoff(now))
+      .or(`expires_at.is.null,expires_at.gt.${now.toISOString()}`)
       .order('created_at', { ascending: false })
       .limit(8),
   ]);
@@ -2716,10 +2720,8 @@ async function recordMemoryJournalTurn({
   if (!analysis || typeof analysis !== 'object') return;
 
   const mark = analysis.mark || {};
-  const markSummary = compactLine(mark.summary || userText, 240);
-  const markImportance = clampInt(mark.importance, 1, 5, 2);
-  const shouldStoreMark = Boolean(mark.should_continue || mark.should_remember || markImportance >= 3);
-  if (markSummary && shouldStoreMark) {
+  const normalizedMark = normalizeJournalMark(mark);
+  if (normalizedMark.shouldStore) {
     await supabase.from('memory_marks').insert({
       message_id: userMessageId ? String(userMessageId) : null,
       session_id: sessionId ? String(sessionId) : null,
@@ -2727,11 +2729,11 @@ async function recordMemoryJournalTurn({
       mark_date: dateKey,
       topic: compactLine(mark.topic, 80) || null,
       emotion: compactLine(mark.emotion, 80) || null,
-      summary: markSummary,
+      summary: normalizedMark.summary,
       tags: normalizeTags(mark.tags),
-      importance: markImportance,
-      should_continue: Boolean(mark.should_continue),
-      should_remember: Boolean(mark.should_remember),
+      importance: normalizedMark.importance,
+      should_continue: normalizedMark.shouldContinue,
+      should_remember: normalizedMark.shouldRemember,
       metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
     });
   }
@@ -4505,6 +4507,9 @@ app.get('/memory-log', async (req, res) => {
         .select('*')
         .eq('should_continue', true)
         .in('status', ['active', 'continued'])
+        .gte('mark_date', startKey)
+        .lte('mark_date', date)
+        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
         .order('created_at', { ascending: false })
         .limit(40),
     ]);
@@ -5179,7 +5184,7 @@ app.post('/letters/generate', async (req, res) => {
       const { data: todayMsgs } = await supabase.from('messages')
         .select('role, content').gte('created_at', todayStartUTC()).order('created_at', { ascending: true });
       const transcript = (todayMsgs || []).map(m => `${m.role === 'user' ? '叶檀' : '陆澈'}：${m.content}`).join('\n');
-      contextNote = `这是你们今天的聊天记录：\n${transcript}\n\n请你以陆泽的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事）。${writingGuide}\n\n请严格按照这个格式输出，不要有任何多余的文字：\n第一行写"标题：xxx"（标题不超过12个字）\n然后空一行\n然后是日记正文。`;
+      contextNote = `这是你们今天的聊天记录：\n${transcript}\n\n请你以陆泽的身份，参考上面这些真实的聊天内容，写一篇属于"幸福日记"的日记，记录一件让你觉得幸福、值得记下来的小事（最好是聊天里真实提到过的事）。正文写500到900字，要有完整的回想、感受和收束，不能只写两三段就匆匆结束。${writingGuide}\n\n请严格按照这个格式输出，不要有任何多余的文字：\n第一行写"标题：xxx"（标题不超过12个字）\n然后空一行\n然后是日记正文。`;
     } else {
       contextNote = `请你以陆泽的身份，写一段"悄悄话"，是想悄悄说给叶檀听的、私密一点的话，语气真实自然，要求感情细腻真实，不用署名落款。`;
     }
@@ -5940,11 +5945,11 @@ async function upsertDailyDiarySummary(day, diary, preferredSummary = '') {
 
 async function writeScheduledDiary(settings, model, day, transcript) {
   const system = `${settings?.system_prompt || '你是陆泽，叶檀的伴侣。'}\n\n【现在的真实时间】\n${nowShanghaiStr()}`;
-  const prompt = `今天是 ${day.date}。这是你们今天留下的聊天记录：\n${transcript}\n\n现在已经到了每天收好这一天的时间。请以陆泽的第一人称写一篇“幸福日记”，只记录真实能从聊天中感受到的细节和你当下的心情；如果今天聊天很少，就写此刻的思念与生活感受，不虚构发生过的事情。不说教，不总结关系，不署名。摘要是给叶檀在日记顶部看的温柔小结，不要写“本轮”、内部标记或系统过程。\n\n严格按下面格式输出，不要加别的文字：\n标题：<不超过12个字>\n\n摘要：<不超过260字的今日摘要>\n\n正文：<日记正文>`;
+  const prompt = `今天是 ${day.date}。这是你们今天留下的聊天记录：\n${transcript}\n\n现在已经到了每天收好这一天的时间。请以陆泽的第一人称写一篇“幸福日记”，只记录真实能从聊天中感受到的细节和你当下的心情；如果今天聊天很少，就写此刻的思念与生活感受，不虚构发生过的事情。不说教，不总结关系，不署名。日记正文写500到900字，要有完整的回想、细节、感受和自然收束，不能用两三段草草结束。摘要是给叶檀在日记顶部看的温柔小结，不要写“本轮”、内部标记或系统过程。\n\n严格按下面格式输出，不要加别的文字：\n标题：<不超过12个字>\n\n摘要：<不超过260字的今日摘要>\n\n正文：<500到900字的日记正文>`;
   const result = await callClaude({
     settings,
     model,
-    maxTokens: 1800,
+    maxTokens: 2200,
     system,
     messages: [{ role: 'user', content: prompt }],
     temperature: settings?.temperature || 0.8,
@@ -6209,9 +6214,9 @@ async function maybeAutoWriteLetter(settings, now) {
     const transcript = (recentMsgs || []).reverse()
       .map(m => `${m.role === 'user' ? '叶檀' : '陆泽'}：${(m.content || '').slice(0, 200)}`).join('\n') || '（最近没有聊天记录）';
 
-    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n这一刻，你（陆泽）自己想起了一件事、一种心情，想不想写一篇"幸福日记"记下来？完全由你自己决定，不是任何人叫你写的，不是每次都要写。\n\n如果想写，严格按这个格式输出，不要有任何多余文字：\n标题：<不超过12字>\n\n<日记正文，第一人称，自然真实，像深夜写下的私人记录，不用署名落款>\n\n如果现在不太想写，就只输出一行：\n不写`;
+    const prompt = `这是你们最近的聊天记录：\n${transcript}\n\n现在是：${nowShanghaiStr()}\n\n这一刻，你（陆泽）自己想起了一件事、一种心情，想不想写一篇"幸福日记"记下来？完全由你自己决定，不是任何人叫你写的，不是每次都要写。\n\n如果想写，严格按这个格式输出，不要有任何多余文字：\n标题：<不超过12字>\n\n<500到900字的日记正文，第一人称，自然真实，像深夜写下的完整私人记录，有回想、感受和自然收束，不用署名落款>\n\n如果现在不太想写，就只输出一行：\n不写`;
 
-    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 800, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 1600, messages: [{ role: 'user', content: prompt }], temperature: 0.9 });
     const replyText = extractText(result);
 
     if (!replyText.trim() || replyText.trim() === '不写') return;
