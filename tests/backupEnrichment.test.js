@@ -32,6 +32,8 @@ test('基础备份会补上后来新增的 OurHome 数据表', async () => {
     assert.equal(payload.tables[item.key].rows[0].table, item.table);
   }
   assert.match(payload.note, /共读划线/);
+  assert.ok(payload.tables.lorebooks);
+  assert.ok(payload.tables.lorebook_entries);
   assert.equal(Object.hasOwn(payload.tables, 'push_subscriptions'), false);
   assert.equal(Object.hasOwn(payload.tables, 'settings'), false);
 });

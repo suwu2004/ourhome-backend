@@ -57,6 +57,10 @@ require('./contextLedgerPatch');
 // Historical summaries and open-thread notes are background only. The final user
 // entry in the provider message array always owns the current turn.
 require('./chatCurrentTurnGuardPatch');
+// Rules describe behavior, memories describe lived events, and lorebooks supply
+// scoped world knowledge. Lorebooks are selected only at provider-call time so
+// Chat and each Theater book keep independent activation contexts.
+require('./lorebookPatch');
 
 // Adjust ambiguous intimacy cues before intimacyFlowPatch captures the exports.
 require('./intimacyFlowAutonomyPatch');
@@ -82,7 +86,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -107,6 +111,7 @@ try {
         chat_prompt_cost_control: 'selective-tools-context-budget-v1',
         background_persona: 'purpose-projected-v1',
         theater_rule_injection: 'live-scoped-library-v1',
+        lorebook_injection: 'scoped-keyword-budget-v1',
         calendar_day_colors: 'cloud-settings-v1',
         upload_privacy: 'main-client-private-guard-v1',
         background_recovery: 'quota-cooldown-signed-url-v2',

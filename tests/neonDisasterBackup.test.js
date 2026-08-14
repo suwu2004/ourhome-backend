@@ -8,6 +8,7 @@ const extension = fs.readFileSync(path.join(__dirname, '..', 'migrations', '2026
 const schedule = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_schedule_neon_disaster_backup.sql'), 'utf8');
 const pendingSecrets = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260809_add_neon_failover_secret_changes.sql'), 'utf8');
 const stableSecretWrap = fs.readFileSync(path.join(__dirname, '..', 'migrations', '20260810_stabilize_neon_secret_wrap_v2.sql'), 'utf8');
+const lorebookBackup = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '20260814040353_expand_neon_backup_lorebooks.sql'), 'utf8');
 
 test('Neon disaster backup migration never commits a database credential', () => {
   assert.doesNotMatch(bridge, /postgres(?:ql)?:\/\//i);
@@ -71,4 +72,11 @@ test('daily disaster snapshot is scheduled once per day, not on a tight polling 
   assert.match(schedule, /20 20 \* \* \*/);
   assert.match(schedule, /ourhome-neon-disaster-backup/);
   assert.doesNotMatch(schedule, /\*\/\d+/);
+});
+
+test('worldbooks and their entries join the disaster snapshot without embedding credentials', () => {
+  assert.match(lorebookBackup, /'lorebooks'/);
+  assert.match(lorebookBackup, /'lorebook_entries'/);
+  assert.match(lorebookBackup, /pg_get_functiondef/);
+  assert.doesNotMatch(lorebookBackup, /postgres(?:ql)?:\/\//i);
 });
