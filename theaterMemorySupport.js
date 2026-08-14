@@ -145,13 +145,13 @@ function buildMemoryPromptBlock(memoryValue) {
   if (memory.plot_facts.length) {
     const recentFacts = memory.plot_facts.slice(-36);
     const archivedFacts = memory.plot_facts.slice(0, Math.max(0, memory.plot_facts.length - recentFacts.length));
-    if (archivedFacts.length) sections.push(`【长期事件档案】\n这些都是已经发生过的旧剧情，不能因为时间久就否认或改写。\n${archivedFacts.map(item => `- ${item}`).join('\n')}`);
-    sections.push(`【近期核心剧情事实】\n${recentFacts.map(item => `- ${item}`).join('\n')}`);
+    if (archivedFacts.length) sections.push(`【长期事件档案】\n这些都是已经发生过的旧剧情，按从早到晚理解，不能因为时间久就否认或改写。\n${archivedFacts.map(item => `- ${item}`).join('\n')}`);
+    sections.push(`【近期核心剧情事实】\n以下事实按从早到晚理解，越靠后越新；如与当前状态冲突，以当前状态和本轮新剧情为准。\n${recentFacts.map(item => `- ${item}`).join('\n')}`);
   }
-  if (memory.current_state) sections.push(`【当前场景状态】\n${memory.current_state}`);
+  if (memory.current_state) sections.push(`【当前场景状态·时间线最前沿】\n${memory.current_state}`);
   if (memory.open_threads.length) sections.push(`【未完成线索】\n${memory.open_threads.map(item => `- ${item}`).join('\n')}`);
   if (!sections.length) return '';
-  return `【角色与剧情记忆】\n优先级：完整世界书与锁定记忆最高；角色锚点不能被临时情绪覆盖；已发生剧情事实必须承认；当前状态可以随新剧情更新。\n${sections.join('\n\n')}`;
+  return `【角色与剧情记忆】\n优先级：完整世界书与锁定记忆最高；角色锚点不能被临时情绪覆盖；已发生剧情事实必须承认；当前状态代表时间线最前沿，除非剧情明确倒叙或回到过去，否则不能退回较早场景。\n${sections.join('\n\n')}`;
 }
 
 function injectMemoryIntoBody(body, memory) {
@@ -200,12 +200,59 @@ function sampleTheaterHistory(rows = [], options = {}) {
     if (index < middleEnd) selected.add(index);
   }
 
-  let text = [...selected]
+  const entries = [...selected]
     .sort((a, b) => a - b)
-    .map(index => `${index + 1}. ${historyLine(list[index], userName, assistantName)}`)
+    .map(index => ({
+      index,
+      line: `${index + 1}. ${historyLine(list[index], userName, assistantName)}`,
+    }));
+  const complete = entries.map(entry => entry.line).join('\n');
+  if (complete.length <= maxChars) return complete;
+
+  // Long books used to be truncated from the end of the assembled text, which
+  // could silently remove the newest scene. Reserve most of the budget for the
+  // latest selected events first, then keep the opening anchor and spread middle
+  // checkpoints. The final output is sorted chronologically again for the model.
+  const chosen = new Map();
+  let usedChars = 0;
+  const add = entry => {
+    if (!entry || chosen.has(entry.index)) return false;
+    const cost = entry.line.length + (chosen.size ? 1 : 0);
+    if (usedChars + cost > maxChars) return false;
+    chosen.set(entry.index, entry);
+    usedChars += cost;
+    return true;
+  };
+
+  const latestBudget = Math.max(1, Math.floor(maxChars * 0.62));
+  let latestChars = 0;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    const cost = entry.line.length + (latestChars ? 1 : 0);
+    if (latestChars && latestChars + cost > latestBudget) break;
+    if (add(entry)) latestChars += cost;
+  }
+  // The literal final event is a hard invariant even under an unusually tight
+  // budget; maxChars has a 6k floor so this normally costs far less than the cap.
+  add(entries[entries.length - 1]);
+
+  const openingBudget = Math.max(1, Math.floor(maxChars * 0.18));
+  let openingChars = 0;
+  for (const entry of entries) {
+    if (chosen.has(entry.index)) continue;
+    const cost = entry.line.length + (openingChars ? 1 : 0);
+    if (openingChars && openingChars + cost > openingBudget) break;
+    if (add(entry)) openingChars += cost;
+  }
+
+  for (const entry of entries) {
+    if (!add(entry) && usedChars >= maxChars) break;
+  }
+
+  return [...chosen.values()]
+    .sort((a, b) => a.index - b.index)
+    .map(entry => entry.line)
     .join('\n');
-  if (text.length > maxChars) text = text.slice(0, maxChars);
-  return text;
 }
 
 const SIGNIFICANT_THEATER_EVENT_RE = /(表白|答应|拒绝|承诺|约定|结婚|订婚|怀孕|生子|分手|和好|离开|回来|搬家|受伤|流血|生病|昏迷|死亡|失踪|发现|真相|秘密|身份暴露|第一次|亲吻|接吻|争吵|吵架|原谅|道歉|决定|加入|背叛|救下|杀死|被抓|逃走)/u;
