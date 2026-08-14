@@ -166,6 +166,42 @@ function approximateTokens(value) {
   return Math.ceil(ascii / 4) + other;
 }
 
+function clipTextToApproxTokens(value, maxTokens) {
+  const text = String(value || '');
+  const budget = Math.max(0, Math.floor(Number(maxTokens) || 0));
+  if (!text || budget <= 0) return '';
+  if (approximateTokens(text) <= budget) return text;
+
+  const marker = '\n…（本条世界书已按本轮预算截断）';
+  const markerTokens = approximateTokens(marker);
+  if (budget <= markerTokens + 8) return '';
+  const maxUnits = (budget - markerTokens) * 4;
+  let usedUnits = 0;
+  let clipped = '';
+  for (const char of text) {
+    const units = char.charCodeAt(0) <= 0x7f ? 1 : 4;
+    if (usedUnits + units > maxUnits) break;
+    clipped += char;
+    usedUnits += units;
+  }
+  return `${clipped.trimEnd()}${marker}`;
+}
+
+function truncateCompiledContext(value, maxChars = MAX_COMPILED_CHARS) {
+  const limit = Math.max(0, Math.floor(Number(maxChars) || 0));
+  if (!limit) return '';
+  const text = cleanText(value, limit + 1);
+  if (text.length <= limit) return text;
+
+  const marker = '\n…（世界书上下文达到本轮总上限）';
+  const prefixLimit = Math.max(0, limit - marker.length);
+  let prefix = text.slice(0, prefixLimit);
+  const candidates = ['\n\n', '\n', '。', '！', '？'].map(token => prefix.lastIndexOf(token));
+  const boundary = Math.max(...candidates);
+  if (boundary >= Math.floor(prefixLimit * 0.8)) prefix = prefix.slice(0, boundary + 1);
+  return `${prefix.trimEnd()}${marker}`;
+}
+
 function safeRegex(pattern) {
   const text = cleanLine(pattern, 180);
   if (!text) return null;
@@ -219,9 +255,16 @@ function selectLorebookEntries(book, entries, historyMessages = []) {
   const selected = [];
   let used = 0;
   for (const entry of matched) {
-    const cost = approximateTokens(`${entry.name || ''}\n${entry.content || ''}`);
-    if (selected.length && used + cost > budget) continue;
-    selected.push(entry);
+    const header = `${entry.name || ''}\n`;
+    const headerCost = approximateTokens(header);
+    const remaining = budget - used - headerCost;
+    if (remaining <= 0) break;
+    const content = clipTextToApproxTokens(entry.content || '', remaining);
+    if (!content) continue;
+    const selectedEntry = content === entry.content ? entry : { ...entry, content };
+    const cost = approximateTokens(`${header}${content}`);
+    if (used + cost > budget) continue;
+    selected.push(selectedEntry);
     used += cost;
     if (used >= budget) break;
   }
@@ -246,7 +289,7 @@ function compileLorebookContext(books = [], entries = [], historyMessages = [], 
       return `${title ? `【${title}】\n` : ''}${cleanText(entry.content, MAX_ENTRY_CONTENT_CHARS)}`;
     }).join('\n\n')}`);
   }
-  return cleanText(sections.join('\n\n'), MAX_COMPILED_CHARS);
+  return truncateCompiledContext(sections.join('\n\n'), MAX_COMPILED_CHARS);
 }
 
 async function loadCompiledLorebookContext(supabase, options = {}) {
@@ -287,7 +330,12 @@ function createLorebookStore(supabase) {
       if (result.error) throw result.error;
       entries = result.data || [];
     }
-    return (books || []).map(book => ({ ...book, entries: entries.filter(entry => String(entry.lorebook_id) === String(book.id)) }));
+    const entriesByBook = new Map();
+    for (const entry of entries) {
+      const key = String(entry.lorebook_id);
+      entriesByBook.set(key, [...(entriesByBook.get(key) || []), entry]);
+    }
+    return (books || []).map(book => ({ ...book, entries: entriesByBook.get(String(book.id)) || [] }));
   }
 
   async function createBook(rawBook = {}, rawEntries = []) {
@@ -425,7 +473,7 @@ function registerLorebookRoutes(app, { supabase, upload, extractImportFile }) {
     try {
       const book = (await store.listBooks()).find(item => String(item.id) === String(req.params.id));
       if (!book) return res.status(404).json({ error: '找不到这本世界书' });
-      res.setHeader('Content-Disposition', `attachment; filename="lorebook-${book.id}.json"`);
+      res.setHeader('Content-Disposition', `attachment; filename=\"lorebook-${book.id}.json\"`);
       res.json(exportLorebookV3(book));
     } catch (error) { res.status(500).json({ error: error.message || '世界书没有导出成功' }); }
   });
@@ -441,6 +489,8 @@ module.exports = {
   normalizeEntryInput,
   parseLorebookImport,
   approximateTokens,
+  clipTextToApproxTokens,
+  truncateCompiledContext,
   safeRegex,
   entryMatches,
   selectLorebookEntries,
