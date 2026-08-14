@@ -9,6 +9,8 @@ const EXTRA_BACKUP_TABLES = [
   { key: 'session_summaries', table: 'session_summaries', order: ['updated_at', true], limit: 5000 },
   { key: 'milestones', table: 'milestones', order: ['date', true], limit: 5000 },
   { key: 'theater_rules', table: 'theater_rules', order: ['updated_at', true], limit: 5000 },
+  { key: 'lorebooks', table: 'lorebooks', order: ['updated_at', true], limit: 5000 },
+  { key: 'lorebook_entries', table: 'lorebook_entries', order: ['updated_at', true], limit: 40000 },
   { key: 'phone_calls', table: 'phone_calls', order: ['created_at', true], limit: 5000 },
 ];
 
@@ -41,7 +43,7 @@ async function enrichBackupPayload(supabase, payload) {
     tables: { ...(payload.tables || {}), ...extraTables },
     note: [
       payload.note,
-      '备份已包含共读划线、陆泽书签、章节预读、今日摘要、未完待续、窗口简介、重要时刻、小剧场规则和通话记录。',
+      '备份已包含共读划线、陆泽书签、章节预读、今日摘要、未完待续、窗口简介、重要时刻、规则库、世界书和通话记录。',
     ].filter(Boolean).join(' '),
   };
 }
