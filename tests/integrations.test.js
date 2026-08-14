@@ -59,6 +59,27 @@ test('Tavily 线路继续使用 Tavily 请求格式', async () => {
   assert.equal(result.results[0].title, 'Tavily result');
 });
 
+test('普通 Chat 不读取远程连接，实时意图才加载联网工具', async () => {
+  let connectionReads = 0;
+  const manager = createIntegrationManager({
+    getReadingAssistantBridge: () => ({ tools: [], handlers: new Map() }),
+    listEnabledConnectionRuntimes: async () => {
+      connectionReads += 1;
+      return [{
+        id: 'web-one', kind: 'web_search', name: 'Search', secret: 'saved-secret', config: {},
+      }];
+    },
+  });
+
+  const ordinary = await manager.buildDynamicTools({ routingContext: [{ content: '宝贝抱抱' }] });
+  assert.deepEqual(ordinary.tools, []);
+  assert.equal(connectionReads, 0);
+
+  const realtime = await manager.buildDynamicTools({ routingContext: [{ content: '查一下今天最新天气' }] });
+  assert.equal(connectionReads, 1);
+  assert.ok(realtime.tools.some(tool => tool.name === 'web_search'));
+});
+
 test('MCP 工具进入模型前会修复 Schema，并在连接测试中返回诊断', async () => {
   const previousFetch = global.fetch;
   const remoteTools = [{

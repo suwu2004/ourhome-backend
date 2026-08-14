@@ -58,6 +58,7 @@ const {
 const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
 const { selectRecentHistory } = require('./chatContextWindow');
+const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
 const { projectBackgroundPersona } = require('./backgroundPersona');
 const {
@@ -2329,8 +2330,9 @@ function cosineSimilarity(a, b) {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
 }
 
-// 混合搜索：向量语义 + bigram关键词，结合时间衰减权重排序
-async function getRelevantMemories(message) {
+// 混合搜索：向量语义 + bigram关键词，结合时间衰减权重排序。
+// 核心记忆与相关记忆共享同一次数据读取，避免每轮 Chat 重复拉 memories。
+async function loadChatMemoryRecall(message) {
   const text = (message || '').replace(/[\s,，。！？、!?.]/g, '');
   const bigrams = [];
   for (let i = 0; i < text.length - 1; i++) bigrams.push(text.slice(i, i + 2));
@@ -2343,7 +2345,7 @@ async function getRelevantMemories(message) {
   ]);
 
   const memories = allMemories || [];
-  if (memories.length === 0) return [];
+  if (memories.length === 0) return { protectedMemories: [], relevantMemories: [] };
 
   // 给每条记忆打混合分
   const scored = memories.map(m => {
@@ -2396,7 +2398,14 @@ async function getRelevantMemories(message) {
     })).catch(err => console.error('记忆强化失败:', err.message));
   }
 
-  return finalResult;
+  const protectedMemories = memories
+    .filter(memory => memory.is_protected)
+    .sort((left, right) => String(left.timestamp || '').localeCompare(String(right.timestamp || '')));
+  return { protectedMemories, relevantMemories: finalResult };
+}
+
+async function getRelevantMemories(message) {
+  return (await loadChatMemoryRecall(message)).relevantMemories;
 }
 
 function assessLongMemoryCandidate(summary) {
@@ -2800,35 +2809,38 @@ AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动�
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
 async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
-  // 锁定记忆：is_protected=true的核心记忆，每次全量注入，不走搜索、不会漏
-  const { data: protectedMemories } = await supabase
-    .from('memories').select('summary').eq('is_protected', true).order('timestamp', { ascending: true });
-
-  // 普通记忆：按关键词相关性召回
-  const memories = await getRelevantMemories(userMessage || '');
-
-  // 日常 Chat 只带短悄悄话；剧场、照片和音乐各自有独立上下文入口。
-  const { data: recentLetters } = await supabase
-    .from('letters').select('category, author, title, content, created_at')
-    .eq('category', '悄悄话')
-    .is('parent_id', null)
-    .order('created_at', { ascending: false }).limit(3);
-
-  // 幸福日记单独拉，保证他随时能看到最近写过什么
-  const { data: recentDiaries } = await supabase
-    .from('letters').select('title, content, created_at')
-    .eq('category', '幸福日记').is('parent_id', null)
-    .order('created_at', { ascending: false }).limit(5);
-
-  const todayContext = await loadTodayMemoryContext(shanghaiDateKeyFromTime());
+  // 各块彼此独立，同时读取；核心记忆与相关记忆共用一个 memories 快照。
+  const [
+    memoryRecall,
+    { data: recentLetters },
+    { data: recentDiaries },
+    todayContext,
+    pinnedFavorites,
+    musicRoomBlock,
+    photoMemoryBlock,
+    chatSharedRules,
+  ] = await Promise.all([
+    loadChatMemoryRecall(userMessage || ''),
+    supabase.from('letters').select('category, author, title, content, created_at')
+      .eq('category', '悄悄话')
+      .is('parent_id', null)
+      .order('created_at', { ascending: false }).limit(3),
+    supabase.from('letters').select('title, content, created_at')
+      .eq('category', '幸福日记').is('parent_id', null)
+      .order('created_at', { ascending: false }).limit(5),
+    loadTodayMemoryContext(shanghaiDateKeyFromTime()),
+    loadPinnedFavorites(),
+    loadMusicRoomPromptBlock(),
+    loadPhotoMemoryPromptBlock(),
+    loadCompiledRules(supabase, 'chat').catch(error => {
+      console.warn('Chat 共享规则读取失败:', error.message);
+      return '';
+    }),
+  ]);
+  const protectedMemories = memoryRecall.protectedMemories;
+  const memories = memoryRecall.relevantMemories;
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
-  const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(await loadPinnedFavorites());
-  const musicRoomBlock = await loadMusicRoomPromptBlock();
-  const photoMemoryBlock = await loadPhotoMemoryPromptBlock();
-  const chatSharedRules = await loadCompiledRules(supabase, 'chat').catch(error => {
-    console.warn('Chat 共享规则读取失败:', error.message);
-    return '';
-  });
+  const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(pinnedFavorites);
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
   const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
   const lettersSummary = (recentLetters || [])
@@ -3190,7 +3202,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const firstMaxTokens = shouldThink
     ? Math.max(maxReplyTokens + thinkingBudget, 2000)
     : Math.max(maxReplyTokens, 500);
-  const dynamic = await integrationManager.buildDynamicTools();
+  const dynamic = await integrationManager.buildDynamicTools({ routingContext: recentHistory });
   const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
   const visual = await prepareVisualMessages(settings, modelName, messages);
 
@@ -5619,11 +5631,7 @@ app.post('/chat', async (req, res) => {
     persistedUserMessage = userMessage;
     await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', session_id);
 
-    const { data: history } = await supabase.from('messages')
-      .select('id, role, content, attachment_url, attachment_type, attachment_name, attachment_summary')
-      .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
-
-    const recentHistory = selectRecentHistory(history || [], {
+    const recentHistory = await loadRecentVisibleHistory(supabase, session_id, {
       maxRounds: maxContextRounds,
       maxTokens: maxContextTokens,
     });
@@ -5645,7 +5653,7 @@ app.post('/chat', async (req, res) => {
       : Math.max(maxReplyTokens, 500);
 
     // 所有模型都先尝试原生工具；中转站不兼容时由 runToolLoop 自动切到受控文字协议。
-    const dynamic = await integrationManager.buildDynamicTools();
+    const dynamic = await integrationManager.buildDynamicTools({ routingContext: recentHistory });
     const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
     const visual = await prepareVisualMessages(settings, modelName, messages);
 
@@ -5716,8 +5724,10 @@ app.post('/chat/regenerate', async (req, res) => {
     const maxContextRounds = settings?.max_context_rounds || 20;
     const maxContextTokens = settings?.max_context_tokens || 0;
 
-    const { data: history } = await supabase.from('messages').select('*')
-      .eq('session_id', session_id).eq('visible', true).order('created_at', { ascending: true });
+    const history = await loadVisibleHistoryCandidates(supabase, session_id, {
+      maxRounds: maxContextRounds,
+      extraRows: 1,
+    });
     if (!history || history.length === 0) return res.status(400).json({ error: '没有可重新生成的消息' });
 
     let contextHistory = history;
@@ -5748,7 +5758,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const { shouldThink, thinkingParam, promptAddition } = await resolveThinkingParam({ settings, modelName: modelNameRegen, gemini: geminiRegen, thinkingBuiltIn: thinkingBuiltInRegen, userMessage: lastUserMsg?.content || '' });
     const minReplyChars = normalizeMinReplyChars(settings?.min_reply_chars, DEFAULT_CHAT_MIN_REPLY_CHARS);
     const finalSystemPrompt = fullSystemPrompt + buildAdaptiveReplyInstruction(minReplyChars, 'chat') + (promptAddition || '');
-    const dynamic = await integrationManager.buildDynamicTools();
+    const dynamic = await integrationManager.buildDynamicTools({ routingContext: recentHistory });
     const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
     const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
     const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({

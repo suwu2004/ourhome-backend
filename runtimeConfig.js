@@ -6,6 +6,7 @@ const { createReadingToolSafety } = require('./readingToolSafety');
 const { createToyboxAssistant } = require('./toyboxAssistant');
 const { createLuzePrivateRoomAssistant } = require('./luzePrivateRoomAssistant');
 const { installPrivateBucketGuard } = require('./privateUploads');
+const { chatLocalToolNeeds } = require('./chatToolRouter');
 
 function createRuntimeConfig(supabase) {
   // The shared uploads bucket contains chat attachments and Toybox drawings.
@@ -236,17 +237,24 @@ function createRuntimeConfig(supabase) {
     return unwrap(data) || null;
   }
 
-  function getReadingAssistantBridge() {
-    const safeReading = createReadingToolSafety({
-      supabase,
-      bridge: readingAssistant.getToolBridge(),
-    });
-    const noteBridge = readingNoteAssistant.getToolBridge();
-    const toyboxBridge = toyboxAssistant.getToolBridge();
-    const privateRoomBridge = luzePrivateRoomAssistant.getToolBridge();
+  function getReadingAssistantBridge(options = {}) {
+    const hasRoutingContext = Object.prototype.hasOwnProperty.call(options, 'routingContext');
+    const needs = hasRoutingContext
+      ? chatLocalToolNeeds(options.routingContext)
+      : { reading: true, toybox: true, privateRoom: true };
+    const bridges = [];
+    if (needs.reading) {
+      bridges.push(createReadingToolSafety({
+        supabase,
+        bridge: readingAssistant.getToolBridge(),
+      }));
+      bridges.push(readingNoteAssistant.getToolBridge());
+    }
+    if (needs.toybox) bridges.push(toyboxAssistant.getToolBridge());
+    if (needs.privateRoom) bridges.push(luzePrivateRoomAssistant.getToolBridge());
     return {
-      tools: [...safeReading.tools, ...noteBridge.tools, ...toyboxBridge.tools, ...privateRoomBridge.tools],
-      handlers: new Map([...safeReading.handlers, ...noteBridge.handlers, ...toyboxBridge.handlers, ...privateRoomBridge.handlers]),
+      tools: bridges.flatMap(bridge => bridge.tools || []),
+      handlers: new Map(bridges.flatMap(bridge => [...(bridge.handlers || new Map())])),
     };
   }
 

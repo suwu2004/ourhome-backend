@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { selectChatTools } = require('../chatToolRouter');
+const { chatLocalToolNeeds, chatNeedsRemoteTools, selectChatTools } = require('../chatToolRouter');
 
 const names = [
   'write_diary', 'save_memory', 'search_memories', 'search_chat_history', 'manage_memory',
@@ -33,11 +33,16 @@ test('记忆、共读、玩具熊和私人房间按关键词路由', () => {
   assert.deepEqual(selectedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
   assert.deepEqual(selectedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
   assert.deepEqual(selectedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
+  assert.deepEqual(chatLocalToolNeeds('看看共读小屋的批注'), { reading: true, toybox: false, privateRoom: false });
+  assert.deepEqual(chatLocalToolNeeds('我们开一局五子棋'), { reading: false, toybox: true, privateRoom: false });
+  assert.deepEqual(chatLocalToolNeeds('宝贝抱抱'), { reading: false, toybox: false, privateRoom: false });
 });
 
 test('实时信息才开放联网和 MCP 工具', () => {
   assert.deepEqual(selectedNames('查一下今天最新天气'), ['web_search', 'mcp_12345678_weather']);
   assert.ok(!selectedNames('查一下我的聊天记录').includes('web_search'));
+  assert.equal(chatNeedsRemoteTools('查一下今天最新天气'), true);
+  assert.equal(chatNeedsRemoteTools('查一下我的聊天记录'), false);
 });
 
 test('省略式确认会参考最近几条上下文继续开放同一房间工具', () => {

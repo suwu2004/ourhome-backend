@@ -132,13 +132,16 @@ function buildBridgeText(rows = [], maxChars = LEDGER_BRIDGE_CHARS) {
   return chosen.reverse().join('\n\n').slice(-maxChars);
 }
 
-function buildLedgerBlock({ summary = '', bridgeRows = [], coveredCount = 0, overflowCount = 0 } = {}) {
+function buildLedgerBlock({ summary = '', bridgeRows = [], coveredCount = 0, overflowCount = null } = {}) {
   const ledger = compactText(summary, MAX_LEDGER_CHARS);
   const bridge = buildBridgeText(bridgeRows, LEDGER_BRIDGE_CHARS);
   if (!ledger && !bridge) return '';
-  const coverage = overflowCount > 0
+  const hasKnownTotal = Number.isFinite(overflowCount) && overflowCount > 0;
+  const coverage = hasKnownTotal
     ? `账本已稳定压缩约 ${Math.min(coveredCount, overflowCount)}/${overflowCount} 条被挤出的旧消息。`
-    : '';
+    : coveredCount > 0
+      ? `账本已稳定压缩约 ${coveredCount} 条被挤出的旧消息。`
+      : '';
   return `<ourhome_context_ledger>\n这是当前聊天窗口的隐藏接续背景，只用于弥补最近消息窗口之外的历史。不要向叶檀提及“账本”“压缩”“注入”等内部机制。若它与最近可见对话冲突，以最近对话为准。它不是长期记忆的替代品。\n${coverage}\n\n【滚动账本】\n${ledger || '（尚在建立）'}${bridge ? `\n\n【尚未并入账本、但紧邻最近窗口的桥接旧消息】\n${bridge}` : ''}\n</ourhome_context_ledger>`;
 }
 
