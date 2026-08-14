@@ -7,6 +7,7 @@ const mammoth = require('mammoth');
 const multer = require('multer');
 const { isTheaterRequest } = require('./nonChatBudgetPatch');
 const { loadCompiledLorebookContext, registerLorebookRoutes } = require('./lorebookStore');
+const { registerLorebookCollectionRoute } = require('./lorebookCollectionImport');
 
 const LOREBOOK_MARKER = '<ourhome_lorebook_context>';
 const requestContext = new AsyncLocalStorage();
@@ -103,8 +104,6 @@ async function extractImportFile(file) {
   throw new Error('先传 .json、.docx、.txt 或 .md 格式的世界书。');
 }
 
-// Preserve the exact theater book id across the asynchronous provider call so
-// a lorebook bound to one small world can never activate in another one.
 const originalPost = express.application.post;
 express.application.post = function lorebookScopedPost(path, ...handlers) {
   const route = String(path || '');
@@ -140,7 +139,9 @@ if (typeof previousFetch === 'function') {
 const originalListen = express.application.listen;
 express.application.listen = function lorebookListen(...args) {
   if (!routesRegistered) {
-    registerLorebookRoutes(this, { supabase: getSupabase(), upload, extractImportFile });
+    const supabase = getSupabase();
+    registerLorebookRoutes(this, { supabase, upload, extractImportFile });
+    registerLorebookCollectionRoute(this, { supabase, upload, extractImportFile });
     routesRegistered = true;
   }
   return originalListen.apply(this, args);
@@ -150,7 +151,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function lorebookHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, lorebooks: 'scoped-keyword-budget-v1' };
+      body = { ...body, lorebooks: 'scoped-keyword-budget-v2-collection-import' };
     }
     return originalJson.call(this, body);
   };
