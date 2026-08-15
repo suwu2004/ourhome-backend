@@ -34,6 +34,7 @@ test('injects layered memory before theater history and replaces an old block', 
   };
   const next = injectMemoryIntoBody(body, {
     character_anchor: '外冷内热，不轻易承诺。',
+    character_memory: '他左手旧伤遇冷会疼，习惯把钥匙放在大衣内袋。',
     relationship_memory: '两人已经确认恋爱关系。',
     plot_facts: ['第一次见面发生在雨夜。'],
     current_state: '两人正在车站等车。',
@@ -43,6 +44,8 @@ test('injects layered memory before theater history and replaces an old block', 
   const text = next.messages[0].content;
   assert.match(text, /【角色与剧情记忆】/u);
   assert.match(text, /称呼固定为宝宝/u);
+  assert.match(text, /【角色长期记忆】/u);
+  assert.match(text, /左手旧伤遇冷会疼/u);
   assert.match(text, /第一次见面发生在雨夜/u);
   assert.match(text, /当前场景状态·时间线最前沿/u);
   assert.match(text, /不能退回较早场景/u);
@@ -50,13 +53,15 @@ test('injects layered memory before theater history and replaces an old block', 
   assert.ok(text.indexOf('【角色与剧情记忆】') < text.indexOf('【较早剧情提要】'));
 });
 
-test('normalizes and caps theater memory lists with v2 budgets', () => {
+test('normalizes and caps theater memory lists with v3 character memory', () => {
   const memory = normalizeTheaterMemory({
+    character_memory: '持久角色事实'.repeat(1000),
     plot_facts: Array.from({ length: 70 }, (_, index) => `事实 ${index}`),
     open_threads: Array.from({ length: 20 }, (_, index) => `线索 ${index}`),
     turns_since_refresh: 99,
   });
-  assert.equal(memory.version, 2);
+  assert.equal(memory.version, 3);
+  assert.ok(memory.character_memory.length <= 6000);
   assert.equal(memory.plot_facts.length, 60);
   assert.equal(memory.open_threads.length, 16);
   assert.equal(memory.turns_since_refresh, 30);
@@ -92,11 +97,12 @@ test('tight history budgets still preserve the literal newest scene', () => {
   assert.match(sampled, /120\. /u);
 });
 
-test('refreshes every third turn or immediately after a significant event', () => {
+test('refreshes old v2 books once to acquire role memory, then every third turn or significant event', () => {
   assert.equal(shouldRefreshMemory({ character_anchor: '', plot_facts: [] }, '', ''), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 1 }, '普通聊天', '普通回复'), false);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 2 }, '普通聊天', '普通回复'), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 0 }, '我答应和你结婚', '他愣住了'), true);
+  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 0 }, '普通聊天', '普通回复'), true);
+  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 1 }, '普通聊天', '普通回复'), false);
+  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 2 }, '普通聊天', '普通回复'), true);
+  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 0 }, '我答应和你结婚', '他愣住了'), true);
 });
 
 test('incremental theater facts merge without deleting old unique events', () => {
@@ -104,9 +110,14 @@ test('incremental theater facts merge without deleting old unique events', () =>
   assert.deepEqual(merged, ['第一次见面是在雨夜', '答应会回来', '一起搬进新家']);
 });
 
-test('memory prompt separates archived and recent plot facts', () => {
+test('memory prompt separates durable role facts, archived events and recent plot facts', () => {
   const facts = Array.from({ length: 45 }, (_, index) => `事件 ${index + 1}`);
-  const prompt = buildMemoryPromptBlock({ plot_facts: facts });
+  const prompt = buildMemoryPromptBlock({
+    character_memory: '妹妹叫小满，右膝旧伤，下雨天会酸。',
+    plot_facts: facts,
+  });
+  assert.match(prompt, /角色长期记忆/);
+  assert.match(prompt, /妹妹叫小满/);
   assert.match(prompt, /长期事件档案/);
   assert.match(prompt, /近期核心剧情事实/);
   assert.match(prompt, /事件 1/);
