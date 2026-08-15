@@ -74,6 +74,43 @@ test('稳定 topic 的真实后续在 72 小时工作记忆窗口内继续更新
   );
 });
 
+test('换了 Chat 会话后，同一稳定 topic 的后续仍更新原临时记忆', () => {
+  const existing = mark({ topic: 'API站点固定模型', session_id: '22' });
+  const candidate = mark({
+    message_id: '204',
+    session_id: '99',
+    topic: 'API站点固定模型',
+    summary: '新窗口继续确认站点二改为 Gemini，原来的规则继续有效。',
+  });
+  assert.equal(
+    workingMemoryThreadMatch(candidate, existing, Date.parse('2026-08-15T15:00:00.000Z')),
+    'same-topic-cross-session',
+  );
+});
+
+test('换会话后的完全相同事实不会再新增一条', () => {
+  const existing = mark({ session_id: '22' });
+  const candidate = mark({ message_id: '205', session_id: '99' });
+  assert.equal(
+    workingMemoryThreadMatch(candidate, existing, Date.parse('2026-08-15T10:00:00.000Z')),
+    'exact-summary',
+  );
+});
+
+test('跨会话只允许精确事实或稳定 topic 合并，不做模糊猜测', () => {
+  const existing = mark({ session_id: '22' });
+  const candidate = mark({
+    message_id: '206',
+    session_id: '99',
+    topic: '模型切换规则继续确认',
+    summary: '继续讨论另一个模型页面的按钮位置和显示方式。',
+  });
+  assert.equal(
+    workingMemoryThreadMatch(candidate, existing, Date.parse('2026-08-15T09:20:00.000Z')),
+    null,
+  );
+});
+
 test('模糊相似只在短滚动窗口内合并，避免几小时后的不同状态乱并', () => {
   const existing = mark();
   const candidate = mark({
@@ -121,7 +158,7 @@ test('滚动记忆保留最新状态并允许待续事项自然收尾', () => {
   assert.equal(merged.metadata.first_message_id, '100');
   assert.equal(merged.metadata.last_message_id, '107');
   assert.equal(merged.metadata.merged_turn_count, 2);
-  assert.equal(merged.metadata.working_memory_rollup, 'rolling-thread-v2');
+  assert.equal(merged.metadata.working_memory_rollup, 'rolling-thread-v3-cross-session');
 });
 
 test('异步整理较旧消息晚到时不会倒退覆盖较新的临时状态', () => {
@@ -159,11 +196,13 @@ test('同一消息重试不会增加重复整理次数', () => {
   assert.equal(merged.metadata.merged_turn_count, 1);
 });
 
-test('运行时只对自动 memory-journal 写入做滚动整理并使用完整工作记忆窗口', () => {
+test('运行时只对自动 memory-journal 写入做滚动整理，并跨会话检查精确重复', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'memoryLayerPatch.js'), 'utf8');
   assert.match(source, /candidate\.metadata\?\.assistant_message_id/);
   assert.match(source, /findWorkingMemoryThreadMatch/);
   assert.match(source, /EXACT_THREAD_WINDOW_MS/);
-  assert.match(source, /working_memory_dedup: 'rolling-thread-v2-72h-exact-topic'/);
+  assert.doesNotMatch(source, /parsed\.searchParams\.set\('session_id'/);
+  assert.match(source, /serializeWorkingMemoryWrite\('journal-global'/);
+  assert.match(source, /working_memory_dedup: 'rolling-thread-v3-cross-session'/);
   assert.match(source, /keeping normal insert/);
 });
