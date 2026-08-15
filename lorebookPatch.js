@@ -10,6 +10,7 @@ const { loadCompiledLorebookContext, registerLorebookRoutes } = require('./loreb
 const { registerLorebookCollectionRoute } = require('./lorebookCollectionImport');
 
 const LOREBOOK_MARKER = '<ourhome_lorebook_context>';
+const LOREBOOK_CONTEXT_CAP_MARKER = '…（世界书上下文达到本轮总上限）';
 const requestContext = new AsyncLocalStorage();
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -80,6 +81,40 @@ function lorebookBlock(context, scope) {
   return `${LOREBOOK_MARKER}\n【本轮唤醒的世界书知识】\n${guidance}\n\n${context}\n</ourhome_lorebook_context>`;
 }
 
+function contextBudgetSnapshot(context) {
+  const text = String(context || '');
+  return {
+    constant_context_chars: text.length,
+    reached_cap: text.includes(LOREBOOK_CONTEXT_CAP_MARKER),
+  };
+}
+
+async function loadLorebookBudgetReport(supabase) {
+  // Empty history intentionally measures only always-on context (plus anything
+  // recursive scanning can wake from it). Keyword-only entries remain dynamic and
+  // are not falsely counted as guaranteed prompt weight.
+  const [chatContext, theaterContext] = await Promise.all([
+    loadCompiledLorebookContext(supabase, { scope: 'chat', historyMessages: [] }),
+    loadCompiledLorebookContext(supabase, { scope: 'theater', targetBookId: null, historyMessages: [] }),
+  ]);
+  return {
+    basis: 'enabled-constant-context-v1',
+    chat: contextBudgetSnapshot(chatContext),
+    theater: contextBudgetSnapshot(theaterContext),
+  };
+}
+
+function registerLorebookBudgetRoute(app, supabase) {
+  // Register before /lorebooks/:id so "context-budget" is never treated as a UUID.
+  app.get('/lorebooks/context-budget', async (req, res) => {
+    try {
+      res.json(await loadLorebookBudgetReport(supabase));
+    } catch (error) {
+      res.status(500).json({ error: error.message || '世界书预算没有读取成功' });
+    }
+  });
+}
+
 async function injectLorebook(body, scope, targetBookId = null) {
   const context = await loadCompiledLorebookContext(getSupabase(), {
     scope,
@@ -140,6 +175,7 @@ const originalListen = express.application.listen;
 express.application.listen = function lorebookListen(...args) {
   if (!routesRegistered) {
     const supabase = getSupabase();
+    registerLorebookBudgetRoute(this, supabase);
     registerLorebookRoutes(this, { supabase, upload, extractImportFile });
     registerLorebookCollectionRoute(this, { supabase, upload, extractImportFile });
     routesRegistered = true;
@@ -151,7 +187,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function lorebookHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, lorebooks: 'scoped-keyword-budget-v3-housekeeping' };
+      body = { ...body, lorebooks: 'scoped-keyword-budget-v4-visible-cap' };
     }
     return originalJson.call(this, body);
   };
@@ -161,12 +197,16 @@ try {
 
 module.exports = {
   LOREBOOK_MARKER,
+  LOREBOOK_CONTEXT_CAP_MARKER,
   contentText,
   historyMessages,
   isMainChat,
   isProviderRequest,
   appendSystemBlock,
   lorebookBlock,
+  contextBudgetSnapshot,
+  loadLorebookBudgetReport,
+  registerLorebookBudgetRoute,
   injectLorebook,
   extractImportFile,
 };

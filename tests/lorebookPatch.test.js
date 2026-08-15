@@ -5,11 +5,13 @@ const path = require('node:path');
 
 const {
   LOREBOOK_MARKER,
+  LOREBOOK_CONTEXT_CAP_MARKER,
   historyMessages,
   isMainChat,
   isProviderRequest,
   appendSystemBlock,
   lorebookBlock,
+  contextBudgetSnapshot,
   extractImportFile,
 } = require('../lorebookPatch');
 
@@ -47,6 +49,17 @@ test('lorebook context appends once to string and block-array systems', () => {
 test('theater lorebook guidance preserves formal Chat isolation', () => {
   assert.match(lorebookBlock('设定', 'theater'), /不能读取或改写正式 Chat 记忆/);
   assert.match(lorebookBlock('设定', 'chat'), /不能覆盖真实记忆/);
+});
+
+test('worldbook budget status reports only the compiled constant-context cap marker', () => {
+  assert.deepEqual(contextBudgetSnapshot('abc'), { constant_context_chars: 3, reached_cap: false });
+  const capped = `前文${LOREBOOK_CONTEXT_CAP_MARKER}`;
+  assert.equal(contextBudgetSnapshot(capped).constant_context_chars, capped.length);
+  assert.equal(contextBudgetSnapshot(capped).reached_cap, true);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'lorebookPatch.js'), 'utf8');
+  assert.ok(source.indexOf("registerLorebookBudgetRoute(this, supabase)") < source.indexOf('registerLorebookRoutes(this'));
+  assert.match(source, /basis: 'enabled-constant-context-v1'/);
 });
 
 test('JSON and text imports are read without executing embedded content', async () => {
