@@ -151,7 +151,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function lorebookHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, lorebooks: 'scoped-keyword-budget-v2-collection-import' };
+      body = { ...body, lorebooks: 'scoped-keyword-budget-v3-housekeeping' };
     }
     return originalJson.call(this, body);
   };

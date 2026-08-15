@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   parseLorebookImport,
+  parseOptionalBoolean,
   entryMatches,
   selectLorebookEntries,
   compileLorebookContext,
@@ -47,6 +48,14 @@ test('plain text becomes one constant entry without losing the source', () => {
   assert.equal(parsed.book.source_format, 'plain_text');
   assert.equal(parsed.entries[0].constant, true);
   assert.equal(parsed.entries[0].content, '一整份完整世界设定。');
+});
+
+test('optional multipart booleans keep old defaults and accept an explicit disabled import', () => {
+  assert.equal(parseOptionalBoolean(undefined, true), true);
+  assert.equal(parseOptionalBoolean('', false), false);
+  assert.equal(parseOptionalBoolean('true', false), true);
+  assert.equal(parseOptionalBoolean('false', true), false);
+  assert.equal(parseOptionalBoolean('0', true), false);
 });
 
 test('imports Risu array-shaped lorebooks', () => {
