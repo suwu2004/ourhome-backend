@@ -34,6 +34,14 @@ function normalizeStringList(value, maxItems = 40) {
   return [...new Set(raw.map(item => cleanLine(item, 180)).filter(Boolean))].slice(0, maxItems);
 }
 
+function parseOptionalBoolean(value, fallback = true) {
+  if (value == null || String(value).trim() === '') return Boolean(fallback);
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return Boolean(fallback);
+}
+
 function assertCapacity(currentCount, incomingCount, maxCount, label) {
   const current = Math.max(0, Math.floor(Number(currentCount) || 0));
   const incoming = Math.max(0, Math.floor(Number(incomingCount) || 0));
@@ -336,7 +344,29 @@ function createLorebookStore(supabase) {
       .order('created_at', { ascending: true })
       .limit(MAX_LOREBOOKS);
     if (error) throw error;
-    return data || [];
+    const books = data || [];
+    if (!books.length) return [];
+
+    const entryResult = await supabase
+      .from('lorebook_entries')
+      .select('lorebook_id,enabled')
+      .in('lorebook_id', books.map(book => book.id))
+      .limit(MAX_LOREBOOKS * MAX_ENTRIES_PER_BOOK);
+    if (entryResult.error) throw entryResult.error;
+
+    const counts = new Map();
+    for (const entry of entryResult.data || []) {
+      const key = String(entry.lorebook_id);
+      const current = counts.get(key) || { entry_count: 0, enabled_entry_count: 0 };
+      current.entry_count += 1;
+      if (entry.enabled !== false) current.enabled_entry_count += 1;
+      counts.set(key, current);
+    }
+    return books.map(book => ({
+      ...book,
+      entry_count: counts.get(String(book.id))?.entry_count || 0,
+      enabled_entry_count: counts.get(String(book.id))?.enabled_entry_count || 0,
+    }));
   }
 
   async function getBook(id) {
@@ -528,6 +558,7 @@ function registerLorebookRoutes(app, { supabase, upload, extractImportFile }) {
       const parsed = parseLorebookImport(raw, req.file.originalname || '');
       parsed.book.apply_scope = normalizeScope(req.body?.apply_scope);
       parsed.book.target_book_id = cleanLine(req.body?.target_book_id, 80) || null;
+      parsed.book.enabled = parseOptionalBoolean(req.body?.enabled, parsed.book.enabled !== false);
       res.json(await store.createBook(parsed.book, parsed.entries));
     } catch (error) { res.status(400).json({ error: error.message || '世界书没有导入成功' }); }
   });
@@ -550,6 +581,7 @@ module.exports = {
   normalizeLorebookInput,
   normalizeEntryInput,
   parseLorebookImport,
+  parseOptionalBoolean,
   approximateTokens,
   clipTextToApproxTokens,
   truncateCompiledContext,
