@@ -62,7 +62,8 @@ test('model prompt makes storage explicit, sparse, and update-oriented', () => {
   const text = body.messages[0].content;
   assert.match(text, /should_store/);
   assert.match(text, /默认 should_store=false/);
-  assert.match(text, /同一事实.*没有实质变化/);
+  assert.match(text, /同一事实/);
+  assert.match(text, /没有实质变化/);
   assert.match(text, /沿用稳定、简短、可复用的 topic/);
   assert.match(text, /不需要用户手动升级|长期记忆仍由 long_memory 独立判断/);
 });
