@@ -5,9 +5,11 @@ const { isMainChatRequest } = require('./intimacyFlowSupport');
 const { isLikelyVisionModel } = require('./modelCompatibility');
 
 // Loaded after apiUsageAuditPatch and before backgroundAiCostGuardPatch.
-// Chat and Theater keep the exact model chosen by the user. Toy Bear keeps its
-// own existing budget selector. Happiness Diary prose and Lu Ze's final learning
-// notes follow the active Chat model; planning, search and other rough work stay cheap.
+// Chat and interactive Theater keep the exact model chosen by the user. Toy Bear
+// keeps its own existing budget selector. Background Theater memory is deliberately
+// excluded from that exemption and uses the cheapest safe model on the active site.
+// Happiness Diary prose and Lu Ze's final learning notes follow the active Chat
+// model; planning, search and other rough work stay cheap.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const modelCache = new Map();
@@ -75,7 +77,13 @@ function isToyboxRequest(body) {
   return text.includes('【玩具箱】') || text.includes('【玩具熊】');
 }
 
+function isTheaterMemoryRequest(body) {
+  const system = systemText(body?.system);
+  return system.includes('角色与剧情记忆整理器');
+}
+
 function isTheaterRequest(body) {
+  if (isTheaterMemoryRequest(body)) return false;
   const text = `${systemText(body?.system)}\n${messageText(body?.messages)}`;
   return /小剧场|互动写作引擎|剧本名/.test(text);
 }
@@ -200,6 +208,7 @@ function inferPurpose(body) {
   const messages = messageText(body?.messages);
   const text = `${system}\n${messages}`;
   if (isVisionReaderRequest(body)) return 'vision-reader';
+  if (isTheaterMemoryRequest(body)) return 'theater-memory';
   if (/记忆日志/.test(text)) return 'memory-journal';
   if (/隐藏接续账本|滚动账本/.test(text)) return 'context-ledger';
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
@@ -233,6 +242,8 @@ if (typeof providerFetch === 'function') {
 
     const purpose = requestPurpose(init);
     // Interactive Chat, Toy Bear, and Theater keep their own selected model.
+    // Theater memory is background maintenance and intentionally falls through
+    // to the cheapest-model selector below.
     // Happiness Diary and final learning-note synthesis deliberately keep the
     // active Chat model; consent, planning and filtering stay behind the guard.
     if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(purpose)) {
@@ -262,7 +273,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       // Legacy policy marker retained for source-level regression compatibility:
       // cheapest-except-chat-toybear-theater-v2
-      body = { ...body, non_chat_model_policy: 'chat-writing-v4' };
+      body = { ...body, non_chat_model_policy: 'chat-writing-v5-cheap-theater-memory' };
     }
     return originalJson.call(this, body);
   };
@@ -274,6 +285,7 @@ module.exports = {
   budgetScore,
   pickBudgetModel,
   isToyboxRequest,
+  isTheaterMemoryRequest,
   isTheaterRequest,
   isVisionReaderRequest,
   inferPurpose,
