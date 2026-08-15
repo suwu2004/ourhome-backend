@@ -12,6 +12,7 @@ const {
 
 const originalFetch = globalThis.fetch;
 const CONSOLIDATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const STALE_WORKING_MEMORY_LIMIT = 500;
 const workingMemoryWriteChains = new Map();
 
 function requestMethod(input, init = {}) {
@@ -158,6 +159,65 @@ async function rollupJournalWorkingMemory(input, init, candidate) {
   return updated;
 }
 
+function supabaseHeaders(key, prefer = '') {
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+  };
+  if (prefer) headers.Prefer = prefer;
+  return headers;
+}
+
+async function archiveStaleWorkingMemory(now = new Date()) {
+  const baseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = process.env.SUPABASE_KEY || '';
+  if (!baseUrl || !key || typeof originalFetch !== 'function') return { scanned: 0, archived: 0 };
+
+  const cutoff = new Date(now.getTime() - EXACT_THREAD_WINDOW_MS).toISOString();
+  const query = new URL(`${baseUrl}/rest/v1/memory_marks`);
+  query.searchParams.set('select', 'id,metadata');
+  query.searchParams.set('status', 'in.(active,continued)');
+  query.searchParams.set('should_continue', 'eq.true');
+  query.searchParams.set('updated_at', `lt.${cutoff}`);
+  query.searchParams.set('order', 'updated_at.asc');
+  query.searchParams.set('limit', String(STALE_WORKING_MEMORY_LIMIT));
+
+  const staleResponse = await originalFetch(query.toString(), {
+    method: 'GET',
+    headers: supabaseHeaders(key),
+  });
+  if (!staleResponse.ok) {
+    const detail = await staleResponse.text().catch(() => '');
+    throw new Error(`working-memory stale lookup failed (${staleResponse.status}) ${detail}`.trim());
+  }
+  const rows = await staleResponse.json().catch(() => []);
+  const autoIds = (Array.isArray(rows) ? rows : [])
+    .filter(row => Boolean(row?.metadata?.assistant_message_id))
+    .map(row => String(row.id || '').trim())
+    .filter(Boolean);
+  if (!autoIds.length) return { scanned: Array.isArray(rows) ? rows.length : 0, archived: 0 };
+
+  const patchUrl = new URL(`${baseUrl}/rest/v1/memory_marks`);
+  patchUrl.searchParams.set('id', `in.(${autoIds.join(',')})`);
+  const settledAt = now.toISOString();
+  const patchResponse = await originalFetch(patchUrl.toString(), {
+    method: 'PATCH',
+    headers: supabaseHeaders(key, 'return=minimal'),
+    body: JSON.stringify({
+      status: 'archived',
+      should_continue: false,
+      settled_at: settledAt,
+    }),
+  });
+  if (!patchResponse.ok) {
+    const detail = await patchResponse.text().catch(() => '');
+    throw new Error(`working-memory stale archive failed (${patchResponse.status}) ${detail}`.trim());
+  }
+  console.info(`[memory:working] archived ${autoIds.length} automatic notes older than the 72h working window`);
+  return { scanned: Array.isArray(rows) ? rows.length : 0, archived: autoIds.length };
+}
+
 async function runMemoryConsolidation() {
   const baseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const key = process.env.SUPABASE_KEY || '';
@@ -165,11 +225,7 @@ async function runMemoryConsolidation() {
 
   const response = await originalFetch(`${baseUrl}/rest/v1/rpc/ourhome_consolidate_memory_layers`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-    },
+    headers: supabaseHeaders(key),
     body: '{}',
   });
 
@@ -181,6 +237,12 @@ async function runMemoryConsolidation() {
   const result = await response.json().catch(() => ({}));
   console.log('[memory:layers] consolidation complete', JSON.stringify(result));
   return result;
+}
+
+async function runMemoryMaintenance(now = new Date()) {
+  const archived = await archiveStaleWorkingMemory(now);
+  const consolidation = await runMemoryConsolidation();
+  return { archived, consolidation };
 }
 
 if (typeof originalFetch === 'function') {
@@ -206,12 +268,12 @@ if (typeof originalFetch === 'function') {
   };
 
   const firstRun = setTimeout(() => {
-    runMemoryConsolidation().catch(error => console.warn('[memory:layers]', error.message));
+    runMemoryMaintenance().catch(error => console.warn('[memory:layers]', error.message));
   }, 8_000);
   firstRun.unref?.();
 
   const interval = setInterval(() => {
-    runMemoryConsolidation().catch(error => console.warn('[memory:layers]', error.message));
+    runMemoryMaintenance().catch(error => console.warn('[memory:layers]', error.message));
   }, CONSOLIDATION_INTERVAL_MS);
   interval.unref?.();
 }
@@ -223,8 +285,9 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        memory_layers: 'model-owned-working-memory-v3',
+        memory_layers: 'model-owned-working-memory-v4',
         working_memory_dedup: 'rolling-thread-v3-cross-session',
+        working_memory_lifecycle: 'auto-archive-after-72h-v1',
       };
     }
     return originalJson.call(this, body);
@@ -235,6 +298,7 @@ try {
 
 module.exports = {
   CONSOLIDATION_INTERVAL_MS,
+  STALE_WORKING_MEMORY_LIMIT,
   broadenWorkingMemoryList,
   parseRequestJson,
   isJournalWorkingMemoryInsert,
@@ -242,5 +306,8 @@ module.exports = {
   fetchRecentWorkingMemoryMarks,
   updateWorkingMemoryThread,
   rollupJournalWorkingMemory,
+  supabaseHeaders,
+  archiveStaleWorkingMemory,
   runMemoryConsolidation,
+  runMemoryMaintenance,
 };
