@@ -1,10 +1,9 @@
 'use strict';
 
-// Memory is a core OurHome feature. The journal therefore uses a real model by
-// default and only falls back to the deterministic local summarizer when the
-// owner explicitly opts into MEMORY_JOURNAL_LOCAL_ONLY. The smart trigger in
-// server.js still decides which turns are worth analysing, so this is not a paid
-// call for every piece of casual chat.
+// Memory is a core OurHome feature, but ordinary chat must not pay for a second
+// model call just because a reply is long. A conservative local pre-filter removes
+// obviously ephemeral turns; ambiguous or durable candidates still go to a real
+// model, which owns the final `should_store` decision.
 const providerFetch = globalThis.fetch;
 
 function safeBody(init = {}) {
@@ -37,14 +36,15 @@ function resolveMemoryJournalModel(body, env = process.env) {
 
 const MODEL_MEMORY_RULES = `
 
-【临时记忆补充规则｜优先于上面“mark 只记录未收尾”的旧规则】
-- 临时记忆由你自己判断，不需要用户手动升级，也不要靠固定关键词硬判。
-- mark 额外输出字段 "should_store": true 或 false。
-- should_store=true：这轮出现了未来几小时到几天内值得继续知道的真实近况、短期状态、刚发生的重要变化、明确约定、正在推进的事情，或之后很可能需要自然接住的上下文。
-- should_store=false：纯寒暄、单个表情、没有新信息的重复撒娇、已经完全结束且之后没有价值的碎片。
-- should_continue 只表示“事情还没收尾，需要之后继续”；它可以为 false，但 should_store 仍然可以为 true。
-- should_remember 表示这条临时信息值得稍长一点保留；长期记忆是否保存仍由 long_memory 独立判断。
-- 不要为了填满临时记忆而强行保存；有价值才存，并用自然概括而不是照抄原话。
+【临时记忆决策规则｜优先于上面的旧规则】
+- 临时记忆由你自己判断；默认 should_store=false，只有未来对理解叶檀或承接一件正在变化的事情确实有用时才设为 true。
+- mark 必须额外输出字段 "should_store": true 或 false。should_continue、should_remember 都不能代替 should_store。
+- 不要保存：寒暄、撒娇、表情、当下饿/困/累/想吃什么、一次性情绪、普通天气、已经结束的小事、对你上一句话的简单回应、工具报错本身、你自己的回复内容、没有新增事实的重复聊天。
+- 已经在“今天已有摘要/未收尾话题”里出现的同一事实，如果这一轮没有实质变化，should_store=false，不要再记一遍。
+- 同一件事出现真正后续时，可以 should_store=true，但必须沿用稳定、简短、可复用的 topic 名称，并把 summary 写成“最新状态”，不要追加成流水账。这样系统会更新原临时记忆而不是新增一条。
+- 适合保存的例子：稳定偏好或界限、身份/工作等重要状态变化、明确约定或未来计划、需要跨几轮继续的关键事项、长期项目中会影响后续决策的规则变化。
+- should_continue 只表示这件值得保存的事情是否还没收尾；should_remember 只是稍长保留提示；长期记忆仍由 long_memory 独立判断，不要自动升级。
+- 宁可不记，也不要为了“完整”而制造临时记忆。
 `;
 
 function addModelMemoryRules(body) {
@@ -96,6 +96,39 @@ function semanticLength(value) {
   return String(value || '')
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\s\p{P}\p{S}]/gu, '')
     .length;
+}
+
+function extractJournalTurn(body) {
+  const prompt = messageText(body?.messages);
+  const turn = extractBetween(prompt, '【刚刚这一轮】', '请只输出 JSON');
+  return {
+    prompt,
+    userText: compact(extractBetween(turn, '叶檀：', '陆泽：'), 1200),
+    assistantText: compact(extractBetween(turn, '陆泽：', ''), 1200),
+  };
+}
+
+function shouldSpendMemoryJournalCall(body) {
+  const { userText } = extractJournalTurn(body);
+  const user = stripMemoryNoise(userText, 900);
+  if (!user || semanticLength(user) < 5) return false;
+
+  // Explicit memory intent, stable preferences/boundaries, and durable personal
+  // changes are worth asking the model about. The regex is intentionally narrow:
+  // it is only a zero-cost pre-gate, never the final storage decision.
+  if (/(记住|记下来|别忘|以后(?:都|要|不要|别|必须|希望)|从现在开始|长期|一直都|偏好|界限|习惯|不许再|不要再)/i.test(user)) return true;
+  if (/(我.{0,8}(?:喜欢|不喜欢|讨厌|介意)|(?:喜欢|不喜欢).{0,10}(?:风格|画风|颜色|语气|功能|模型|设置|称呼|方式))/i.test(user)) return true;
+  if (/(换工作|换了工作|入职|离职|失业|毕业|搬家|结婚|分手|订婚|怀孕|确诊|住院|手术|过敏|长期用药|开始吃药|停药)/i.test(user)) return true;
+
+  const hasFutureTime = /(明天|后天|下周|下个月|月底|年底|待会|稍后|之后|下次|截止|DDL|到时候)/i.test(user);
+  const hasFutureCommitment = /(计划|决定|约定|预约|面试|考试|出发|提交|提醒|待办|要去|要做|准备去|准备做|必须|不能忘)/i.test(user);
+  if (hasFutureTime && hasFutureCommitment) return true;
+
+  const projectDomain = /(OurHome|世界书|规则库|临时记忆|长期记忆|小剧场|共读|API|模型|站点|部署|数据库|Supabase|Vercel|Render|GitHub)/i.test(user);
+  const durableProjectDecision = /(以后|改成|固定|保留|删除|取消|不要|不再|统一|规则|原则|必须|默认|跟随|独立|迁移)/i.test(user);
+  if (projectDomain && durableProjectDecision) return true;
+
+  return false;
 }
 
 function memoryTopic(userText) {
@@ -161,9 +194,7 @@ function shouldContinueWorkingMemory(userText, assistantText) {
 function localMemoryJournal(body) {
   const prompt = messageText(body?.messages);
   const existing = compact(extractBetween(prompt, '【今天已有摘要】', '【未收尾话题】'), 900);
-  const turn = extractBetween(prompt, '【刚刚这一轮】', '请只输出 JSON');
-  const userText = compact(extractBetween(turn, '叶檀：', '陆泽：'), 800);
-  const assistantText = compact(extractBetween(turn, '陆泽：', ''), 800);
+  const { userText, assistantText } = extractJournalTurn(body);
   const turnSummary = summarizeTurn(userText, assistantText);
   const shouldContinue = Boolean(turnSummary) && shouldContinueWorkingMemory(userText, assistantText);
   const markSummary = shouldContinue ? turnSummary : '';
@@ -196,6 +227,23 @@ function localMemoryJournal(body) {
   };
 }
 
+function noOpMemoryJournal() {
+  return {
+    mark: {
+      topic: '',
+      emotion: '',
+      summary: '',
+      importance: 1,
+      should_continue: false,
+      should_remember: false,
+      should_store: false,
+      tags: [],
+    },
+    daily_summary: { summary: '', highlights: [], open_threads: [], mood: '' },
+    long_memory: { should_save: false, summary: '' },
+  };
+}
+
 function localAnthropicResponse(payload) {
   return new Response(JSON.stringify({
     id: `ourhome-local-memory-${Date.now()}`,
@@ -217,6 +265,11 @@ if (typeof providerFetch === 'function') {
     if (!isMemoryJournalRequest(body)) return providerFetch(input, init);
 
     const preparedBody = addModelMemoryRules(body);
+    if (!shouldSpendMemoryJournalCall(preparedBody)) {
+      console.log('[memory:journal] obvious non-memory turn skipped locally');
+      return localAnthropicResponse(noOpMemoryJournal());
+    }
+
     if (localOnlyEnabled()) {
       console.log('[memory:journal] explicit local-only mode');
       return localAnthropicResponse(localMemoryJournal(preparedBody));
@@ -245,7 +298,10 @@ module.exports = {
   resolveMemoryJournalModel,
   addModelMemoryRules,
   stripMemoryNoise,
+  extractJournalTurn,
+  shouldSpendMemoryJournalCall,
   summarizeTurn,
   shouldContinueWorkingMemory,
   localMemoryJournal,
+  noOpMemoryJournal,
 };
