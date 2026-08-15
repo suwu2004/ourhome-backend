@@ -3,9 +3,16 @@
 // A lightweight database consolidation runs after startup and then every six hours.
 
 const { filteredMemoryInput, isMemoryTableRead, requestUrl } = require('./memoryLayers');
+const {
+  THREAD_WINDOW_MS,
+  RECENT_THREAD_LIMIT,
+  findWorkingMemoryThreadMatch,
+  mergeWorkingMemoryThread,
+} = require('./workingMemoryThreadDedupe');
 
 const originalFetch = globalThis.fetch;
 const CONSOLIDATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const workingMemoryWriteChains = new Map();
 
 function requestMethod(input, init = {}) {
   return String(init?.method || input?.method || 'GET').toUpperCase();
@@ -33,6 +40,120 @@ function broadenWorkingMemoryList(input, init = {}) {
     return input;
   }
   return input;
+}
+
+function parseRequestJson(init = {}) {
+  if (typeof init?.body !== 'string' || !init.body.trim()) return null;
+  try {
+    const parsed = JSON.parse(init.body);
+    if (Array.isArray(parsed)) return parsed.length === 1 ? parsed[0] : null;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isJournalWorkingMemoryInsert(input, init = {}, candidate = parseRequestJson(init)) {
+  if (requestMethod(input, init) !== 'POST' || !candidate) return false;
+  const raw = requestUrl(input);
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    if (!/\/rest\/v1\/memory_marks$/i.test(parsed.pathname)) return false;
+  } catch {
+    return false;
+  }
+  // Manual memory edits do not carry the paired assistant message marker. Limit
+  // rolling dedupe to the automatic memory-journal writer only.
+  return candidate.role === 'user'
+    && Boolean(String(candidate.summary || '').trim())
+    && Boolean(candidate.metadata?.assistant_message_id);
+}
+
+function mergedHeaders(input, init = {}) {
+  const headers = new Headers();
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    new Headers(input.headers).forEach((value, key) => headers.set(key, value));
+  }
+  if (init?.headers) {
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  }
+  return headers;
+}
+
+function serializeWorkingMemoryWrite(key, task) {
+  const queueKey = String(key || 'journal-global');
+  const previous = workingMemoryWriteChains.get(queueKey) || Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  workingMemoryWriteChains.set(queueKey, current);
+  current.finally(() => {
+    if (workingMemoryWriteChains.get(queueKey) === current) workingMemoryWriteChains.delete(queueKey);
+  }).catch(() => undefined);
+  return current;
+}
+
+async function fetchRecentWorkingMemoryMarks(input, init, candidate, now = new Date()) {
+  const raw = requestUrl(input);
+  const parsed = new URL(raw);
+  parsed.search = '';
+  parsed.searchParams.set('select', 'id,message_id,session_id,mark_date,role,topic,emotion,summary,tags,importance,should_continue,should_remember,status,metadata,created_at,updated_at,expires_at,reinforcement_count');
+  parsed.searchParams.set('status', 'in.(active,continued)');
+  parsed.searchParams.set('updated_at', `gte.${new Date(now.getTime() - THREAD_WINDOW_MS).toISOString()}`);
+  parsed.searchParams.set('or', `(expires_at.is.null,expires_at.gt.${now.toISOString()})`);
+  parsed.searchParams.set('order', 'updated_at.desc');
+  parsed.searchParams.set('limit', String(RECENT_THREAD_LIMIT));
+  if (candidate.session_id) parsed.searchParams.set('session_id', `eq.${candidate.session_id}`);
+
+  const headers = mergedHeaders(input, init);
+  headers.set('Accept', 'application/json');
+  headers.delete('Prefer');
+  const response = await originalFetch(parsed.toString(), { method: 'GET', headers });
+  if (!response.ok) return null;
+  const rows = await response.json().catch(() => null);
+  return Array.isArray(rows) ? rows : null;
+}
+
+async function updateWorkingMemoryThread(input, init, keeper, candidate, reason, now = new Date()) {
+  const raw = requestUrl(input);
+  const parsed = new URL(raw);
+  parsed.search = '';
+  parsed.searchParams.set('id', `eq.${keeper.id}`);
+
+  const headers = mergedHeaders(input, init);
+  headers.set('Content-Type', 'application/json');
+  headers.set('Prefer', 'return=minimal');
+  const merged = mergeWorkingMemoryThread(keeper, candidate, { reason, now });
+  const response = await originalFetch(parsed.toString(), {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(merged),
+  });
+  return response;
+}
+
+async function rollupJournalWorkingMemory(input, init, candidate) {
+  const now = new Date();
+  const recent = await fetchRecentWorkingMemoryMarks(input, init, candidate, now).catch(error => {
+    console.warn('[memory:working] recent-thread lookup skipped:', error.message);
+    return null;
+  });
+  if (!recent) return originalFetch(input, init);
+
+  const match = findWorkingMemoryThreadMatch(candidate, recent, now.getTime());
+  if (!match) return originalFetch(input, init);
+
+  const updated = await updateWorkingMemoryThread(input, init, match.row, candidate, match.reason, now)
+    .catch(error => {
+      console.warn('[memory:working] rolling update failed:', error.message);
+      return null;
+    });
+  if (!updated?.ok) {
+    if (updated) console.warn(`[memory:working] rolling update returned ${updated.status}; keeping normal insert`);
+    return originalFetch(input, init);
+  }
+
+  console.info(`[memory:working] rolled ${match.reason} into ${match.row.id}`);
+  return updated;
 }
 
 async function runMemoryConsolidation() {
@@ -72,6 +193,12 @@ if (typeof originalFetch === 'function') {
     } catch (error) {
       console.warn('[memory:layers] read filter skipped:', error.message);
     }
+
+    const candidate = parseRequestJson(init);
+    if (isJournalWorkingMemoryInsert(nextInput, init, candidate)) {
+      const queueKey = candidate.session_id || candidate.message_id || 'journal-global';
+      return serializeWorkingMemoryWrite(queueKey, () => rollupJournalWorkingMemory(nextInput, init, candidate));
+    }
     return originalFetch(nextInput, init);
   };
 
@@ -94,6 +221,7 @@ try {
       body = {
         ...body,
         memory_layers: 'model-owned-working-memory-v2',
+        working_memory_dedup: 'rolling-thread-v1',
       };
     }
     return originalJson.call(this, body);
@@ -105,5 +233,11 @@ try {
 module.exports = {
   CONSOLIDATION_INTERVAL_MS,
   broadenWorkingMemoryList,
+  parseRequestJson,
+  isJournalWorkingMemoryInsert,
+  serializeWorkingMemoryWrite,
+  fetchRecentWorkingMemoryMarks,
+  updateWorkingMemoryThread,
+  rollupJournalWorkingMemory,
   runMemoryConsolidation,
 };
