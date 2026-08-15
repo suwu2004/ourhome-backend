@@ -28,7 +28,10 @@ const INTENTS = Object.freeze([
   ['agentmail', /AgentMail|邮箱|邮件|收件箱|寄信|发邮件|回邮件|来信/iu],
 ]);
 
-const CHAT_HISTORY_RE = /聊天记录|搜(?:索)?(?:一下)?(?:聊天|记录)|翻(?:一下)?(?:聊天|记录)|查(?:一下)?(?:聊天|记录)|找(?:一下)?(?:原话|那句话|聊天)|之前.{0,12}(?:说过|聊过)|(?:我|你).{0,8}说过|原话在哪里/iu;
+// Raw chat-history lookup is reserved for explicit requests for records/original text.
+// A generic “你还记得我以前说过…” uses summarized memory instead, avoiding
+// unnecessary history-tool loops unless the user actually asks to search the chat.
+const CHAT_HISTORY_RE = /聊天记录|(?:搜(?:索)?|翻|查|找)(?:一下)?(?:聊天|记录)|找(?:一下)?(?:原话|那句话|聊天)|之前.{0,12}聊过|原话在哪里/iu;
 const MEMORY_LOOKUP_RE = /记得|记忆里|搜(?:索)?(?:一下)?记忆|查(?:一下)?记忆|以前|上次|曾经|长期设定|偏好|界限/iu;
 const MEMORY_SAVE_RE = /记住(?:这个|这件事|这条)?|记下来|存进(?:长期)?记忆|保存到(?:长期)?记忆/iu;
 const MEMORY_MANAGE_RE = /(?:删|删除|修改|改掉|更新).{0,8}(?:长期)?记忆|记忆.{0,8}(?:删|删除|修改|改掉|更新)/iu;
@@ -72,9 +75,6 @@ function selectChatTools(tools, routingContext) {
   const text = normalizeRoutingText(routingContext);
   const selected = new Set();
 
-  // Memory tools are intentionally routed one-by-one. Previously any memory-like
-  // phrase exposed search + save + manage + history together, which encouraged
-  // several paid model/tool rounds for one simple lookup.
   if (CHAT_HISTORY_RE.test(text)) {
     selected.add('search_chat_history');
   } else if (MEMORY_LOOKUP_RE.test(text)) {
