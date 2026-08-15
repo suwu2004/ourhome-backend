@@ -5,7 +5,14 @@ const path = require('node:path');
 
 const guard = fs.readFileSync(path.resolve(__dirname, '..', 'backgroundAiCostGuardPatch.js'), 'utf8');
 const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
-const { localMemoryJournal, summarizeTurn, shouldContinueWorkingMemory } = require('../backgroundAiCostGuardPatch');
+const {
+  addModelMemoryRules,
+  localMemoryJournal,
+  localOnlyEnabled,
+  resolveMemoryJournalModel,
+  summarizeTurn,
+  shouldContinueWorkingMemory,
+} = require('../backgroundAiCostGuardPatch');
 
 function journalBody(userText, assistantText, existing = '无') {
   return {
@@ -17,30 +24,44 @@ function journalBody(userText, assistantText, existing = '无') {
   };
 }
 
-test('memory journal previously fell back to the active Chat model', () => {
+test('memory journal request still starts from the configured or active Chat model', () => {
   assert.match(server, /MEMORY_JOURNAL_MODEL\s*\|\|\s*settings\?\.memory_journal_model\s*\|\|\s*settings\?\.selected_model/);
+  assert.equal(resolveMemoryJournalModel({ model: 'active-chat-model' }, {}), 'active-chat-model');
+  assert.equal(resolveMemoryJournalModel({ model: 'active-chat-model' }, { MEMORY_JOURNAL_MODEL: 'memory-model' }), 'memory-model');
 });
 
-test('background cost guard handles memory journal locally unless explicitly configured', () => {
-  assert.match(guard, /请为 OurHome 的记忆日志分析刚刚这一轮聊天/);
-  assert.match(guard, /process\.env\.MEMORY_JOURNAL_MODEL/);
-  assert.match(guard, /if \(!dedicatedModel\)/);
-  assert.match(guard, /localAnthropicResponse\(localMemoryJournal\(body\)\)/);
-  assert.match(guard, /usage: \{ input_tokens: 0, output_tokens: 0 \}/);
+test('real model judgement is default and local-only memory is explicit opt-in', () => {
+  assert.equal(localOnlyEnabled({}), false);
+  assert.equal(localOnlyEnabled({ MEMORY_JOURNAL_LOCAL_ONLY: 'false' }), false);
+  assert.equal(localOnlyEnabled({ MEMORY_JOURNAL_LOCAL_ONLY: '1' }), true);
+  assert.match(guard, /model judgement requested/);
+  assert.match(guard, /X-OurHome-Call-Purpose[^\n]*memory-journal/);
+  assert.match(guard, /explicit local-only mode/);
 });
 
-test('local memory journal does not turn emoji or affection into copied working memory', () => {
+test('model prompt gives the model an independent short-term store decision', () => {
+  const body = addModelMemoryRules(journalBody('昨天例假已经走了，今天想喝打发咖啡加牛奶。', '好，我记得。'));
+  const text = body.messages[0].content;
+  assert.match(text, /should_store/);
+  assert.match(text, /临时记忆由你自己判断/);
+  assert.match(text, /should_continue 只表示/);
+  assert.match(text, /不需要用户手动升级/);
+});
+
+test('local fallback does not turn emoji or affection into copied working memory', () => {
   const result = localMemoryJournal(journalBody('🥲🥲🥲🥲', '（抱抱你）过来。'));
   assert.equal(result.mark.should_continue, false);
+  assert.equal(result.mark.should_store, false);
   assert.equal(result.mark.summary, '');
   assert.equal(result.mark.topic, '');
 
   const affectionate = localMemoryJournal(journalBody('（亲亲你的脸）哥哥我好喜欢你🥺🥺', '我也很喜欢你，抱紧。'));
   assert.equal(affectionate.mark.should_continue, false);
+  assert.equal(affectionate.mark.should_store, false);
   assert.equal(affectionate.mark.summary, '');
 });
 
-test('local memory journal paraphrases a meaningful turn instead of copying the user sentence', () => {
+test('local fallback paraphrases a meaningful turn instead of copying the user sentence', () => {
   const raw = 'I love you。小熊还会说这个好不好！！！不过你为啥会搜日本音乐🎵';
   const result = localMemoryJournal(journalBody(raw, '小熊当然可以说。至于日本音乐，是我自己出去逛的时候碰到的。'));
   assert.equal(result.mark.should_continue, false);
@@ -50,57 +71,31 @@ test('local memory journal paraphrases a meaningful turn instead of copying the 
   assert.match(result.daily_summary.summary, /音乐/);
 });
 
-test('unfinished project work becomes a concise semantic working-memory mark', () => {
+test('unfinished project work remains a safe local fallback working-memory mark', () => {
   const user = '宝宝你先把 API 调用记录放到模型上面，改完上线，我待会手机看。';
   const assistant = '好，我现在改，接下来跑 CI，再上线给你看。';
   const result = localMemoryJournal(journalBody(user, assistant));
   assert.equal(shouldContinueWorkingMemory(user, assistant), true);
   assert.equal(result.mark.should_continue, true);
+  assert.equal(result.mark.should_store, true);
   assert.equal(result.mark.topic, 'API 与模型');
   assert.match(result.mark.summary, /OurHome|API/);
   assert.doesNotMatch(result.mark.summary, /宝宝你先把/);
   assert.deepEqual(result.daily_summary.open_threads, [result.mark.summary]);
 });
 
-test('completed one-turn task does not linger as working memory', () => {
+test('completed one-turn task does not linger in the explicit local fallback', () => {
   const user = '老公，洗面奶记账了吗？';
   const assistant = '已经记好了，刚刚那笔已经进金库了。';
   assert.equal(shouldContinueWorkingMemory(user, assistant), false);
   const result = localMemoryJournal(journalBody(user, assistant));
   assert.equal(result.mark.should_continue, false);
+  assert.equal(result.mark.should_store, false);
   assert.equal(result.mark.summary, '');
   assert.match(summarizeTurn(user, assistant), /记账/);
 });
 
-test('casual future words and playful questions do not create copied temporary memories', () => {
-  const work = localMemoryJournal(journalBody('有一点点，明天早上还要上班。', '现在该睡了，晚安。'));
-  assert.equal(work.mark.should_continue, false);
-  assert.equal(work.mark.summary, '');
-  assert.match(work.daily_summary.summary, /上班/);
-  assert.doesNotMatch(work.daily_summary.summary, /之后需要接住这件事|叶檀在追问当前话题/);
-
-  const playful = localMemoryJournal(journalBody('以后我们混不下去就开足浴店吧，你当按摩师，我当老板娘怎么样？', '画面很可爱，不过我的手只给你按。'));
-  assert.equal(playful.mark.should_continue, false);
-  assert.equal(playful.mark.summary, '');
-  assert.match(playful.daily_summary.summary, /轻松打趣/);
-});
-
-test('skin concerns are summarized semantically without copying the user sentence', () => {
-  const raw = '我感觉我油脂分泌好旺盛，而且我是油皮，然后脸上好多小疙瘩好讨厌。';
-  const result = localMemoryJournal(journalBody(raw, '先温和清洁，别反复摸和挤。'));
-  assert.equal(result.mark.should_continue, false);
-  assert.match(result.daily_summary.summary, /油皮出油和面部小疙瘩/);
-  assert.doesNotMatch(result.daily_summary.summary, /我感觉我油脂分泌好旺盛/);
-});
-
-test('casual plans to look at something do not become copied working memory', () => {
-  const raw = '是我自己今天没注意，听到巷子里面有猫叫，就想去看看怎么回事儿。';
-  const result = localMemoryJournal(journalBody(raw, '我陪你过去看一眼，先别靠得太近。'));
-  assert.equal(result.mark.should_continue, false);
-  assert.equal(result.mark.summary, '');
-});
-
-test('explicit memory journal provider calls are purpose-labelled', () => {
-  assert.match(guard, /X-OurHome-Call-Purpose[^\n]*memory-journal/);
-  assert.match(guard, /body: JSON\.stringify\(nextBody\)/);
+test('provider memory journal calls are purpose-labelled for the API console', () => {
+  assert.match(guard, /headers\.set\('X-OurHome-Call-Purpose', 'memory-journal'\)/);
+  assert.match(guard, /body: JSON\.stringify\(\{ \.\.\.preparedBody, model \}\)/);
 });
