@@ -4,7 +4,7 @@ const { WORKING_MEMORY_WINDOW_HOURS } = require('./memoryJournalPolicy');
 
 const THREAD_WINDOW_MS = 90 * 60 * 1000;
 const EXACT_THREAD_WINDOW_MS = WORKING_MEMORY_WINDOW_HOURS * 60 * 60 * 1000;
-const RECENT_THREAD_LIMIT = 24;
+const RECENT_THREAD_LIMIT = 48;
 
 const GENERIC_TOPIC_BIGRAMS = new Set([
   '叶檀', '陆泽', '今天', '现在', '晚上', '继续', '回应', '确认', '表达', '互动', '情感',
@@ -92,22 +92,23 @@ function workingMemoryThreadMatch(candidate, existing, now = Date.now()) {
   const existingSummary = normalizeMemoryText(existing.summary);
   if (candidateSummary && candidateSummary === existingSummary) return 'exact-summary';
 
-  if (!sameSession(candidate, existing)) return null;
   const existingAt = timestampOf(existing);
   if (!existingAt) return null;
   const age = Math.abs(now - existingAt);
   if (age > EXACT_THREAD_WINDOW_MS) return null;
 
-  // A model is instructed to reuse a stable topic for a real follow-up. Exact
-  // topic continuity may therefore update the original working note throughout
-  // the full 72-hour working-memory window, not only within one chat burst.
+  // A real follow-up should keep updating the same working note even if the user
+  // opened a new Chat session. Exact stable topic continuity is safe across sessions
+  // inside the working-memory window; fuzzy similarity is intentionally not.
   const candidateTopic = normalizeMemoryText(candidate.topic);
   const existingTopic = normalizeMemoryText(existing.topic);
-  if (candidateTopic.length >= 4 && candidateTopic === existingTopic) return 'same-topic';
+  if (candidateTopic.length >= 4 && candidateTopic === existingTopic) {
+    return sameSession(candidate, existing) ? 'same-topic' : 'same-topic-cross-session';
+  }
 
-  // Fuzzy overlap remains short-lived so unrelated recurring subjects discussed
-  // hours apart are not accidentally collapsed together.
-  if (age > THREAD_WINDOW_MS) return null;
+  // Fuzzy overlap remains session-local and short-lived so unrelated recurring
+  // subjects are not accidentally collapsed together.
+  if (!sameSession(candidate, existing) || age > THREAD_WINDOW_MS) return null;
 
   const topicOverlap = intersectionSize(ngrams(candidate.topic, 2), ngrams(existing.topic, 2));
   const candidateCombined = `${candidate.topic || ''}\n${candidate.summary || ''}`;
@@ -178,7 +179,7 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
     metadata: {
       ...metadata,
       ...(useCandidateState ? candidateMetadata : {}),
-      working_memory_rollup: 'rolling-thread-v2',
+      working_memory_rollup: 'rolling-thread-v3-cross-session',
       merge_reason: staleSource ? `${reason}:stale-source` : reason,
       first_message_id: firstMessageId,
       last_message_id: newestMessageId,
