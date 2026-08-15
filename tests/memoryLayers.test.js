@@ -19,6 +19,7 @@ const expiredStatusMigration = fs.readFileSync(
   path.join(__dirname, '..', 'supabase', 'migrations', '20260813082000_allow_expired_memory_marks.sql'),
   'utf8',
 );
+const memoryPatch = fs.readFileSync(path.join(__dirname, '..', 'memoryLayerPatch.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 test('记忆层级固定为临时、阶段、核心和归档', () => {
@@ -70,6 +71,16 @@ test('记忆标记约束接受后台整理使用的 expired 状态', () => {
   assert.match(expiredStatusMigration, /memory_marks_status_check/);
   assert.match(expiredStatusMigration, /'expired'/);
   assert.doesNotMatch(expiredStatusMigration, /delete\s+from\s+public\.memory_marks/i);
+});
+
+test('自动临时记忆超过 72 小时工作窗口后只归档不删除', () => {
+  assert.match(memoryPatch, /archiveStaleWorkingMemory/);
+  assert.match(memoryPatch, /updated_at.*lt\.\$\{cutoff\}/s);
+  assert.match(memoryPatch, /metadata\?\.assistant_message_id/);
+  assert.match(memoryPatch, /status: 'archived'/);
+  assert.match(memoryPatch, /should_continue: false/);
+  assert.match(memoryPatch, /working_memory_lifecycle: 'auto-archive-after-72h-v1'/);
+  assert.doesNotMatch(memoryPatch, /DELETE[^\n]*memory_marks/i);
 });
 
 test('生产启动先保护 Chat 幂等，再以 402 熔断保护 Supabase/Neon，最后加载记忆、token、原生思考、审计、省钱和检索守卫', () => {
