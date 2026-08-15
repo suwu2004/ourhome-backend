@@ -13,11 +13,13 @@ const { broadenWorkingMemoryList } = require('../memoryLayerPatch');
 
 const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
 
-test('working memory requires a real summary and accepts the model explicit store decision', () => {
+test('working memory requires a real summary and an explicit model store decision', () => {
   assert.equal(normalizeJournalMark({ should_store: true, importance: 3 }).shouldStore, false);
   assert.equal(normalizeJournalMark({ summary: '普通对白', should_store: false, importance: 5 }).shouldStore, false);
   assert.equal(normalizeJournalMark({ summary: '这两天早上想喝打发咖啡加牛奶', should_store: true }).shouldStore, true);
-  assert.equal(normalizeJournalMark({ summary: '还要完成部署', should_continue: true }).shouldStore, true);
+  assert.equal(normalizeJournalMark({ summary: '还要完成部署', should_continue: true }).shouldStore, false);
+  assert.equal(normalizeJournalMark({ summary: '稳定偏好', should_remember: true }).shouldStore, false);
+  assert.equal(normalizeJournalMark({ summary: '还要完成部署', should_continue: true, should_store: true }).shouldStore, true);
 });
 
 test('working-memory overview shows stored short-term context without changing Chat continuation injection', () => {

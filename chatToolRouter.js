@@ -1,7 +1,6 @@
 'use strict';
 
 const GROUPS = Object.freeze({
-  memory: ['save_memory', 'search_memories', 'search_chat_history', 'manage_memory'],
   diary: ['write_diary', 'read_recent_diary'],
   schedule: ['create_schedule', 'read_schedule', 'manage_schedule'],
   wish: ['add_wish', 'read_wishes', 'manage_wish'],
@@ -16,7 +15,6 @@ const GROUPS = Object.freeze({
 });
 
 const INTENTS = Object.freeze([
-  ['memory', /记得|记住|记忆|以前|之前|上次|曾经|聊天记录|搜(?:索)?(?:一下)?聊天|翻(?:一下)?记录|长期设定|偏好|界限/iu],
   ['diary', /幸福日记|写(?:一篇|进)?日记|日记里|记成日记/iu],
   ['schedule', /提醒|日程|闹钟|几点(?:叫|提醒)|到时候|明天|后天|周[一二三四五六日天]|星期[一二三四五六日天]/iu],
   ['wish', /心愿|愿望|想一起|以后一起|愿望清单/iu],
@@ -30,6 +28,13 @@ const INTENTS = Object.freeze([
   ['agentmail', /AgentMail|邮箱|邮件|收件箱|寄信|发邮件|回邮件|来信/iu],
 ]);
 
+// Raw chat-history lookup is reserved for explicit requests for records/original text.
+// A generic “你还记得我以前说过…” uses summarized memory instead, avoiding
+// unnecessary history-tool loops unless the user actually asks to search the chat.
+const CHAT_HISTORY_RE = /聊天记录|(?:搜(?:索)?|翻|查|找)(?:一下)?(?:聊天|记录)|找(?:一下)?.{0,14}(?:原话|那句话)|之前.{0,12}聊过|原话在哪里/iu;
+const MEMORY_LOOKUP_RE = /记得|记忆里|搜(?:索)?(?:一下)?记忆|查(?:一下)?记忆|以前|上次|曾经|长期设定|偏好|界限/iu;
+const MEMORY_SAVE_RE = /记住(?:这个|这件事|这条)?|记下来|存进(?:长期)?记忆|保存到(?:长期)?记忆/iu;
+const MEMORY_MANAGE_RE = /(?:删|删除|修改|改掉|更新).{0,8}(?:长期)?记忆|记忆.{0,8}(?:删|删除|修改|改掉|更新)/iu;
 const READING_RE = /共读|读书|书架|章节|批注|摘抄|书签|阅读进度|预读|哪本书/iu;
 const TOYBOX_RE = /玩具熊|玩具箱|工具熊|五子棋|你画我猜|暗号猜猜|默契大考验|游戏记录|开一局/iu;
 const PRIVATE_ROOM_RE = /陆泽的房间|私人房间|学习笔记|奇思妙想|足迹|敲门/iu;
@@ -70,6 +75,14 @@ function selectChatTools(tools, routingContext) {
   const text = normalizeRoutingText(routingContext);
   const selected = new Set();
 
+  if (CHAT_HISTORY_RE.test(text)) {
+    selected.add('search_chat_history');
+  } else if (MEMORY_LOOKUP_RE.test(text)) {
+    selected.add('search_memories');
+  }
+  if (MEMORY_SAVE_RE.test(text)) selected.add('save_memory');
+  if (MEMORY_MANAGE_RE.test(text)) selected.add('manage_memory');
+
   for (const [intent, pattern] of INTENTS) {
     if (pattern.test(text)) addNames(selected, GROUPS[intent]);
   }
@@ -92,6 +105,8 @@ function selectChatTools(tools, routingContext) {
 
 module.exports = {
   GROUPS,
+  CHAT_HISTORY_RE,
+  MEMORY_LOOKUP_RE,
   normalizeRoutingText,
   chatNeedsRemoteTools,
   chatLocalToolNeeds,

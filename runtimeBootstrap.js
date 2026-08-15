@@ -74,9 +74,12 @@ require('./intimacyFlowAutonomyPatch');
 // Remove old response-shaping instructions that conflict with the compact
 // persona-first rules stored in settings. This changes prompt wording only.
 require('./chatPromptCleanupPatch');
-// Exact vault account names can be resolved by the backend itself, so Chat should
-// not spend another expensive model round reading the vault just to fetch IDs.
+// Exact vault account names can be resolved by the backend itself, and memory
+// lookup tools should not loop across several paid model rounds.
 require('./chatToolEconomyPatch');
+// If the optional sessions(name) PostgREST embed breaks, retry the same read once
+// without it so Lu Ze's history tool succeeds without another model call.
+require('./chatHistorySearchResiliencePatch');
 // Register the lightweight AI-backed Toy Bear routes without touching Chat history.
 require('./toyboxRoutePatch');
 // Add persistent game history, shared active state and Chat-linked Toy Bear access.
@@ -93,7 +96,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, memory, token, native thinking, api audit, non-chat budget, local maintenance, cheap-model theater memory, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, cheap-model theater memory, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -102,7 +105,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        runtime_bootstrap: 'direct-server-start-v4-adaptive-stability',
+        runtime_bootstrap: 'direct-server-start-v5-memory-economy',
         chat_idempotency: 'request-id-theater-replay-v2',
         supabase_quota_circuit: 'rest-402-adaptive-v2',
         toybox: 'toy-bear-gomoku-v4',
@@ -113,9 +116,9 @@ try {
         luze_room_knock: 'local-zero-api-v1',
         luze_learning_resilience: 'long-timeout-local-fallback-v1',
         runtime_timeout_guard: 'single-call-timeouts-v2-helper-caps',
-        memory_journal: body.memory_journal || 'model-owned-working-memory-v2',
+        memory_journal: body.memory_journal || 'model-owned-working-memory-v3-cost-gated',
         happiness_diary: '500-900-char-v1',
-        chat_prompt_cost_control: 'selective-tools-context-budget-v1',
+        chat_prompt_cost_control: 'selective-tools-context-budget-v2-memory-one-shot',
         background_persona: 'purpose-projected-v1',
         theater_memory: body.theater_memory || 'anchor-character-plot-state-v3-cheap-refresh',
         theater_rule_injection: 'live-scoped-library-v1',

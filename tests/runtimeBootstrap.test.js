@@ -23,6 +23,8 @@ test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/contextLedgerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/intimacyFlowAutonomyPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/chatPromptCleanupPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/chatToolEconomyPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/chatHistorySearchResiliencePatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/intimacyFlowPatch'\);/);
 });
 
@@ -54,6 +56,8 @@ test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护�
   const ledgerIndex = bootstrapSource.indexOf("require('./contextLedgerPatch')");
   const autonomyIndex = bootstrapSource.indexOf("require('./intimacyFlowAutonomyPatch')");
   const cleanupIndex = bootstrapSource.indexOf("require('./chatPromptCleanupPatch')");
+  const economyIndex = bootstrapSource.indexOf("require('./chatToolEconomyPatch')");
+  const historyIndex = bootstrapSource.indexOf("require('./chatHistorySearchResiliencePatch')");
   const intimacyIndex = bootstrapSource.indexOf("require('./intimacyFlowPatch')");
   assert.ok(memoryIndex >= 0 && memoryIndex < tokenIndex);
   assert.ok(tokenIndex < thinkingIndex);
@@ -64,7 +68,9 @@ test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护�
   assert.ok(theaterIndex < ledgerIndex);
   assert.ok(ledgerIndex < autonomyIndex);
   assert.ok(autonomyIndex < cleanupIndex);
-  assert.ok(cleanupIndex < intimacyIndex);
+  assert.ok(cleanupIndex < economyIndex);
+  assert.ok(economyIndex < historyIndex);
+  assert.ok(historyIndex < intimacyIndex);
 });
 
 test('direct server start 会加载稳定性保护且顺序与 npm start 对齐', () => {
@@ -72,12 +78,12 @@ test('direct server start 会加载稳定性保护且顺序与 npm start 对齐'
   const circuit = bootstrapSource.indexOf("require('./supabaseQuotaCircuitPatch')");
   const neon = bootstrapSource.indexOf("require('./neonFailoverFetchPatch')");
   assert.ok(chat >= 0 && chat < circuit && circuit < neon);
-  assert.match(bootstrapSource, /direct-server-start-v4-adaptive-stability/);
+  assert.match(bootstrapSource, /direct-server-start-v5-memory-economy/);
   assert.match(bootstrapSource, /chat_idempotency: 'request-id-theater-replay-v2'/);
-  assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'model-owned-working-memory-v2'/);
+  assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'model-owned-working-memory-v3-cost-gated'/);
   assert.match(bootstrapSource, /theater_memory: body\.theater_memory \|\| 'anchor-character-plot-state-v3-cheap-refresh'/);
   assert.match(bootstrapSource, /happiness_diary: '500-900-char-v1'/);
-  assert.match(bootstrapSource, /chat_prompt_cost_control: 'selective-tools-context-budget-v1'/);
+  assert.match(bootstrapSource, /chat_prompt_cost_control: 'selective-tools-context-budget-v2-memory-one-shot'/);
   assert.match(bootstrapSource, /background_persona: 'purpose-projected-v1'/);
   assert.match(bootstrapSource, /theater_rule_injection: 'live-scoped-library-v1'/);
   assert.match(bootstrapSource, /supabase_quota_circuit: 'rest-402-adaptive-v2'/);

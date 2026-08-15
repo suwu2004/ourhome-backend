@@ -1,7 +1,10 @@
 'use strict';
 
+const { WORKING_MEMORY_WINDOW_HOURS } = require('./memoryJournalPolicy');
+
 const THREAD_WINDOW_MS = 90 * 60 * 1000;
-const RECENT_THREAD_LIMIT = 12;
+const EXACT_THREAD_WINDOW_MS = WORKING_MEMORY_WINDOW_HOURS * 60 * 60 * 1000;
+const RECENT_THREAD_LIMIT = 24;
 
 const GENERIC_TOPIC_BIGRAMS = new Set([
   '叶檀', '陆泽', '今天', '现在', '晚上', '继续', '回应', '确认', '表达', '互动', '情感',
@@ -91,11 +94,20 @@ function workingMemoryThreadMatch(candidate, existing, now = Date.now()) {
 
   if (!sameSession(candidate, existing)) return null;
   const existingAt = timestampOf(existing);
-  if (!existingAt || Math.abs(now - existingAt) > THREAD_WINDOW_MS) return null;
+  if (!existingAt) return null;
+  const age = Math.abs(now - existingAt);
+  if (age > EXACT_THREAD_WINDOW_MS) return null;
 
+  // A model is instructed to reuse a stable topic for a real follow-up. Exact
+  // topic continuity may therefore update the original working note throughout
+  // the full 72-hour working-memory window, not only within one chat burst.
   const candidateTopic = normalizeMemoryText(candidate.topic);
   const existingTopic = normalizeMemoryText(existing.topic);
   if (candidateTopic.length >= 4 && candidateTopic === existingTopic) return 'same-topic';
+
+  // Fuzzy overlap remains short-lived so unrelated recurring subjects discussed
+  // hours apart are not accidentally collapsed together.
+  if (age > THREAD_WINDOW_MS) return null;
 
   const topicOverlap = intersectionSize(ngrams(candidate.topic, 2), ngrams(existing.topic, 2));
   const candidateCombined = `${candidate.topic || ''}\n${candidate.summary || ''}`;
@@ -103,10 +115,6 @@ function workingMemoryThreadMatch(candidate, existing, now = Date.now()) {
   const phraseOverlap = intersectionSize(ngrams(candidateCombined, 4), ngrams(existingCombined, 4));
   const detailOverlap = intersectionSize(ngrams(candidateCombined, 2), ngrams(existingCombined, 2));
 
-  // Working memory is a rolling note, not a turn-by-turn diary. A recent thread
-  // must share a distinctive phrase or several concrete details before it is
-  // considered the same note. The thresholds are intentionally conservative so
-  // two different subjects discussed close together remain separate memories.
   if (phraseOverlap >= 3) return 'rolling-phrase';
   if (phraseOverlap >= 1 && topicOverlap >= 2) return 'rolling-topic';
   if (topicOverlap >= 1 && detailOverlap >= 7) return 'rolling-details';
@@ -162,8 +170,6 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
       ...(Array.isArray(candidate?.tags) ? candidate.tags : []),
     ], 8),
     importance: Math.max(Number(existing?.importance) || 1, Number(candidate?.importance) || 1),
-    // The newest source turn owns whether this thread is still unfinished. Using
-    // OR here would make a once-open thread stay open forever.
     should_continue: useCandidateState ? Boolean(candidate?.should_continue) : Boolean(existing?.should_continue),
     should_remember: Boolean(existing?.should_remember || candidate?.should_remember),
     status: 'active',
@@ -172,7 +178,7 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
     metadata: {
       ...metadata,
       ...(useCandidateState ? candidateMetadata : {}),
-      working_memory_rollup: 'rolling-thread-v1',
+      working_memory_rollup: 'rolling-thread-v2',
       merge_reason: staleSource ? `${reason}:stale-source` : reason,
       first_message_id: firstMessageId,
       last_message_id: newestMessageId,
@@ -184,6 +190,7 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
 
 module.exports = {
   THREAD_WINDOW_MS,
+  EXACT_THREAD_WINDOW_MS,
   RECENT_THREAD_LIMIT,
   normalizeMemoryText,
   workingMemoryThreadMatch,
