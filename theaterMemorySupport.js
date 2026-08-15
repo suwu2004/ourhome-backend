@@ -85,8 +85,9 @@ function mergeTheaterFacts(previous = [], next = [], limit = 60) {
 
 function emptyTheaterMemory() {
   return {
-    version: 2,
+    version: 3,
     character_anchor: '',
+    character_memory: '',
     relationship_memory: '',
     plot_facts: [],
     current_state: '',
@@ -102,8 +103,9 @@ function emptyTheaterMemory() {
 
 function normalizeTheaterMemory(value = {}) {
   return {
-    version: 2,
+    version: 3,
     character_anchor: compactBlock(value.character_anchor, 4600),
+    character_memory: compactBlock(value.character_memory, 6000),
     relationship_memory: compactBlock(value.relationship_memory, 4200),
     plot_facts: normalizeList(value.plot_facts, 60, 300),
     current_state: compactBlock(value.current_state, 2400),
@@ -141,6 +143,7 @@ function buildMemoryPromptBlock(memoryValue) {
   const sections = [];
   if (memory.locked_notes) sections.push(`【锁定记忆·不可自动改写】\n${memory.locked_notes}`);
   if (memory.character_anchor) sections.push(`【角色锚点】\n${memory.character_anchor}`);
+  if (memory.character_memory) sections.push(`【角色长期记忆】\n这是剧情中已经确认、以后仍应记得的角色事实：习惯、偏好、能力、经历、伤病、物品、家人与社会关系等。它们不是当前动作，也不能因为离开最近对话窗口就遗忘。\n${memory.character_memory}`);
   if (memory.relationship_memory) sections.push(`【关系记忆】\n${memory.relationship_memory}`);
   if (memory.plot_facts.length) {
     const recentFacts = memory.plot_facts.slice(-36);
@@ -151,7 +154,7 @@ function buildMemoryPromptBlock(memoryValue) {
   if (memory.current_state) sections.push(`【当前场景状态·时间线最前沿】\n${memory.current_state}`);
   if (memory.open_threads.length) sections.push(`【未完成线索】\n${memory.open_threads.map(item => `- ${item}`).join('\n')}`);
   if (!sections.length) return '';
-  return `【角色与剧情记忆】\n优先级：完整世界书与锁定记忆最高；角色锚点不能被临时情绪覆盖；已发生剧情事实必须承认；当前状态代表时间线最前沿，除非剧情明确倒叙或回到过去，否则不能退回较早场景。\n${sections.join('\n\n')}`;
+  return `【角色与剧情记忆】\n优先级：完整世界书与锁定记忆最高；角色锚点不能被临时情绪覆盖；角色长期记忆里的已确认事实不得无故遗忘；已发生剧情事实必须承认；当前状态代表时间线最前沿，除非剧情明确倒叙或回到过去，否则不能退回较早场景。\n${sections.join('\n\n')}`;
 }
 
 function injectMemoryIntoBody(body, memory) {
@@ -260,6 +263,9 @@ const SIGNIFICANT_THEATER_EVENT_RE = /(表白|答应|拒绝|承诺|约定|结婚
 function shouldRefreshMemory(memoryValue, latestUserText = '', replyText = '') {
   const memory = normalizeTheaterMemory(memoryValue || {});
   if (!memory.character_anchor && !memory.plot_facts.length) return true;
+  // v2 books did not have a durable learned-character layer. Refresh them on the
+  // next successful turn so old books acquire it without a destructive rebuild.
+  if (!memory.character_memory) return true;
   if (memory.turns_since_refresh >= 2) return true;
   return SIGNIFICANT_THEATER_EVENT_RE.test(`${latestUserText}\n${replyText}`);
 }
