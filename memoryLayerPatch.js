@@ -4,7 +4,7 @@
 
 const { filteredMemoryInput, isMemoryTableRead, requestUrl } = require('./memoryLayers');
 const {
-  THREAD_WINDOW_MS,
+  EXACT_THREAD_WINDOW_MS,
   RECENT_THREAD_LIMIT,
   findWorkingMemoryThreadMatch,
   mergeWorkingMemoryThread,
@@ -98,7 +98,9 @@ async function fetchRecentWorkingMemoryMarks(input, init, candidate, now = new D
   parsed.search = '';
   parsed.searchParams.set('select', 'id,message_id,session_id,mark_date,role,topic,emotion,summary,tags,importance,should_continue,should_remember,status,metadata,created_at,updated_at,expires_at,reinforcement_count');
   parsed.searchParams.set('status', 'in.(active,continued)');
-  parsed.searchParams.set('updated_at', `gte.${new Date(now.getTime() - THREAD_WINDOW_MS).toISOString()}`);
+  // Exact topic continuity is allowed throughout the same 72-hour working-memory
+  // window. Fuzzy merging is still restricted to 90 minutes inside the matcher.
+  parsed.searchParams.set('updated_at', `gte.${new Date(now.getTime() - EXACT_THREAD_WINDOW_MS).toISOString()}`);
   parsed.searchParams.set('or', `(expires_at.is.null,expires_at.gt.${now.toISOString()})`);
   parsed.searchParams.set('order', 'updated_at.desc');
   parsed.searchParams.set('limit', String(RECENT_THREAD_LIMIT));
@@ -221,7 +223,7 @@ try {
       body = {
         ...body,
         memory_layers: 'model-owned-working-memory-v2',
-        working_memory_dedup: 'rolling-thread-v1',
+        working_memory_dedup: 'rolling-thread-v2-72h-exact-topic',
       };
     }
     return originalJson.call(this, body);
