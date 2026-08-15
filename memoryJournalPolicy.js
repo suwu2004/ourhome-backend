@@ -16,7 +16,10 @@ function normalizeJournalMark(value = {}) {
   const summary = compact(value.summary, 240);
   const shouldContinue = Boolean(value.should_continue);
   const shouldRemember = Boolean(value.should_remember);
-  const shouldStore = value.should_store === true || shouldContinue || shouldRemember;
+  // Storage is an independent model decision. `should_continue` describes whether
+  // an already-worthy note is unfinished; `should_remember` is only a durability
+  // hint. Neither flag is allowed to silently manufacture a temporary memory.
+  const shouldStore = value.should_store === true;
   return {
     summary,
     importance: clampImportance(value.importance),
