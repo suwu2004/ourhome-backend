@@ -19,7 +19,7 @@
     "@lingo-reader/epub-parser": "^0.4.6",
     "@supabase/supabase-js": "2.110.7",
     "ali-oss": "^6.23.0",
-    "cors": "^4.18.2",
+    "cors": "^2.8.5",
     "express": "^4.18.2",
     "mammoth": "^1.12.1",
     "multer": "2.2.0",
