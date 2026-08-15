@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   THREAD_WINDOW_MS,
+  EXACT_THREAD_WINDOW_MS,
   workingMemoryThreadMatch,
   findWorkingMemoryThreadMatch,
   mergeWorkingMemoryThread,
@@ -60,11 +61,37 @@ test('同一会话里相邻但不同的话题不会被误合并', () => {
   );
 });
 
-test('超过滚动窗口后即使主题相近也允许形成新的临时记忆', () => {
+test('稳定 topic 的真实后续在 72 小时工作记忆窗口内继续更新原记录', () => {
+  const existing = mark({ topic: 'API站点固定模型' });
+  const candidate = mark({
+    message_id: '104',
+    topic: 'API站点固定模型',
+    summary: '后续确认站点二改为 Gemini，其他站点规则不变。',
+  });
+  assert.equal(
+    workingMemoryThreadMatch(candidate, existing, Date.parse('2026-08-15T15:00:00.000Z')),
+    'same-topic',
+  );
+});
+
+test('模糊相似只在短滚动窗口内合并，避免几小时后的不同状态乱并', () => {
   const existing = mark();
-  const candidate = mark({ message_id: '104', topic: existing.topic, summary: existing.summary + '后来又重新讨论。' });
+  const candidate = mark({
+    message_id: '105',
+    topic: '模型切换规则继续确认',
+    summary: '继续讨论另一个模型页面的按钮位置和显示方式。',
+  });
   assert.equal(
     workingMemoryThreadMatch(candidate, existing, Date.parse('2026-08-15T09:00:00.000Z') + THREAD_WINDOW_MS + 1),
+    null,
+  );
+});
+
+test('超过 72 小时后同名 topic 也允许形成新的工作记忆周期', () => {
+  const existing = mark();
+  const candidate = mark({ message_id: '106', topic: existing.topic, summary: existing.summary + '三天后又重新讨论。' });
+  assert.equal(
+    workingMemoryThreadMatch(candidate, existing, Date.parse('2026-08-15T09:00:00.000Z') + EXACT_THREAD_WINDOW_MS + 1),
     null,
   );
 });
@@ -72,29 +99,29 @@ test('超过滚动窗口后即使主题相近也允许形成新的临时记忆',
 test('滚动记忆保留最新状态并允许待续事项自然收尾', () => {
   const existing = mark();
   const candidate = mark({
-    message_id: '105',
+    message_id: '107',
     topic: '模型切换修复完成',
     summary: '站点切换已经验证正常，这个问题处理完了。',
     importance: 4,
     should_continue: false,
     should_remember: false,
     tags: ['修复'],
-    metadata: { assistant_message_id: '106' },
+    metadata: { assistant_message_id: '108' },
   });
   const merged = mergeWorkingMemoryThread(existing, candidate, {
     reason: 'rolling-topic',
     now: new Date('2026-08-15T09:30:00.000Z'),
   });
-  assert.equal(merged.message_id, '105');
+  assert.equal(merged.message_id, '107');
   assert.equal(merged.summary, candidate.summary);
   assert.equal(merged.should_continue, false);
   assert.equal(merged.should_remember, true);
   assert.equal(merged.importance, 4);
   assert.equal(merged.reinforcement_count, 1);
   assert.equal(merged.metadata.first_message_id, '100');
-  assert.equal(merged.metadata.last_message_id, '105');
+  assert.equal(merged.metadata.last_message_id, '107');
   assert.equal(merged.metadata.merged_turn_count, 2);
-  assert.equal(merged.metadata.working_memory_rollup, 'rolling-thread-v1');
+  assert.equal(merged.metadata.working_memory_rollup, 'rolling-thread-v2');
 });
 
 test('异步整理较旧消息晚到时不会倒退覆盖较新的临时状态', () => {
@@ -132,11 +159,11 @@ test('同一消息重试不会增加重复整理次数', () => {
   assert.equal(merged.metadata.merged_turn_count, 1);
 });
 
-test('运行时只对自动 memory-journal 写入做滚动整理并暴露健康标记', () => {
+test('运行时只对自动 memory-journal 写入做滚动整理并使用完整工作记忆窗口', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'memoryLayerPatch.js'), 'utf8');
   assert.match(source, /candidate\.metadata\?\.assistant_message_id/);
   assert.match(source, /findWorkingMemoryThreadMatch/);
-  assert.match(source, /mergeWorkingMemoryThread/);
-  assert.match(source, /working_memory_dedup: 'rolling-thread-v1'/);
+  assert.match(source, /EXACT_THREAD_WINDOW_MS/);
+  assert.match(source, /working_memory_dedup: 'rolling-thread-v2-72h-exact-topic'/);
   assert.match(source, /keeping normal insert/);
 });
