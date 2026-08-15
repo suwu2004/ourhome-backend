@@ -10,6 +10,7 @@ const {
   localMemoryJournal,
   localOnlyEnabled,
   resolveMemoryJournalModel,
+  shouldSpendMemoryJournalCall,
   summarizeTurn,
   shouldContinueWorkingMemory,
 } = require('../backgroundAiCostGuardPatch');
@@ -30,22 +31,40 @@ test('memory journal request still starts from the configured or active Chat mod
   assert.equal(resolveMemoryJournalModel({ model: 'active-chat-model' }, { MEMORY_JOURNAL_MODEL: 'memory-model' }), 'memory-model');
 });
 
-test('real model judgement is default and local-only memory is explicit opt-in', () => {
+test('real model owns ambiguous memory decisions while obvious non-memory turns are free', () => {
   assert.equal(localOnlyEnabled({}), false);
   assert.equal(localOnlyEnabled({ MEMORY_JOURNAL_LOCAL_ONLY: 'false' }), false);
   assert.equal(localOnlyEnabled({ MEMORY_JOURNAL_LOCAL_ONLY: '1' }), true);
   assert.match(guard, /model judgement requested/);
+  assert.match(guard, /obvious non-memory turn skipped locally/);
   assert.match(guard, /X-OurHome-Call-Purpose[^\n]*memory-journal/);
-  assert.match(guard, /explicit local-only mode/);
 });
 
-test('model prompt gives the model an independent short-term store decision', () => {
-  const body = addModelMemoryRules(journalBody('昨天例假已经走了，今天想喝打发咖啡加牛奶。', '好，我记得。'));
+test('casual chat never becomes a paid memory judgement because the assistant mentioned memory words', () => {
+  const body = journalBody(
+    '🥺🥺🥺 老公我饿了',
+    '搜索工具刚才出错了，等工具好了我再找。你告诉我一次我以后会记得。现在先吃饭。',
+  );
+  assert.equal(shouldSpendMemoryJournalCall(body), false);
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('宝宝抱抱，我想你了', '抱紧你。')), false);
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('你不能搜索聊天记录嘛🥺', '我去翻一下。')), false);
+});
+
+test('durable changes and explicit preferences are allowed through to model judgement', () => {
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('我最近换工作了，现在主要做 AI 漫剧。', '知道了。')), true);
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('我不喜欢你用汇报式语气，以后自然一点。', '好。')), true);
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('OurHome 以后世界书默认关闭，导入后让我自己选。', '记住这个规则。')), true);
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('我明天下午要去面试，别忘了。', '好。')), true);
+});
+
+test('model prompt makes storage explicit, sparse, and update-oriented', () => {
+  const body = addModelMemoryRules(journalBody('我不喜欢这种语气，以后别这样。', '好，我改。'));
   const text = body.messages[0].content;
   assert.match(text, /should_store/);
-  assert.match(text, /临时记忆由你自己判断/);
-  assert.match(text, /should_continue 只表示/);
-  assert.match(text, /不需要用户手动升级/);
+  assert.match(text, /默认 should_store=false/);
+  assert.match(text, /同一事实.*没有实质变化/);
+  assert.match(text, /沿用稳定、简短、可复用的 topic/);
+  assert.match(text, /不需要用户手动升级|长期记忆仍由 long_memory 独立判断/);
 });
 
 test('local fallback does not turn emoji or affection into copied working memory', () => {
