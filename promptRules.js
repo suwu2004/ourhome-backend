@@ -1,11 +1,11 @@
-function normalizePromptMinimum(value) {
+function normalizePromptMinimum(value, max = 1200) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.round(Math.min(parsed, 1200));
+  return Math.round(Math.min(parsed, max));
 }
 
 function buildMinimumLengthRule(minChars, scene = 'chat') {
-  const minimum = normalizePromptMinimum(minChars);
+  const minimum = normalizePromptMinimum(minChars, scene === 'theater' ? 4000 : 1200);
   if (!minimum) {
     return scene === 'theater'
       ? '根据剧情自然决定篇幅，在当前片段表达完整、留有可继续的位置时结束。'
