@@ -13,7 +13,8 @@ function normalizeMinReplyChars(value, fallback = DEFAULT_CHAT_MIN_REPLY_CHARS, 
   const inferredMax = fallbackValue === DEFAULT_THEATER_MIN_REPLY_CHARS
     ? MAX_THEATER_MIN_REPLY_CHARS
     : MAX_CHAT_MIN_REPLY_CHARS;
-  const safeMax = Number.isFinite(Number(max)) ? Math.max(0, Number(max)) : inferredMax;
+  const explicitMax = max === null || max === undefined || max === '' ? Number.NaN : Number(max);
+  const safeMax = Number.isFinite(explicitMax) ? Math.max(0, explicitMax) : inferredMax;
   if (!Number.isFinite(parsed)) return Math.round(Math.min(safeMax, Math.max(0, fallbackValue)));
   return Math.round(Math.min(safeMax, Math.max(0, parsed)));
 }
