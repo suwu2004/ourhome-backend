@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  DEFAULT_THEATER_MIN_REPLY_CHARS,
+  MAX_THEATER_MIN_REPLY_CHARS,
   normalizeMinReplyChars,
   buildAdaptiveReplyInstruction,
 } = require('../replyLength');
@@ -10,6 +12,13 @@ test('最低回复长度设置仍会被安全规范化', () => {
   assert.equal(normalizeMinReplyChars(-20), 0);
   assert.equal(normalizeMinReplyChars(5000), 1200);
   assert.equal(normalizeMinReplyChars('不是数字', 80), 80);
+});
+
+test('小剧场可以自行选择 1500 到更高的柔性下限', () => {
+  assert.equal(MAX_THEATER_MIN_REPLY_CHARS, 4000);
+  assert.equal(normalizeMinReplyChars(1500, DEFAULT_THEATER_MIN_REPLY_CHARS), 1500);
+  assert.equal(normalizeMinReplyChars(2800, DEFAULT_THEATER_MIN_REPLY_CHARS), 2800);
+  assert.equal(normalizeMinReplyChars(5000, DEFAULT_THEATER_MIN_REPLY_CHARS), 4000);
 });
 
 test('聊天只追加指定语言、字数和事实规则', () => {
@@ -45,9 +54,9 @@ test('最低长度为零时只要求自然完整，不显示数字', () => {
   assert.doesNotMatch(chat, /最低长度约为/);
 });
 
-test('小剧场也把最低长度当作柔性下限', () => {
-  const theater = buildAdaptiveReplyInstruction(120, 'theater');
-  assert.match(theater, /最低长度约为 120 个中文字符/);
+test('小剧场也把高字数设置当作柔性下限', () => {
+  const theater = buildAdaptiveReplyInstruction(1500, 'theater');
+  assert.match(theater, /最低长度约为 1500 个中文字符/);
   assert.match(theater, /只推进当前内容，不添加无关背景/);
   assert.match(theater, /不替用户决定尚未表达的感受或选择/);
 });
