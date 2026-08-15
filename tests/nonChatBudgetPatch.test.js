@@ -2,19 +2,35 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { inferPurpose, preservesRequestedModel } = require('../nonChatBudgetPatch');
+const {
+  inferPurpose,
+  isTheaterMemoryRequest,
+  isTheaterRequest,
+  preservesRequestedModel,
+} = require('../nonChatBudgetPatch');
 
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'nonChatBudgetPatch.js'), 'utf8');
 
-test('main Chat, Toy Bear, and Theater are exempt from the global non-Chat budget rewrite', () => {
+test('main Chat, Toy Bear, and interactive Theater are exempt from the global non-Chat budget rewrite', () => {
   assert.match(source, /isMainChatRequest\(url, body\) \|\| isToyboxRequest\(body\) \|\| isTheaterRequest\(body\)/);
   assert.match(source, /Interactive Chat, Toy Bear, and Theater keep their own selected model/);
 });
 
-test('Theater requests are recognized as interactive model-controlled calls', () => {
-  assert.match(source, /function isTheaterRequest\(body\)/);
-  assert.match(source, /小剧场\|互动写作引擎\|剧本名/);
-  assert.match(source, /if \(isTheaterRequest\(body\)\) return 'theater'/);
+test('interactive Theater stays user-selected while Theater memory is cheap background work', () => {
+  const interactive = {
+    system: '你是 OurHome 的“小剧场”互动写作引擎',
+    messages: [{ role: 'user', content: '【剧本名】\n高木彦' }],
+  };
+  const memory = {
+    system: '你是“角色与剧情记忆整理器”。只整理资料，不扮演角色。',
+    messages: [{ role: 'user', content: '请更新这本互动剧场的持续记忆。' }],
+  };
+  assert.equal(isTheaterRequest(interactive), true);
+  assert.equal(isTheaterMemoryRequest(interactive), false);
+  assert.equal(isTheaterMemoryRequest(memory), true);
+  assert.equal(isTheaterRequest(memory), false);
+  assert.equal(inferPurpose(memory), 'theater-memory');
+  assert.match(source, /Theater memory is background maintenance/);
 });
 
 test('Happiness Diary and finished learning notes keep the active Chat model', () => {
@@ -24,7 +40,7 @@ test('Happiness Diary and finished learning notes keep the active Chat model', (
   assert.equal(preservesRequestedModel('luze-learning-plan'), false);
   assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请写今天的幸福日记' }] }), 'happiness-diary');
   assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请给心情日历留一句话' }] }), 'daily-mood');
-  assert.match(source, /non_chat_model_policy: 'chat-writing-v4'/);
+  assert.match(source, /non_chat_model_policy: 'chat-writing-v5-cheap-theater-memory'/);
 });
 
 test('budget selector prefers explicit cheap hints and low-cost model families', () => {

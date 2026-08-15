@@ -32,13 +32,25 @@ test('剧场事实压缩先于剧场记忆主体加载', () => {
   assert.ok(dedupIndex >= 0 && theaterIndex >= 0 && dedupIndex < theaterIndex);
 });
 
-test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护、账本顺序加载', () => {
+test('剧场记忆整理在审计和省钱守门之后加载', () => {
+  const auditIndex = bootstrapSource.indexOf("require('./apiUsageAuditPatch')");
+  const budgetIndex = bootstrapSource.indexOf("require('./nonChatBudgetPatch')");
+  const backgroundIndex = bootstrapSource.indexOf("require('./backgroundAiCostGuardPatch')");
+  const theaterIndex = bootstrapSource.indexOf("require('./theaterMemoryPatch')");
+  assert.ok(auditIndex >= 0 && auditIndex < budgetIndex);
+  assert.ok(budgetIndex < backgroundIndex);
+  assert.ok(backgroundIndex < theaterIndex);
+  assert.match(bootstrapSource, /background role\/plot memory organizer is captured only after the budget guards/);
+});
+
+test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护、剧场记忆、账本顺序加载', () => {
   const memoryIndex = bootstrapSource.indexOf("require('./memoryLayerPatch')");
   const tokenIndex = bootstrapSource.indexOf("require('./modelTokenLimitPatch')");
   const thinkingIndex = bootstrapSource.indexOf("require('./thinkingTransportPatch')");
   const auditIndex = bootstrapSource.indexOf("require('./apiUsageAuditPatch')");
   const budgetIndex = bootstrapSource.indexOf("require('./nonChatBudgetPatch')");
   const backgroundIndex = bootstrapSource.indexOf("require('./backgroundAiCostGuardPatch')");
+  const theaterIndex = bootstrapSource.indexOf("require('./theaterMemoryPatch')");
   const ledgerIndex = bootstrapSource.indexOf("require('./contextLedgerPatch')");
   const autonomyIndex = bootstrapSource.indexOf("require('./intimacyFlowAutonomyPatch')");
   const cleanupIndex = bootstrapSource.indexOf("require('./chatPromptCleanupPatch')");
@@ -48,7 +60,8 @@ test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护�
   assert.ok(thinkingIndex < auditIndex);
   assert.ok(auditIndex < budgetIndex);
   assert.ok(budgetIndex < backgroundIndex);
-  assert.ok(backgroundIndex < ledgerIndex);
+  assert.ok(backgroundIndex < theaterIndex);
+  assert.ok(theaterIndex < ledgerIndex);
   assert.ok(ledgerIndex < autonomyIndex);
   assert.ok(autonomyIndex < cleanupIndex);
   assert.ok(cleanupIndex < intimacyIndex);
@@ -61,7 +74,8 @@ test('direct server start 会加载稳定性保护且顺序与 npm start 对齐'
   assert.ok(chat >= 0 && chat < circuit && circuit < neon);
   assert.match(bootstrapSource, /direct-server-start-v4-adaptive-stability/);
   assert.match(bootstrapSource, /chat_idempotency: 'request-id-theater-replay-v2'/);
-  assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'local-semantic-summary-v4-strict-working-set'/);
+  assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'model-owned-working-memory-v2'/);
+  assert.match(bootstrapSource, /theater_memory: body\.theater_memory \|\| 'anchor-character-plot-state-v3-cheap-refresh'/);
   assert.match(bootstrapSource, /happiness_diary: '500-900-char-v1'/);
   assert.match(bootstrapSource, /chat_prompt_cost_control: 'selective-tools-context-budget-v1'/);
   assert.match(bootstrapSource, /background_persona: 'purpose-projected-v1'/);

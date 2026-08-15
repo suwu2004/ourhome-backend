@@ -152,6 +152,7 @@ async function saveMemory(bookId, value, existingId = null) {
 function providerRequest(url, init, mainBody, prompt, maxTokens = 2400) {
   const headers = new Headers(init?.headers || undefined);
   headers.set('content-type', 'application/json');
+  headers.set('X-OurHome-Call-Purpose', 'theater-memory');
   headers.delete('content-length');
   headers.delete('anthropic-beta');
   const body = {
@@ -184,9 +185,9 @@ async function generateInitialMemory({ url, init, body, bookRow, context, rows }
     userName: context.userName,
     assistantName: context.assistantName,
   });
-  const prompt = `请为一本互动剧场建立可持续使用的角色与剧情记忆。\n\n剧本名：${bookRow.title}\n角色称呼：${context.assistantName}\n玩家称呼：${context.userName}\n\n${buildSourceSections(bookRow) || '（没有单独填写世界书）'}\n\n【历史剧情抽样】\n${sampledHistory || '（尚未开始）'}\n\n时间线规则：历史抽样行首编号越大代表发生得越晚；编号最大的可见事件最接近当前时刻。除非文本明确写了倒叙、回忆或回到过去，否则严禁把较小编号的旧场景写成 current_state。\n\n整理规则：\n1. character_anchor 只写稳定人设：身份、性格底色、说话方式、能力边界、重要禁区；不要把临时情绪写成永久性格。\n2. relationship_memory 写双方关系、固定称呼、长期相处模式与已经确认的关系变化。\n3. plot_facts 只保留已经发生且以后必须承认的事件，按时间和因果从早到晚写；优先保留会影响身份、关系、承诺、秘密、伤病、地点和因果的事实，最多36条。\n4. current_state 只写剧情最新时刻的地点、时间、身体状态、情绪、关系温度与正在进行的动作。\n5. open_threads 写尚未解决的承诺、秘密、冲突和线索，最多16条。\n6. 不编造源材料里没有的事实。\n\n严格输出：\n{\n  "character_anchor": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
+  const prompt = `请为一本互动剧场建立可持续使用的角色与剧情记忆。\n\n剧本名：${bookRow.title}\n角色称呼：${context.assistantName}\n玩家称呼：${context.userName}\n\n${buildSourceSections(bookRow) || '（没有单独填写世界书）'}\n\n【历史剧情抽样】\n${sampledHistory || '（尚未开始）'}\n\n时间线规则：历史抽样行首编号越大代表发生得越晚；编号最大的可见事件最接近当前时刻。除非文本明确写了倒叙、回忆或回到过去，否则严禁把较小编号的旧场景写成 current_state。\n\n整理规则：\n1. character_anchor 只写世界书确定的稳定人设：身份、性格底色、说话方式、能力边界、重要禁区；不要把临时情绪写成永久性格。\n2. character_memory 写剧情过程中已经确认、以后仍应记得的角色长期事实，可覆盖主角和反复登场的配角：个人经历、习惯与偏好、技能与限制、持续伤病或身体特征、重要随身物、家庭与社会关系、已经形成的长期行为模式。不要写只发生一瞬的动作或情绪；不要因为事实较早就删掉。\n3. relationship_memory 写双方关系、固定称呼、长期相处模式与已经确认的关系变化。\n4. plot_facts 只保留已经发生且以后必须承认的事件，按时间和因果从早到晚写；优先保留会影响身份、关系、承诺、秘密、伤病、地点和因果的事实，最多36条。\n5. current_state 只写剧情最新时刻的地点、时间、身体状态、情绪、关系温度与正在进行的动作。\n6. open_threads 写尚未解决的承诺、秘密、冲突和线索，最多16条。\n7. 不编造源材料里没有的事实。\n\n严格输出：\n{\n  "character_anchor": "",\n  "character_memory": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
 
-  const response = await providerRequest(url, init, body, prompt, 2800);
+  const response = await providerRequest(url, init, body, prompt, 3000);
   if (!response.ok) throw new Error(`初始记忆整理失败 (${response.status})`);
   const payload = await response.json();
   const parsed = parseJsonObject(extractResponseText(payload)) || {};
@@ -195,6 +196,7 @@ async function generateInitialMemory({ url, init, body, bookRow, context, rows }
     ...parsed,
     character_anchor: parsed.character_anchor
       || compactBlock(fallbackSettings.characters || fallbackSettings.worldbook_text, 4200),
+    character_memory: parsed.character_memory || '',
     current_state: parsed.current_state
       || compactBlock(sampledHistory.split('\n').slice(-8).join('\n'), 1800),
     message_count: rows.length,
@@ -217,6 +219,7 @@ async function ensureMemory({ url, init, body, bookRow, context }) {
     console.warn(`[theater:memory] initial model summary failed book=${bookRow.title}:`, error.message);
     memory = normalizeTheaterMemory({
       character_anchor: compactBlock(settings.characters || settings.worldbook_text || `${context.assistantName}必须遵守原世界书。`, 4200),
+      character_memory: '',
       relationship_memory: `${context.userName}与${context.assistantName}的关系以世界书和已发生剧情为准。`,
       current_state: compactBlock(sampleTheaterHistory(rows.slice(-8), {
         maxChars: 1800,
@@ -240,15 +243,16 @@ async function generateUpdatedMemory({ config, bookRow, context, memory, rows, l
     .map(row => `${row.author === '檀' ? context.userName : context.assistantName}：${compactBlock(row.content, 900)}`)
     .join('\n\n');
   const current = normalizeTheaterMemory(memory);
-  const prompt = `请更新这本互动剧场的持续记忆。\n\n剧本名：${bookRow.title}\n角色：${context.assistantName}\n玩家：${context.userName}\n\n【世界书锚点】\n${compactBlock(buildSourceSections(bookRow), 18000)}\n\n【现有记忆】\n${JSON.stringify(current)}\n\n【最近记录】\n${recentText || '（无）'}\n\n【最新一轮·时间线最前沿】\n${context.userName}：${compactBlock(latestUserText, 4000)}\n${context.assistantName}：${compactBlock(replyText, 7000)}\n\n更新规则：\n- locked_notes 原样保留，绝不能删改。\n- character_anchor 只在世界书明确修正时调整，不能被临时情绪污染。\n- 关系变化和重要称呼写入 relationship_memory。\n- plot_facts 只输出本轮新增、修正或重新确认的重要事实，最多18条；不要为了凑数重抄全部旧历史，不得把未发生的猜测写成事实。事实默认按发生顺序理解，新的明确事实可以修正旧记忆里的误判。\n- current_state 必须更新到最新一刻；除非最新一轮明确倒叙或回到过去，否则绝不能退回最近记录里的旧地点、旧动作或旧关系状态。\n- 已解决线索从 open_threads 移除，新悬念加入，最多16条。\n- 不续写，不评价。\n\n严格输出：\n{\n  "character_anchor": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
+  const prompt = `请更新这本互动剧场的持续记忆。\n\n剧本名：${bookRow.title}\n角色：${context.assistantName}\n玩家：${context.userName}\n\n【世界书锚点】\n${compactBlock(buildSourceSections(bookRow), 18000)}\n\n【现有记忆】\n${JSON.stringify(current)}\n\n【最近记录】\n${recentText || '（无）'}\n\n【最新一轮·时间线最前沿】\n${context.userName}：${compactBlock(latestUserText, 4000)}\n${context.assistantName}：${compactBlock(replyText, 7000)}\n\n更新规则：\n- locked_notes 原样保留，绝不能删改。\n- character_anchor 只在世界书明确修正时调整，不能被临时情绪污染。\n- character_memory 输出一份完整的“角色长期记忆”，保留现有仍成立的事实，并吸收新确认的持久信息；包括主角和反复登场配角的个人经历、习惯偏好、技能限制、持续伤病或身体特征、重要物品、家庭与社会关系、长期行为模式。仅在新的明确事实证实旧记录错误或已经改变时修正，不能因为它很久没在最近对话出现就忘掉。不要把当前一瞬的动作或情绪塞进去。\n- 关系变化和重要称呼写入 relationship_memory。\n- plot_facts 只输出本轮新增、修正或重新确认的重要事实，最多18条；不要为了凑数重抄全部旧历史，不得把未发生的猜测写成事实。事实默认按发生顺序理解，新的明确事实可以修正旧记忆里的误判。\n- current_state 必须更新到最新一刻；除非最新一轮明确倒叙或回到过去，否则绝不能退回最近记录里的旧地点、旧动作或旧关系状态。\n- 已解决线索从 open_threads 移除，新悬念加入，最多16条。\n- 不续写，不评价。\n\n严格输出：\n{\n  "character_anchor": "",\n  "character_memory": "",\n  "relationship_memory": "",\n  "plot_facts": [""],\n  "current_state": "",\n  "open_threads": [""]\n}`;
 
-  const response = await providerRequest(config.url, config.init, config.body, prompt, 2400);
+  const response = await providerRequest(config.url, config.init, config.body, prompt, 2800);
   if (!response.ok) throw new Error(`增量记忆整理失败 (${response.status})`);
   const payload = await response.json();
   const parsed = parseJsonObject(extractResponseText(payload)) || {};
   return normalizeTheaterMemory({
     ...current,
     ...parsed,
+    character_memory: compactBlock(parsed.character_memory || current.character_memory, 6000),
     plot_facts: mergeTheaterFacts(current.plot_facts, parsed.plot_facts, 60),
     locked_notes: current.locked_notes,
     turns_since_refresh: 0,
@@ -488,7 +492,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function theaterMemoryHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, theater_memory: 'anchor-plot-state-v2-ordered-refresh' };
+      body = { ...body, theater_memory: 'anchor-character-plot-state-v3-cheap-refresh' };
     }
     return originalJson.call(this, body);
   };
