@@ -59,6 +59,23 @@ function previousMessageIds(mark) {
   ].map(value => String(value || '').trim()).filter(Boolean);
 }
 
+function numericMessageId(value) {
+  const text = String(value || '').trim();
+  if (!/^\d+$/.test(text)) return null;
+  try {
+    return BigInt(text);
+  } catch {
+    return null;
+  }
+}
+
+function isOlderSource(candidate, existing) {
+  const candidateId = numericMessageId(candidate?.message_id);
+  const metadata = existing?.metadata && typeof existing.metadata === 'object' ? existing.metadata : {};
+  const existingId = numericMessageId(metadata.last_message_id || existing?.message_id);
+  return candidateId !== null && existingId !== null && candidateId < existingId;
+}
+
 function workingMemoryThreadMatch(candidate, existing, now = Date.now()) {
   if (!candidate || !existing) return null;
   if (!['active', 'continued'].includes(String(existing.status || 'active'))) return null;
@@ -119,42 +136,46 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
   const metadata = existing?.metadata && typeof existing.metadata === 'object' ? existing.metadata : {};
   const candidateMetadata = candidate?.metadata && typeof candidate.metadata === 'object' ? candidate.metadata : {};
   const sameSource = reason === 'same-source';
+  const staleSource = isOlderSource(candidate, existing);
   const firstMessageId = String(metadata.first_message_id || existing?.message_id || candidate?.message_id || '').trim() || null;
-  const latestMessageId = String(candidate?.message_id || metadata.last_message_id || existing?.message_id || '').trim() || null;
+  const newestMessageId = staleSource
+    ? String(metadata.last_message_id || existing?.message_id || '').trim() || null
+    : String(candidate?.message_id || metadata.last_message_id || existing?.message_id || '').trim() || null;
   const mergedMessageIds = uniqueStrings([
     ...(Array.isArray(metadata.merged_message_ids) ? metadata.merged_message_ids : []),
     existing?.message_id,
     candidate?.message_id,
   ]);
   const mergedTurnCount = Math.max(1, Number(metadata.merged_turn_count) || 1) + (sameSource ? 0 : 1);
+  const useCandidateState = !staleSource;
 
   return {
-    message_id: latestMessageId,
-    session_id: candidate?.session_id || existing?.session_id || null,
-    role: candidate?.role || existing?.role || 'user',
-    mark_date: candidate?.mark_date || existing?.mark_date,
-    topic: candidate?.topic || existing?.topic || null,
-    emotion: candidate?.emotion || existing?.emotion || null,
-    summary: candidate?.summary || existing?.summary || null,
+    message_id: newestMessageId,
+    session_id: (useCandidateState ? candidate?.session_id : existing?.session_id) || existing?.session_id || candidate?.session_id || null,
+    role: (useCandidateState ? candidate?.role : existing?.role) || 'user',
+    mark_date: (useCandidateState ? candidate?.mark_date : existing?.mark_date) || existing?.mark_date || candidate?.mark_date,
+    topic: (useCandidateState ? candidate?.topic : existing?.topic) || existing?.topic || candidate?.topic || null,
+    emotion: (useCandidateState ? candidate?.emotion : existing?.emotion) || existing?.emotion || candidate?.emotion || null,
+    summary: (useCandidateState ? candidate?.summary : existing?.summary) || existing?.summary || candidate?.summary || null,
     tags: uniqueStrings([
       ...(Array.isArray(existing?.tags) ? existing.tags : []),
       ...(Array.isArray(candidate?.tags) ? candidate.tags : []),
     ], 8),
     importance: Math.max(Number(existing?.importance) || 1, Number(candidate?.importance) || 1),
-    // The latest model decision owns whether this thread is still unfinished.
-    // Using OR here would make a once-open thread stay open forever.
-    should_continue: Boolean(candidate?.should_continue),
+    // The newest source turn owns whether this thread is still unfinished. Using
+    // OR here would make a once-open thread stay open forever.
+    should_continue: useCandidateState ? Boolean(candidate?.should_continue) : Boolean(existing?.should_continue),
     should_remember: Boolean(existing?.should_remember || candidate?.should_remember),
     status: 'active',
     reinforcement_count: Math.max(0, Number(existing?.reinforcement_count) || 0) + (sameSource ? 0 : 1),
     updated_at: (now instanceof Date ? now : new Date(now)).toISOString(),
     metadata: {
       ...metadata,
-      ...candidateMetadata,
+      ...(useCandidateState ? candidateMetadata : {}),
       working_memory_rollup: 'rolling-thread-v1',
-      merge_reason: reason,
+      merge_reason: staleSource ? `${reason}:stale-source` : reason,
       first_message_id: firstMessageId,
-      last_message_id: latestMessageId,
+      last_message_id: newestMessageId,
       merged_message_ids: mergedMessageIds,
       merged_turn_count: mergedTurnCount,
     },
