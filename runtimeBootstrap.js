@@ -11,7 +11,6 @@ require('./neonFailoverFetchPatch');
 // the support helpers. This keeps long scenes chronological without spending an
 // extra model call just to clean duplicate memory rows.
 require('./theaterMemoryFactDedupPatch');
-require('./theaterMemoryPatch');
 require('./memoryLayerPatch');
 require('./modelTokenLimitPatch');
 
@@ -24,6 +23,10 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
+// Theater's interactive reply still keeps the model selected by the user, but its
+// background role/plot memory organizer is captured only after the budget guards.
+// That makes memory maintenance use the cheapest safe model and keeps it auditable.
+require('./theaterMemoryPatch');
 // Supabase Pro is the sole live object store. Historical OSS migration modules
 // remain available for supervised recovery work, but production startup never
 // loads the adapter, probes Aliyun or starts a backfill timer.
@@ -90,7 +93,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, theater memory, memory, token, native thinking, api audit, non-chat budget, local maintenance, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, memory, token, native thinking, api audit, non-chat budget, local maintenance, cheap-model theater memory, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, vault tool economy, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -110,10 +113,11 @@ try {
         luze_room_knock: 'local-zero-api-v1',
         luze_learning_resilience: 'long-timeout-local-fallback-v1',
         runtime_timeout_guard: 'single-call-timeouts-v2-helper-caps',
-        memory_journal: body.memory_journal || 'local-semantic-summary-v4-strict-working-set',
+        memory_journal: body.memory_journal || 'model-owned-working-memory-v2',
         happiness_diary: '500-900-char-v1',
         chat_prompt_cost_control: 'selective-tools-context-budget-v1',
         background_persona: 'purpose-projected-v1',
+        theater_memory: body.theater_memory || 'anchor-character-plot-state-v3-cheap-refresh',
         theater_rule_injection: 'live-scoped-library-v1',
         lorebook_injection: 'scoped-keyword-budget-v1',
         calendar_day_colors: 'cloud-settings-v1',
