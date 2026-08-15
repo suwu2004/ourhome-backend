@@ -23,6 +23,10 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
+// Slow Theater memory checkpoints down before theaterMemoryPatch destructures the
+// support helper. Recent raw Theater turns remain in the normal prompt, while a
+// cheap background model is reserved for periodic or structurally major updates.
+require('./theaterMemoryEconomyPatch');
 // Theater's interactive reply still keeps the model selected by the user, but its
 // background role/plot memory organizer is captured only after the budget guards.
 // That makes memory maintenance use the cheapest safe model and keeps it auditable.
@@ -100,7 +104,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, cheap-model theater memory, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, paged theater history, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, sparse cheap-model theater memory, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, paged theater history, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -109,7 +113,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        runtime_bootstrap: 'direct-server-start-v5-memory-economy',
+        runtime_bootstrap: 'direct-server-start-v6-theater-memory-economy',
         chat_idempotency: 'request-id-theater-replay-v2',
         supabase_quota_circuit: 'rest-402-adaptive-v2',
         toybox: 'toy-bear-gomoku-v4',
@@ -125,6 +129,7 @@ try {
         chat_prompt_cost_control: 'selective-tools-context-budget-v2-memory-one-shot',
         background_persona: 'purpose-projected-v1',
         theater_memory: body.theater_memory || 'anchor-character-plot-state-v3-cheap-refresh',
+        theater_memory_economy: body.theater_memory_economy || 'six-turn-major-events-v1',
         theater_rule_injection: 'live-scoped-library-v1',
         theater_message_paging: 'supabase-range-v1',
         lorebook_injection: 'scoped-keyword-budget-v1',
