@@ -1,9 +1,10 @@
 'use strict';
 
-// This guard is loaded after apiUsageAuditPatch. Local background maintenance is
-// handled before it reaches the audited/provider transport, so zero-cost work does
-// not appear as a paid API call. When the owner explicitly configures a dedicated
-// model, the request is passed through with a purpose label for the audit log.
+// Memory is a core OurHome feature. The journal therefore uses a real model by
+// default and only falls back to the deterministic local summarizer when the
+// owner explicitly opts into MEMORY_JOURNAL_LOCAL_ONLY. The smart trigger in
+// server.js still decides which turns are worth analysing, so this is not a paid
+// call for every piece of casual chat.
 const providerFetch = globalThis.fetch;
 
 function safeBody(init = {}) {
@@ -24,6 +25,49 @@ function messageText(messages) {
 function isMemoryJournalRequest(body) {
   return Boolean(body?.model)
     && messageText(body?.messages).includes('请为 OurHome 的记忆日志分析刚刚这一轮聊天');
+}
+
+function localOnlyEnabled(env = process.env) {
+  return /^(?:1|true|yes|on)$/i.test(String(env?.MEMORY_JOURNAL_LOCAL_ONLY || '').trim());
+}
+
+function resolveMemoryJournalModel(body, env = process.env) {
+  return String(env?.MEMORY_JOURNAL_MODEL || body?.model || '').trim();
+}
+
+const MODEL_MEMORY_RULES = `
+
+【临时记忆补充规则｜优先于上面“mark 只记录未收尾”的旧规则】
+- 临时记忆由你自己判断，不需要用户手动升级，也不要靠固定关键词硬判。
+- mark 额外输出字段 "should_store": true 或 false。
+- should_store=true：这轮出现了未来几小时到几天内值得继续知道的真实近况、短期状态、刚发生的重要变化、明确约定、正在推进的事情，或之后很可能需要自然接住的上下文。
+- should_store=false：纯寒暄、单个表情、没有新信息的重复撒娇、已经完全结束且之后没有价值的碎片。
+- should_continue 只表示“事情还没收尾，需要之后继续”；它可以为 false，但 should_store 仍然可以为 true。
+- should_remember 表示这条临时信息值得稍长一点保留；长期记忆是否保存仍由 long_memory 独立判断。
+- 不要为了填满临时记忆而强行保存；有价值才存，并用自然概括而不是照抄原话。
+`;
+
+function addModelMemoryRules(body) {
+  if (!body || !Array.isArray(body.messages)) return body;
+  let patched = false;
+  const messages = body.messages.map(message => {
+    if (patched || !message) return message;
+    if (typeof message.content === 'string' && message.content.includes('请为 OurHome 的记忆日志分析刚刚这一轮聊天')) {
+      patched = true;
+      return { ...message, content: `${message.content}${MODEL_MEMORY_RULES}` };
+    }
+    if (Array.isArray(message.content)) {
+      const content = message.content.map(block => {
+        if (patched || !block || typeof block.text !== 'string') return block;
+        if (!block.text.includes('请为 OurHome 的记忆日志分析刚刚这一轮聊天')) return block;
+        patched = true;
+        return { ...block, text: `${block.text}${MODEL_MEMORY_RULES}` };
+      });
+      return { ...message, content };
+    }
+    return message;
+  });
+  return patched ? { ...body, messages } : body;
 }
 
 function compact(value, max) {
@@ -69,29 +113,6 @@ function memoryTopic(userText) {
   return '当前话题';
 }
 
-function paraphraseUserText(value, max = 120) {
-  let text = stripMemoryNoise(value, 300);
-  if (!text) return '';
-
-  text = text
-    .replace(/我想你/g, '叶檀希望陆泽')
-    .replace(/我希望你/g, '叶檀希望陆泽')
-    .replace(/我想让你/g, '叶檀希望陆泽')
-    .replace(/帮我/g, '希望陆泽帮忙')
-    .replace(/你为啥/g, '陆泽为什么')
-    .replace(/你为什么/g, '陆泽为什么')
-    .replace(/你怎么/g, '陆泽怎么')
-    .replace(/老公|哥哥/g, '陆泽')
-    .replace(/老婆/g, '叶檀')
-    .replace(/(^|[，。！？；：,.!?;:\s])我(?=[^们])/g, '$1叶檀')
-    .replace(/(^|[，。！？；：,.!?;:\s])你(?=[^们])/g, '$1陆泽')
-    .replace(/I\s+love\s+you[。.!！]?/ig, '表达了爱意，')
-    .replace(/^[，。！？；：,.!?;:\s]+|[，；：,;:\s]+$/g, '')
-    .replace(/[。！？!?]+$/, '');
-
-  return compact(text, max);
-}
-
 function summarizeTurn(userText, assistantText) {
   const user = stripMemoryNoise(userText, 420);
   if (!user || semanticLength(user) < 2) return '';
@@ -120,9 +141,6 @@ function summarizeTurn(userText, assistantText) {
   if (/(足浴店|按摩|亲晕|还亲亲|转账8888)/i.test(user)) {
     return '两人围绕按摩、亲吻和开店设想轻松打趣，这段互动已经自然收尾。';
   }
-
-  // Unknown casual turns stay out of the journal. Copying a lightly rewritten
-  // user sentence creates noise and feels like surveillance rather than memory.
   return '';
 }
 
@@ -132,7 +150,6 @@ function shouldContinueWorkingMemory(userText, assistantText) {
   if (!user || semanticLength(user) < 4) return false;
 
   const explicitFuture = /(待会|等会|之后|稍后|明天|下次|以后|回头|别忘|记得|还要|之后再|下次再)/i.test(user);
-
   const asksForWork = /(帮我|帮忙|看看|检查|修(?:一下)?|改(?:一下|下)?|优化|部署|上线|设置|记账|提醒|处理|弄一下|做一下|查一下|解决|不会|有问题|问题还|还没|没有(?:解决|完成|改好|做好|上线|部署))/i.test(user);
   if (!asksForWork) return false;
 
@@ -148,9 +165,6 @@ function localMemoryJournal(body) {
   const userText = compact(extractBetween(turn, '叶檀：', '陆泽：'), 800);
   const assistantText = compact(extractBetween(turn, '陆泽：', ''), 800);
   const turnSummary = summarizeTurn(userText, assistantText);
-  // A continuation flag without a semantic summary used to make the persistence
-  // layer fall back to the raw user sentence. Require both signals so casual
-  // phrases such as “去看看怎么回事” never become hidden working memory.
   const shouldContinue = Boolean(turnSummary) && shouldContinueWorkingMemory(userText, assistantText);
   const markSummary = shouldContinue ? turnSummary : '';
   const dailySummary = compact([
@@ -166,6 +180,7 @@ function localMemoryJournal(body) {
       importance: shouldContinue ? 3 : 1,
       should_continue: shouldContinue,
       should_remember: false,
+      should_store: shouldContinue,
       tags: [],
     },
     daily_summary: {
@@ -201,22 +216,34 @@ if (typeof providerFetch === 'function') {
     const body = safeBody(init);
     if (!isMemoryJournalRequest(body)) return providerFetch(input, init);
 
-    const dedicatedModel = String(process.env.MEMORY_JOURNAL_MODEL || '').trim();
-    if (!dedicatedModel) {
-      console.log('[cost-guard] memory journal summarized locally (0 provider calls)');
-      return localAnthropicResponse(localMemoryJournal(body));
+    const preparedBody = addModelMemoryRules(body);
+    if (localOnlyEnabled()) {
+      console.log('[memory:journal] explicit local-only mode');
+      return localAnthropicResponse(localMemoryJournal(preparedBody));
+    }
+
+    const model = resolveMemoryJournalModel(preparedBody);
+    if (!model) {
+      console.warn('[memory:journal] no model resolved; using emergency local fallback');
+      return localAnthropicResponse(localMemoryJournal(preparedBody));
     }
 
     const headers = new Headers(init?.headers || undefined);
     headers.set('X-OurHome-Call-Purpose', 'memory-journal');
-    const nextBody = { ...body, model: dedicatedModel };
-    console.log(`[cost-guard] memory journal uses explicit model=${dedicatedModel}`);
-    return providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+    console.log(`[memory:journal] model judgement requested model=${model}`);
+    return providerFetch(input, {
+      ...init,
+      headers,
+      body: JSON.stringify({ ...preparedBody, model }),
+    });
   };
 }
 
 module.exports = {
   isMemoryJournalRequest,
+  localOnlyEnabled,
+  resolveMemoryJournalModel,
+  addModelMemoryRules,
   stripMemoryNoise,
   summarizeTurn,
   shouldContinueWorkingMemory,

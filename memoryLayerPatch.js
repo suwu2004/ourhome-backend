@@ -7,6 +7,34 @@ const { filteredMemoryInput, isMemoryTableRead, requestUrl } = require('./memory
 const originalFetch = globalThis.fetch;
 const CONSOLIDATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+function requestMethod(input, init = {}) {
+  return String(init?.method || input?.method || 'GET').toUpperCase();
+}
+
+function broadenWorkingMemoryList(input, init = {}) {
+  if (requestMethod(input, init) !== 'GET') return input;
+  const raw = requestUrl(input);
+  if (!raw) return input;
+  try {
+    const parsed = new URL(raw);
+    if (!/\/rest\/v1\/memory_marks$/i.test(parsed.pathname)) return input;
+    // This signature is the user-facing /memory-log list. Keep the much smaller
+    // should_continue-only query used for Chat prompt injection untouched.
+    if (parsed.searchParams.get('select') !== '*') return input;
+    if (parsed.searchParams.get('limit') !== '40') return input;
+    if (!parsed.searchParams.has('mark_date')) return input;
+    if (parsed.searchParams.get('should_continue') !== 'eq.true') return input;
+    parsed.searchParams.delete('should_continue');
+    const next = parsed.toString();
+    if (typeof input === 'string') return next;
+    if (input instanceof URL) return new URL(next);
+    if (typeof Request !== 'undefined' && input instanceof Request) return new Request(next, input);
+  } catch {
+    return input;
+  }
+  return input;
+}
+
 async function runMemoryConsolidation() {
   const baseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const key = process.env.SUPABASE_KEY || '';
@@ -37,6 +65,7 @@ if (typeof originalFetch === 'function') {
     let nextInput = input;
     try {
       nextInput = filteredMemoryInput(input, init);
+      nextInput = broadenWorkingMemoryList(nextInput, init);
       if (nextInput !== input && isMemoryTableRead(input, init)) {
         console.log(`[memory:layers] active read ${requestUrl(nextInput)}`);
       }
@@ -64,7 +93,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        memory_layers: 'working-episodic-core-v1',
+        memory_layers: 'model-owned-working-memory-v2',
       };
     }
     return originalJson.call(this, body);
@@ -75,5 +104,6 @@ try {
 
 module.exports = {
   CONSOLIDATION_INTERVAL_MS,
+  broadenWorkingMemoryList,
   runMemoryConsolidation,
 };

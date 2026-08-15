@@ -9,13 +9,24 @@ const {
   normalizeJournalMark,
   workingMemoryCutoff,
 } = require('../memoryJournalPolicy');
+const { broadenWorkingMemoryList } = require('../memoryLayerPatch');
 
 const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
 
-test('working memory requires both an explicit continuation signal and a real summary', () => {
-  assert.equal(normalizeJournalMark({ should_continue: true, importance: 3 }).shouldStore, false);
-  assert.equal(normalizeJournalMark({ summary: '普通对白', importance: 5 }).shouldStore, false);
+test('working memory requires a real summary and accepts the model explicit store decision', () => {
+  assert.equal(normalizeJournalMark({ should_store: true, importance: 3 }).shouldStore, false);
+  assert.equal(normalizeJournalMark({ summary: '普通对白', should_store: false, importance: 5 }).shouldStore, false);
+  assert.equal(normalizeJournalMark({ summary: '这两天早上想喝打发咖啡加牛奶', should_store: true }).shouldStore, true);
   assert.equal(normalizeJournalMark({ summary: '还要完成部署', should_continue: true }).shouldStore, true);
+});
+
+test('working-memory overview shows stored short-term context without changing Chat continuation injection', () => {
+  const overview = 'https://example.supabase.co/rest/v1/memory_marks?select=*&should_continue=eq.true&mark_date=gte.2026-08-01&mark_date=lte.2026-08-15&limit=40';
+  const broadened = new URL(broadenWorkingMemoryList(overview));
+  assert.equal(broadened.searchParams.has('should_continue'), false);
+
+  const promptRead = 'https://example.supabase.co/rest/v1/memory_marks?select=id%2Ctopic%2Cemotion%2Csummary%2Ctags%2Cimportance%2Ccreated_at&should_continue=eq.true&created_at=gte.2026-08-12T00%3A00%3A00.000Z&limit=8';
+  assert.equal(broadenWorkingMemoryList(promptRead), promptRead);
 });
 
 test('working-memory prompt window stays short while the history remains stored', () => {

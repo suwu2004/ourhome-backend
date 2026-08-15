@@ -16,12 +16,13 @@ function normalizeJournalMark(value = {}) {
   const summary = compact(value.summary, 240);
   const shouldContinue = Boolean(value.should_continue);
   const shouldRemember = Boolean(value.should_remember);
+  const shouldStore = value.should_store === true || shouldContinue || shouldRemember;
   return {
     summary,
     importance: clampImportance(value.importance),
     shouldContinue,
     shouldRemember,
-    shouldStore: Boolean(summary) && (shouldContinue || shouldRemember),
+    shouldStore: Boolean(summary) && shouldStore,
   };
 }
 
