@@ -86,6 +86,6 @@ test('自动临时记忆超过 72 小时工作窗口后只归档不删除', () =
 test('生产启动先保护 Chat 幂等，再以 402 熔断保护 Supabase/Neon，最后加载记忆、token、原生思考、审计、省钱和检索守卫', () => {
   assert.equal(
     packageJson.scripts.start,
-    'node -r ./chatIdempotencyPatch.js -r ./supabaseQuotaCircuitPatch.js -r ./neonFailoverFetchPatch.js -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./nonChatBudgetPatch.js -r ./backgroundAiCostGuardPatch.js -r ./chatToolEconomyPatch.js -r ./chatHistorySearchResiliencePatch.js server.js',
+    'node -r ./chatIdempotencyPatch.js -r ./supabaseQuotaCircuitPatch.js -r ./neonFailoverFetchPatch.js -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./nonChatBudgetPatch.js -r ./backgroundAiCostGuardPatch.js -r ./chatToolEconomyPatch.js -r ./chatHistorySearchResiliencePatch.js -r ./theaterMessagePagingPatch.js server.js',
   );
 });
