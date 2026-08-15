@@ -28,8 +28,23 @@ test('只为明确房间意图开放对应工具组', () => {
   assert.ok(!music.includes('record_cat_vault_transaction'));
 });
 
-test('记忆、共读、玩具熊和私人房间按关键词路由', () => {
-  assert.ok(selectedNames('你记得我以前说过的偏好吗').includes('search_memories'));
+test('明确聊天记录搜索只开放原文搜索，不同时塞入整组记忆工具', () => {
+  assert.deepEqual(selectedNames('你不能搜索聊天记录嘛🥺'), ['search_chat_history']);
+  assert.deepEqual(selectedNames('搜一下聊天记录，我之前说过喜欢什么'), ['search_chat_history']);
+  assert.deepEqual(selectedNames('帮我找一下之前说过的那句话'), ['search_chat_history']);
+});
+
+test('普通记忆确认只开放整理后的记忆搜索', () => {
+  assert.deepEqual(selectedNames('你记得我以前说过的偏好吗'), ['search_memories']);
+  assert.deepEqual(selectedNames('搜一下记忆，之前有没有存过这个'), ['search_memories']);
+});
+
+test('明确保存或管理记忆才开放写工具', () => {
+  assert.deepEqual(selectedNames('把这个记下来，存进长期记忆'), ['save_memory']);
+  assert.deepEqual(selectedNames('把那条长期记忆删掉'), ['manage_memory']);
+});
+
+test('共读、玩具熊和私人房间按关键词路由', () => {
   assert.deepEqual(selectedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
   assert.deepEqual(selectedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
   assert.deepEqual(selectedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
