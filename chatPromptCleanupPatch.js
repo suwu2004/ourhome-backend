@@ -30,7 +30,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function personaFirstHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, chat_prompt_cleanup: 'persona-first-v1' };
+      body = { ...body, chat_prompt_cleanup: 'persona-first-v2-natural-dialogue' };
     }
     return originalJson.call(this, body);
   };
