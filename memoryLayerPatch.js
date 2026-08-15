@@ -98,13 +98,13 @@ async function fetchRecentWorkingMemoryMarks(input, init, candidate, now = new D
   parsed.search = '';
   parsed.searchParams.set('select', 'id,message_id,session_id,mark_date,role,topic,emotion,summary,tags,importance,should_continue,should_remember,status,metadata,created_at,updated_at,expires_at,reinforcement_count');
   parsed.searchParams.set('status', 'in.(active,continued)');
-  // Exact topic continuity is allowed throughout the same 72-hour working-memory
-  // window. Fuzzy merging is still restricted to 90 minutes inside the matcher.
+  // Exact summary/topic continuity is allowed throughout the same 72-hour
+  // working-memory window even if the user opened a different Chat session.
+  // Fuzzy merging remains session-local inside the matcher.
   parsed.searchParams.set('updated_at', `gte.${new Date(now.getTime() - EXACT_THREAD_WINDOW_MS).toISOString()}`);
   parsed.searchParams.set('or', `(expires_at.is.null,expires_at.gt.${now.toISOString()})`);
   parsed.searchParams.set('order', 'updated_at.desc');
   parsed.searchParams.set('limit', String(RECENT_THREAD_LIMIT));
-  if (candidate.session_id) parsed.searchParams.set('session_id', `eq.${candidate.session_id}`);
 
   const headers = mergedHeaders(input, init);
   headers.set('Accept', 'application/json');
@@ -198,8 +198,9 @@ if (typeof originalFetch === 'function') {
 
     const candidate = parseRequestJson(init);
     if (isJournalWorkingMemoryInsert(nextInput, init, candidate)) {
-      const queueKey = candidate.session_id || candidate.message_id || 'journal-global';
-      return serializeWorkingMemoryWrite(queueKey, () => rollupJournalWorkingMemory(nextInput, init, candidate));
+      // Cross-session dedupe needs one small global write queue; otherwise two Chat
+      // sessions could race and both insert the same temporary-memory thread.
+      return serializeWorkingMemoryWrite('journal-global', () => rollupJournalWorkingMemory(nextInput, init, candidate));
     }
     return originalFetch(nextInput, init);
   };
@@ -222,8 +223,8 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        memory_layers: 'model-owned-working-memory-v2',
-        working_memory_dedup: 'rolling-thread-v2-72h-exact-topic',
+        memory_layers: 'model-owned-working-memory-v3',
+        working_memory_dedup: 'rolling-thread-v3-cross-session',
       };
     }
     return originalJson.call(this, body);
