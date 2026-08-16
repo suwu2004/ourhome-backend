@@ -37,9 +37,13 @@ const MEMORY_SAVE_RE = /记住(?:这个|这件事|这条)?|记下来|存进(?:�
 const MEMORY_MANAGE_RE = /(?:删|删除|修改|改掉|更新).{0,8}(?:长期)?记忆|记忆.{0,8}(?:删|删除|修改|改掉|更新)/iu;
 const READING_RE = /共读|读书|书架|章节|批注|摘抄|书签|阅读进度|预读|哪本书/iu;
 const TOYBOX_RE = /玩具熊|玩具箱|工具熊|五子棋|你画我猜|暗号猜猜|默契大考验|游戏记录|开一局/iu;
+const DRAWING_CREATE_RE = /画画|画一张|画一下|给我画|帮我画|替我画|生成(?:一张|个)?(?:图|图片|画)|生图|可以画|画吧|去画|开始画/iu;
+const DRAWING_DELETE_RE = /(?:删|删除|扔掉|丢掉|不要).{0,12}(?:这|那|刚才|最近)?(?:张)?(?:画|图|图片)|(?:画|图|图片).{0,12}(?:删|删除|扔掉|丢掉)/iu;
+const DRAWING_READ_RE = /画室|小画册|刚才.{0,8}画|最近.{0,8}画|画过什么|画过的|看看.{0,8}(?:画|图)/iu;
+const DRAWING_RE = /画室|小画册|画画|画一张|画一下|给我画|帮我画|替我画|生成(?:一张|个)?(?:图|图片|画)|生图|可以画|画吧|去画|刚才.{0,8}画|最近.{0,8}画|画过什么|画过的|(?:删|删除|扔掉|丢掉).{0,12}(?:画|图|图片)/iu;
 const PRIVATE_ROOM_RE = /陆泽的房间|私人房间|学习笔记|奇思妙想|足迹|敲门/iu;
 const WEB_RE = /联网|上网|网上|互联网|全网|最新|新闻|天气|价格|汇率|现在谁|官网|实时|核实(?:一下)?(?:消息|资料|说法|新闻)/iu;
-const LOCAL_DATA_RE = /聊天记录|记忆|日记|心情日历|悄悄话|时光信差|收藏|相册|金库|便签|一起听|共读|书架|批注|玩具熊|陆泽的房间|邮箱|邮件/iu;
+const LOCAL_DATA_RE = /聊天记录|记忆|日记|心情日历|悄悄话|时光信差|收藏|相册|金库|便签|一起听|共读|书架|批注|玩具熊|画室|小画册|陆泽的房间|邮箱|邮件/iu;
 
 function addNames(target, names) {
   for (const name of names || []) target.add(name);
@@ -66,6 +70,7 @@ function chatLocalToolNeeds(routingContext) {
   return {
     reading: READING_RE.test(text),
     toybox: TOYBOX_RE.test(text),
+    drawing: DRAWING_RE.test(text),
     privateRoom: PRIVATE_ROOM_RE.test(text),
   };
 }
@@ -90,8 +95,18 @@ function selectChatTools(tools, routingContext) {
     for (const tool of tools) if (/reading|book|chapter|annotation|bookmark/i.test(tool?.name || '')) selected.add(tool.name);
   }
   if (TOYBOX_RE.test(text)) {
-    for (const tool of tools) if (/toybox|gomoku|drawing|harmony|secret/i.test(tool?.name || '')) selected.add(tool.name);
+    for (const tool of tools) if (/toybox|gomoku|harmony|secret/i.test(tool?.name || '')) selected.add(tool.name);
   }
+  // Paid image generation is intentionally narrower than the room-level intent.
+  // Looking at the album never exposes the create tool, and deletion never needs
+  // create either. This gives the model one more hard boundary besides its tool
+  // description and the user's explicit approval wording.
+  if (DRAWING_CREATE_RE.test(text)) selected.add('create_drawing');
+  if (DRAWING_DELETE_RE.test(text)) {
+    selected.add('read_drawing_room');
+    selected.add('delete_drawing');
+  }
+  if (DRAWING_READ_RE.test(text)) selected.add('read_drawing_room');
   if (PRIVATE_ROOM_RE.test(text)) selected.add('read_luze_private_room');
   if (chatNeedsRemoteTools(text)) {
     for (const tool of tools) {
@@ -107,6 +122,10 @@ module.exports = {
   GROUPS,
   CHAT_HISTORY_RE,
   MEMORY_LOOKUP_RE,
+  DRAWING_RE,
+  DRAWING_CREATE_RE,
+  DRAWING_DELETE_RE,
+  DRAWING_READ_RE,
   normalizeRoutingText,
   chatNeedsRemoteTools,
   chatLocalToolNeeds,
