@@ -103,6 +103,9 @@ require('./toyboxSocialRoutePatch');
 // A finished Drawing guess is a save boundary: persist freestyle drawings too,
 // and attach the canvas image to an existing prompted Drawing run when possible.
 require('./toyboxDrawingPersistencePatch');
+// The standalone Drawing Room owns its own private generation history and API
+// configuration. It deliberately does not write to the Photo/Light Album.
+require('./drawingRoutePatch');
 // Lu Ze's own room stays outside relationship memory. It has a per-visit door pass,
 // private notes/ideas/trails and a small autonomous read-only learning loop.
 require('./luzePrivateRoomPatch');
@@ -112,7 +115,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, sparse cheap-model theater memory, live-frontier Theater continuity, reversible Theater branches, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, paged theater history, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, sparse cheap-model theater memory, live-frontier Theater continuity, reversible Theater branches, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, paged theater history, private uploads, toy bear cloud persistence, Drawing Room generation, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -127,6 +130,7 @@ try {
         toybox: 'toy-bear-gomoku-v4',
         toybox_cloud_history: 'drawing-auto-save-v1',
         toybox_stale_cleanup: 'one-hour-user-rounds-v1',
+        drawing_room: 'private-cloud-history-chat-tools-v1',
         luze_private_room: body.luze_private_room || 'private-learning-room-v1',
         luze_autonomy: body.luze_autonomy || 'chat-room-access-v1',
         luze_room_knock: 'local-zero-api-v1',
