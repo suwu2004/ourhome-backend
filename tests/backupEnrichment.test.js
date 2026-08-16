@@ -32,8 +32,10 @@ test('基础备份会补上后来新增的 OurHome 数据表', async () => {
     assert.equal(payload.tables[item.key].rows[0].table, item.table);
   }
   assert.match(payload.note, /共读划线/);
+  assert.match(payload.note, /画室历史元数据/);
   assert.ok(payload.tables.lorebooks);
   assert.ok(payload.tables.lorebook_entries);
+  assert.ok(payload.tables.drawing_history);
   assert.equal(Object.hasOwn(payload.tables, 'push_subscriptions'), false);
   assert.equal(Object.hasOwn(payload.tables, 'settings'), false);
 });
@@ -61,4 +63,5 @@ test('GET /backup 中间件会在原响应发送前补全 JSON', async () => {
   const payload = JSON.parse(sent[0]);
   assert.ok(payload.tables.reading_annotations);
   assert.ok(payload.tables.session_summaries);
+  assert.ok(payload.tables.drawing_history);
 });
