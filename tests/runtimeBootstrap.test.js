@@ -16,6 +16,8 @@ test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/theaterMemoryEconomyPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/theaterContinuityGuardPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/theaterMemoryPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/theaterMessagePagingPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/theaterBranchActionsPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/memoryLayerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/modelTokenLimitPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/thinkingTransportPatch'\);/);
@@ -93,12 +95,13 @@ test('direct server start 会加载稳定性保护且顺序与 npm start 对齐'
   const circuit = bootstrapSource.indexOf("require('./supabaseQuotaCircuitPatch')");
   const neon = bootstrapSource.indexOf("require('./neonFailoverFetchPatch')");
   assert.ok(chat >= 0 && chat < circuit && circuit < neon);
-  assert.match(bootstrapSource, /direct-server-start-v7-theater-continuity/);
+  assert.match(bootstrapSource, /direct-server-start-v8-theater-chat-parity/);
   assert.match(bootstrapSource, /chat_idempotency: 'request-id-theater-replay-v2'/);
   assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'model-owned-working-memory-v3-cost-gated'/);
   assert.match(bootstrapSource, /theater_memory: body\.theater_memory \|\| 'anchor-character-plot-state-v3-cheap-refresh'/);
   assert.match(bootstrapSource, /theater_memory_economy: body\.theater_memory_economy \|\| 'six-turn-major-events-v1'/);
   assert.match(bootstrapSource, /theater_continuity: body\.theater_continuity \|\| 'live-frontier-no-replay-v1'/);
+  assert.match(bootstrapSource, /theater_branch_actions: body\.theater_branch_actions \|\| 'reversible-archive-v1'/);
   assert.match(bootstrapSource, /happiness_diary: '500-900-char-v1'/);
   assert.match(bootstrapSource, /chat_prompt_cost_control: 'selective-tools-context-budget-v2-memory-one-shot'/);
   assert.match(bootstrapSource, /background_persona: 'purpose-projected-v1'/);
