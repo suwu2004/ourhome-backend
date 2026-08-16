@@ -10,16 +10,16 @@ const {
   THEATER_ARCHIVED_MEMORY_CATEGORY,
   normalizeMessageIds,
   selectBranchCutRows,
-  rowsAfterAnchor,
+  rowsAtOrAfterCutoff,
 } = require('../theaterBranchActionsPatch');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'theaterBranchActionsPatch.js'), 'utf8');
 
 const rows = [
-  { id: 'u1', author: '檀' },
-  { id: 'a1', author: '泽' },
-  { id: 'u2', author: '檀' },
-  { id: 'a2', author: '泽' },
+  { id: 'u1', author: '檀', created_at: '2026-08-16T10:00:00Z' },
+  { id: 'a1', author: '泽', created_at: '2026-08-16T10:01:00Z' },
+  { id: 'u2', author: '檀', created_at: '2026-08-16T10:02:00Z' },
+  { id: 'a2', author: '泽', created_at: '2026-08-16T10:03:00Z' },
 ];
 
 test('rollback keeps the selected Theater message and hides only later active rows', () => {
@@ -35,11 +35,10 @@ test('edit preparation remembers the previous active anchor and hides target plu
   assert.deepEqual(cut.rows.map(row => row.id), ['u2', 'a2']);
 });
 
-test('failed edit cleanup prunes only the replacement rows after the saved anchor', () => {
-  const activeAfterFailedEdit = [rows[0], rows[1], { id: 'u2-new', author: '檀' }];
-  assert.deepEqual(rowsAfterAnchor(activeAfterFailedEdit, 'a1').map(row => row.id), ['u2-new']);
-  assert.deepEqual(rowsAfterAnchor(activeAfterFailedEdit, null).map(row => row.id), ['u1', 'a1', 'u2-new']);
-  assert.deepEqual(rowsAfterAnchor(activeAfterFailedEdit, 'missing'), []);
+test('undo prunes any replacement branch at or after the oldest hidden timestamp', () => {
+  const activeAfterFailedEdit = [rows[0], rows[1], { id: 'u2-new', author: '檀', created_at: '2026-08-16T10:04:00Z' }];
+  assert.deepEqual(rowsAtOrAfterCutoff(activeAfterFailedEdit, rows[2].created_at).map(row => row.id), ['u2-new']);
+  assert.deepEqual(rowsAtOrAfterCutoff(activeAfterFailedEdit, 'bad-date'), []);
 });
 
 test('restore ids are deduplicated and bounded without inventing ids', () => {
@@ -53,7 +52,7 @@ test('Theater branches are reversible archives rather than destructive deletes',
   assert.equal(THEATER_ARCHIVED_MEMORY_CATEGORY, '小剧场记忆·分支归档');
   assert.match(source, /edit-prepare/);
   assert.match(source, /restoreAnchorId/);
-  assert.match(source, /prune_active_branch/);
+  assert.match(source, /oldest hidden row is the branch boundary/i);
   assert.match(source, /rollback\/undo/);
   assert.match(source, /archiveActiveMemory/);
   assert.doesNotMatch(source, /\.delete\s*\(/);
