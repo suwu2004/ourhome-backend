@@ -92,6 +92,10 @@ require('./chatHistorySearchResiliencePatch');
 // full-history paging guard must also be installed here. This keeps the newest
 // Theater messages visible once the shared `letters` result grows beyond 1000 rows.
 require('./theaterMessagePagingPatch');
+// Match main Chat's edit/rollback affordances without deleting Theater history.
+// Hidden branch rows stay in `letters` and structured Theater memory is archived
+// before a branch change so discarded plot facts cannot leak into the new branch.
+require('./theaterBranchActionsPatch');
 // Register the lightweight AI-backed Toy Bear routes without touching Chat history.
 require('./toyboxRoutePatch');
 // Add persistent game history, shared active state and Chat-linked Toy Bear access.
@@ -108,7 +112,7 @@ require('./luzeAutonomySettingsPatch');
 // hidden control after normal text/ledger processing but before persistence.
 require('./intimacyFlowPatch');
 
-console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, sparse cheap-model theater memory, live-frontier Theater continuity, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, paged theater history, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
+console.log('[runtime:bootstrap] Chat idempotency, adaptive Supabase 402 circuit, Neon quota failover, theater memory dedup, selective working memory, token, native thinking, api audit, non-chat budget, local maintenance, sparse cheap-model theater memory, live-frontier Theater continuity, reversible Theater branches, Supabase Pro storage, Render fallback front door, diary-summary isolation, zero-cost room knock, resilient Luze learning, bounded helper timeouts, photo retention, context ledger, current-turn guard, scoped lorebooks, autonomy, persona cleanup, one-shot tools, resilient chat-history search, paged theater history, private uploads, toy bear cloud persistence, Luze private learning room, Luze autonomy settings and intimacy patches loaded');
 
 try {
   const express = require('express');
@@ -117,7 +121,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       body = {
         ...body,
-        runtime_bootstrap: 'direct-server-start-v7-theater-continuity',
+        runtime_bootstrap: 'direct-server-start-v8-theater-chat-parity',
         chat_idempotency: 'request-id-theater-replay-v2',
         supabase_quota_circuit: 'rest-402-adaptive-v2',
         toybox: 'toy-bear-gomoku-v4',
@@ -135,6 +139,7 @@ try {
         theater_memory: body.theater_memory || 'anchor-character-plot-state-v3-cheap-refresh',
         theater_memory_economy: body.theater_memory_economy || 'six-turn-major-events-v1',
         theater_continuity: body.theater_continuity || 'live-frontier-no-replay-v1',
+        theater_branch_actions: body.theater_branch_actions || 'reversible-archive-v1',
         theater_rule_injection: 'live-scoped-library-v1',
         theater_message_paging: 'supabase-range-v1',
         lorebook_injection: 'scoped-keyword-budget-v1',
