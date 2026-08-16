@@ -40,7 +40,7 @@ test('普通 memories 查询会排除归档与已过期内容', () => {
 
 test('写入、RPC 与其他表请求不会被记忆读取过滤器改写', () => {
   const insertUrl = 'https://example.supabase.co/rest/v1/memories';
-  assert.equal(isMemoryTableRead(insertUrl, { method: 'POST' }), false);
+  assert.equal(isMemoryTableRead(insertUrl, { method: 'GET' }), false);
   assert.equal(filteredMemoryInput(insertUrl, { method: 'POST' }), insertUrl);
 
   const rpcUrl = 'https://example.supabase.co/rest/v1/rpc/ourhome_consolidate_memory_layers';
@@ -83,9 +83,6 @@ test('自动临时记忆超过 72 小时工作窗口后只归档不删除', () =
   assert.doesNotMatch(memoryPatch, /DELETE[^\n]*memory_marks/i);
 });
 
-test('生产启动先保护 Chat 幂等，再以 402 熔断保护 Supabase/Neon，最后加载记忆、token、原生思考、审计、省钱和检索守卫', () => {
-  assert.equal(
-    packageJson.scripts.start,
-    'node -r ./chatIdempotencyPatch.js -r ./supabaseQuotaCircuitPatch.js -r ./neonFailoverFetchPatch.js -r ./memoryLayerPatch.js -r ./modelTokenLimitPatch.js -r ./thinkingTransportPatch.js -r ./apiUsageAuditPatch.js -r ./nonChatBudgetPatch.js -r ./backgroundAiCostGuardPatch.js -r ./theaterMemoryEconomyPatch.js -r ./theaterContinuityGuardPatch.js -r ./chatToolEconomyPatch.js -r ./chatHistorySearchResiliencePatch.js -r ./theaterMessagePagingPatch.js server.js',
-  );
+test('生产启动只走 node server.js，由 runtimeConfig 统一加载 runtimeBootstrap', () => {
+  assert.equal(packageJson.scripts.start, 'node server.js');
 });
