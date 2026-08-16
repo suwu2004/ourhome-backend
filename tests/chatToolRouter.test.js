@@ -48,12 +48,20 @@ test('明确保存或管理记忆才开放写工具', () => {
 test('共读、玩具熊、画室和私人房间按关键词路由', () => {
   assert.deepEqual(selectedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
   assert.deepEqual(selectedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
-  assert.deepEqual(selectedNames('宝宝给我画一张月亮'), ['read_drawing_room', 'create_drawing', 'delete_drawing']);
+  assert.deepEqual(selectedNames('宝宝给我画一张月亮'), ['create_drawing']);
+  assert.deepEqual(selectedNames('最近画了什么'), ['read_drawing_room']);
+  assert.deepEqual(selectedNames('把刚才那张画删掉'), ['read_drawing_room', 'delete_drawing']);
   assert.deepEqual(selectedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
   assert.deepEqual(chatLocalToolNeeds('看看共读小屋的批注'), { reading: true, toybox: false, drawing: false, privateRoom: false });
   assert.deepEqual(chatLocalToolNeeds('我们开一局五子棋'), { reading: false, toybox: true, drawing: false, privateRoom: false });
   assert.deepEqual(chatLocalToolNeeds('宝宝给我画一张月亮'), { reading: false, toybox: false, drawing: true, privateRoom: false });
   assert.deepEqual(chatLocalToolNeeds('宝贝抱抱'), { reading: false, toybox: false, drawing: false, privateRoom: false });
+});
+
+test('看小画册不会暴露付费生图工具', () => {
+  const selected = selectedNames('打开画室小画册，看看最近画过的');
+  assert.deepEqual(selected, ['read_drawing_room']);
+  assert.ok(!selected.includes('create_drawing'));
 });
 
 test('你画我猜仍只走玩具熊，不误开真正的生图画室', () => {
