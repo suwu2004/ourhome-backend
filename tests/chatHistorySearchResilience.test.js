@@ -21,9 +21,9 @@ test('unrelated Supabase reads and non-GET requests are untouched', () => {
   assert.equal(fallbackMessagesSearchUrl('https://example.supabase.co/rest/v1/messages?select=id,content', { method: 'GET' }), null);
 });
 
-test('npm start and runtime bootstrap both load history-search resilience', () => {
+test('single production entry loads history-search resilience through runtime bootstrap', () => {
   const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8'));
   const bootstrap = fs.readFileSync(path.resolve(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
-  assert.match(pkg.scripts.start, /chatHistorySearchResiliencePatch\.js/);
+  assert.equal(pkg.scripts.start, 'node server.js');
   assert.match(bootstrap, /require\('\.\/chatHistorySearchResiliencePatch'\)/);
 });
