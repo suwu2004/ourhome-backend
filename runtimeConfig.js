@@ -4,14 +4,14 @@ const { createReadingAssistant } = require('./readingAssistant');
 const { createReadingNoteAssistant } = require('./readingNotes');
 const { createReadingToolSafety } = require('./readingToolSafety');
 const { createToyboxAssistant } = require('./toyboxAssistant');
+const { createDrawingAssistant } = require('./drawingAssistant');
 const { createLuzePrivateRoomAssistant } = require('./luzePrivateRoomAssistant');
 const { installPrivateBucketGuard } = require('./privateUploads');
 const { chatLocalToolNeeds } = require('./chatToolRouter');
 
 function createRuntimeConfig(supabase) {
-  // The shared uploads bucket contains chat attachments and Toybox drawings.
-  // Guard the main Supabase client immediately so legacy callers can never flip
-  // the bucket public, even if they still request `public: true` internally.
+  // The shared uploads bucket contains chat attachments, Toybox drawings, and
+  // Drawing Room images. Keep every path private and expose only signed URLs.
   installPrivateBucketGuard(supabase);
 
   const missingRelation = error => ['42P01', 'PGRST205', 'PGRST202'].includes(error?.code);
@@ -19,6 +19,7 @@ function createRuntimeConfig(supabase) {
   const readingAssistant = createReadingAssistant({ supabase });
   const readingNoteAssistant = createReadingNoteAssistant({ supabase });
   const toyboxAssistant = createToyboxAssistant({ supabase });
+  const drawingAssistant = createDrawingAssistant({ supabase });
   const luzePrivateRoomAssistant = createLuzePrivateRoomAssistant({ supabase });
 
   async function getBaseSettings() {
@@ -241,7 +242,7 @@ function createRuntimeConfig(supabase) {
     const hasRoutingContext = Object.prototype.hasOwnProperty.call(options, 'routingContext');
     const needs = hasRoutingContext
       ? chatLocalToolNeeds(options.routingContext)
-      : { reading: true, toybox: true, privateRoom: true };
+      : { reading: true, toybox: true, drawing: true, privateRoom: true };
     const bridges = [];
     if (needs.reading) {
       bridges.push(createReadingToolSafety({
@@ -251,6 +252,7 @@ function createRuntimeConfig(supabase) {
       bridges.push(readingNoteAssistant.getToolBridge());
     }
     if (needs.toybox) bridges.push(toyboxAssistant.getToolBridge());
+    if (needs.drawing) bridges.push(drawingAssistant.getToolBridge());
     if (needs.privateRoom) bridges.push(luzePrivateRoomAssistant.getToolBridge());
     return {
       tools: bridges.flatMap(bridge => bridge.tools || []),
