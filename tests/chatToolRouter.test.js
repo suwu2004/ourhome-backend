@@ -8,6 +8,7 @@ const names = [
   'read_cat_vault', 'record_cat_vault_transaction', 'delete_cat_vault_transaction',
   'read_music_room', 'search_music', 'add_music_track', 'control_music_room',
   'read_reading_room', 'write_reading_note', 'read_toybox_room', 'start_toybox_game',
+  'read_drawing_room', 'create_drawing', 'delete_drawing',
   'read_luze_private_room', 'web_search', 'mcp_12345678_weather',
 ];
 const tools = names.map(name => ({ name, description: name, input_schema: { type: 'object', properties: {} } }));
@@ -44,13 +45,19 @@ test('明确保存或管理记忆才开放写工具', () => {
   assert.deepEqual(selectedNames('把那条长期记忆删掉'), ['manage_memory']);
 });
 
-test('共读、玩具熊和私人房间按关键词路由', () => {
+test('共读、玩具熊、画室和私人房间按关键词路由', () => {
   assert.deepEqual(selectedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
   assert.deepEqual(selectedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
+  assert.deepEqual(selectedNames('宝宝给我画一张月亮'), ['read_drawing_room', 'create_drawing', 'delete_drawing']);
   assert.deepEqual(selectedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
-  assert.deepEqual(chatLocalToolNeeds('看看共读小屋的批注'), { reading: true, toybox: false, privateRoom: false });
-  assert.deepEqual(chatLocalToolNeeds('我们开一局五子棋'), { reading: false, toybox: true, privateRoom: false });
-  assert.deepEqual(chatLocalToolNeeds('宝贝抱抱'), { reading: false, toybox: false, privateRoom: false });
+  assert.deepEqual(chatLocalToolNeeds('看看共读小屋的批注'), { reading: true, toybox: false, drawing: false, privateRoom: false });
+  assert.deepEqual(chatLocalToolNeeds('我们开一局五子棋'), { reading: false, toybox: true, drawing: false, privateRoom: false });
+  assert.deepEqual(chatLocalToolNeeds('宝宝给我画一张月亮'), { reading: false, toybox: false, drawing: true, privateRoom: false });
+  assert.deepEqual(chatLocalToolNeeds('宝贝抱抱'), { reading: false, toybox: false, drawing: false, privateRoom: false });
+});
+
+test('你画我猜仍只走玩具熊，不误开真正的生图画室', () => {
+  assert.deepEqual(selectedNames('我们玩你画我猜'), ['read_toybox_room', 'start_toybox_game']);
 });
 
 test('实时信息才开放联网和 MCP 工具', () => {
