@@ -12,7 +12,8 @@ const {
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'nonChatBudgetPatch.js'), 'utf8');
 
 test('main Chat, Toy Bear, and interactive Theater are exempt from the global non-Chat budget rewrite', () => {
-  assert.match(source, /isMainChatRequest\(url, body\) \|\| isToyboxRequest\(body\) \|\| isTheaterRequest\(body\)/);
+  assert.match(source, /!heartbeat && isMainChatRequest\(url, body\)/);
+  assert.match(source, /isToyboxRequest\(body\) \|\| isTheaterRequest\(body\)/);
   assert.match(source, /Interactive Chat, Toy Bear, and Theater keep their own selected model/);
 });
 
@@ -40,7 +41,7 @@ test('Happiness Diary and finished learning notes keep the active Chat model', (
   assert.equal(preservesRequestedModel('luze-learning-plan'), false);
   assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请写今天的幸福日记' }] }), 'happiness-diary');
   assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请给心情日历留一句话' }] }), 'daily-mood');
-  assert.match(source, /non_chat_model_policy: 'chat-writing-v5-cheap-theater-memory'/);
+  assert.match(source, /non_chat_model_policy: 'chat-writing-v6-cheap-heartbeat-theater-memory'/);
 });
 
 test('budget selector prefers explicit cheap hints and low-cost model families', () => {
