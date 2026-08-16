@@ -44,12 +44,13 @@ function selectBranchCutRows(rows, targetId, { includeTarget = false } = {}) {
   };
 }
 
-function rowsAfterAnchor(rows, anchorId) {
-  const list = Array.isArray(rows) ? rows : [];
-  if (!anchorId) return list;
-  const index = list.findIndex(row => String(row?.id) === String(anchorId));
-  if (index < 0) return [];
-  return list.slice(index + 1);
+function rowsAtOrAfterCutoff(rows, cutoff) {
+  const cutoffTime = Date.parse(cutoff || '');
+  if (!Number.isFinite(cutoffTime)) return [];
+  return (Array.isArray(rows) ? rows : []).filter(row => {
+    const rowTime = Date.parse(row?.created_at || '');
+    return Number.isFinite(rowTime) && rowTime >= cutoffTime;
+  });
 }
 
 async function assertBook(client, bookId) {
@@ -72,6 +73,19 @@ async function listActiveMessages(client, bookId) {
     .select('id,author,content,created_at,parent_id')
     .eq('category', THEATER_MESSAGE_CATEGORY)
     .eq('parent_id', bookId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+async function listHiddenMessages(client, bookId, ids) {
+  const messageIds = normalizeMessageIds(ids);
+  if (!messageIds.length) return [];
+  const { data, error } = await client.from('letters')
+    .select('id,created_at')
+    .eq('parent_id', bookId)
+    .eq('category', THEATER_HIDDEN_MESSAGE_CATEGORY)
+    .in('id', messageIds)
     .order('created_at', { ascending: true });
   if (error) throw error;
   return data || [];
@@ -133,9 +147,6 @@ function registerTheaterBranchRoutes(app) {
       if (cut.index < 0) return res.status(404).json({ error: '找不到要回到的这条消息' });
       if (!cut.rows.length) return res.json({ hiddenIds: [], hiddenCount: 0 });
 
-      // A branch change makes the old structured memory unsafe. Preserve the row
-      // as an archive instead of deleting it; the next Theater reply will rebuild
-      // from the active branch through the existing cheap memory path.
       await archiveActiveMemory(client, bookId);
       const hiddenIds = await hideRows(client, bookId, cut.rows.map(row => row.id));
       res.json({ hiddenIds, hiddenCount: hiddenIds.length });
@@ -157,11 +168,7 @@ function registerTheaterBranchRoutes(app) {
 
       await archiveActiveMemory(client, bookId);
       const hiddenIds = await hideRows(client, bookId, cut.rows.map(row => row.id));
-      res.json({
-        hiddenIds,
-        hiddenCount: hiddenIds.length,
-        restoreAnchorId: cut.previous?.id || null,
-      });
+      res.json({ hiddenIds, hiddenCount: hiddenIds.length, restoreAnchorId: cut.previous?.id || null });
     } catch (error) {
       sendRouteError(res, error, '这条消息暂时没有进入编辑分支');
     }
@@ -175,18 +182,18 @@ function registerTheaterBranchRoutes(app) {
       const requestedIds = normalizeMessageIds(req.body?.message_ids);
       if (!requestedIds.length) return res.json({ restoredIds: [], discardedIds: [] });
 
-      // If an edit-generation request failed after /chat had already persisted a
-      // new user row, prune that partial replacement branch before restoring the
-      // hidden original. This makes edit failure atomic from the user's view.
+      // The oldest hidden row is the branch boundary. If the user already sent a
+      // replacement turn (or a failed edit persisted a partial user row), fold any
+      // newer active rows away before restoring the original branch. That keeps
+      // undo and edit-failure recovery atomic without deleting either branch.
+      const hiddenRows = await listHiddenMessages(client, bookId, requestedIds);
       let discardedIds = [];
-      if (req.body?.prune_active_branch === true) {
+      if (hiddenRows[0]?.created_at) {
         const activeRows = await listActiveMessages(client, bookId);
-        const pruneRows = rowsAfterAnchor(activeRows, req.body?.restore_anchor_id || null);
-        discardedIds = await hideRows(client, bookId, pruneRows.map(row => row.id));
+        const replacementRows = rowsAtOrAfterCutoff(activeRows, hiddenRows[0].created_at);
+        discardedIds = await hideRows(client, bookId, replacementRows.map(row => row.id));
       }
 
-      // Restoring an older branch is also a timeline change, so any memory built
-      // after the rollback becomes an archive before the old messages return.
       await archiveActiveMemory(client, bookId);
       const restoredIds = await restoreRows(client, bookId, requestedIds);
       res.json({ restoredIds, discardedIds });
@@ -208,6 +215,6 @@ module.exports = {
   THEATER_ARCHIVED_MEMORY_CATEGORY,
   normalizeMessageIds,
   selectBranchCutRows,
-  rowsAfterAnchor,
+  rowsAtOrAfterCutoff,
   registerTheaterBranchRoutes,
 };
