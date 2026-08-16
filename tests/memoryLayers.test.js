@@ -40,7 +40,7 @@ test('普通 memories 查询会排除归档与已过期内容', () => {
 
 test('写入、RPC 与其他表请求不会被记忆读取过滤器改写', () => {
   const insertUrl = 'https://example.supabase.co/rest/v1/memories';
-  assert.equal(isMemoryTableRead(insertUrl, { method: 'GET' }), false);
+  assert.equal(isMemoryTableRead(insertUrl, { method: 'POST' }), false);
   assert.equal(filteredMemoryInput(insertUrl, { method: 'POST' }), insertUrl);
 
   const rpcUrl = 'https://example.supabase.co/rest/v1/rpc/ourhome_consolidate_memory_layers';
