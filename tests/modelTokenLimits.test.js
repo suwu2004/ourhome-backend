@@ -27,7 +27,9 @@ test('requested output is raised by settings but never exceeds model capability'
   assert.equal(clampRequestedOutputTokens('[C]claude-opus-4-6', 10_000), 10_000);
 });
 
-test('output token guard loads before the thinking transport', () => {
+test('output token guard loads before the thinking transport in the canonical bootstrap', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.match(pkg.scripts.start, /modelTokenLimitPatch\.js.*thinkingTransportPatch\.js/);
+  const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
+  assert.equal(pkg.scripts.start, 'node server.js');
+  assert.match(bootstrap, /modelTokenLimitPatch'\);[\s\S]*thinkingTransportPatch'\);/);
 });
