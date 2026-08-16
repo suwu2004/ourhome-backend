@@ -12,6 +12,7 @@ const EXTRA_BACKUP_TABLES = [
   { key: 'lorebooks', table: 'lorebooks', order: ['updated_at', true], limit: 5000 },
   { key: 'lorebook_entries', table: 'lorebook_entries', order: ['updated_at', true], limit: 40000 },
   { key: 'phone_calls', table: 'phone_calls', order: ['created_at', true], limit: 5000 },
+  { key: 'drawing_history', table: 'drawing_history', order: ['created_at', true], limit: 20000 },
 ];
 
 function missingRelation(error) {
@@ -43,7 +44,7 @@ async function enrichBackupPayload(supabase, payload) {
     tables: { ...(payload.tables || {}), ...extraTables },
     note: [
       payload.note,
-      '备份已包含共读划线、陆泽书签、章节预读、今日摘要、未完待续、窗口简介、重要时刻、规则库、世界书和通话记录。',
+      '备份已包含共读划线、陆泽书签、章节预读、今日摘要、未完待续、窗口简介、重要时刻、规则库、世界书、通话记录和画室历史元数据。画室图片原文件仍保存在私有对象存储中。',
     ].filter(Boolean).join(' '),
   };
 }
