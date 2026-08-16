@@ -14,6 +14,7 @@ test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/neonFailoverFetchPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/theaterMemoryFactDedupPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/theaterMemoryEconomyPatch'\);/);
+  assert.match(bootstrapSource, /require\('\.\/theaterContinuityGuardPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/theaterMemoryPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/memoryLayerPatch'\);/);
   assert.match(bootstrapSource, /require\('\.\/modelTokenLimitPatch'\);/);
@@ -29,13 +30,15 @@ test('node server.js 也会加载审计与所有费用保护补丁', () => {
   assert.match(bootstrapSource, /require\('\.\/intimacyFlowPatch'\);/);
 });
 
-test('剧场事实压缩和省钱检查都先于剧场记忆主体加载', () => {
+test('剧场事实压缩、省钱检查与连续性守卫都先于剧场记忆主体加载', () => {
   const dedupIndex = bootstrapSource.indexOf("require('./theaterMemoryFactDedupPatch')");
   const economyIndex = bootstrapSource.indexOf("require('./theaterMemoryEconomyPatch')");
+  const continuityIndex = bootstrapSource.indexOf("require('./theaterContinuityGuardPatch')");
   const theaterIndex = bootstrapSource.indexOf("require('./theaterMemoryPatch')");
-  assert.ok(dedupIndex >= 0 && economyIndex >= 0 && theaterIndex >= 0);
+  assert.ok(dedupIndex >= 0 && economyIndex >= 0 && continuityIndex >= 0 && theaterIndex >= 0);
   assert.ok(dedupIndex < theaterIndex);
-  assert.ok(economyIndex < theaterIndex);
+  assert.ok(economyIndex < continuityIndex);
+  assert.ok(continuityIndex < theaterIndex);
 });
 
 test('剧场记忆整理在审计和省钱守门之后加载', () => {
@@ -43,15 +46,17 @@ test('剧场记忆整理在审计和省钱守门之后加载', () => {
   const budgetIndex = bootstrapSource.indexOf("require('./nonChatBudgetPatch')");
   const backgroundIndex = bootstrapSource.indexOf("require('./backgroundAiCostGuardPatch')");
   const economyIndex = bootstrapSource.indexOf("require('./theaterMemoryEconomyPatch')");
+  const continuityIndex = bootstrapSource.indexOf("require('./theaterContinuityGuardPatch')");
   const theaterIndex = bootstrapSource.indexOf("require('./theaterMemoryPatch')");
   assert.ok(auditIndex >= 0 && auditIndex < budgetIndex);
   assert.ok(budgetIndex < backgroundIndex);
   assert.ok(backgroundIndex < economyIndex);
-  assert.ok(economyIndex < theaterIndex);
+  assert.ok(economyIndex < continuityIndex);
+  assert.ok(continuityIndex < theaterIndex);
   assert.match(bootstrapSource, /background role\/plot memory organizer is captured only after the budget guards/);
 });
 
-test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护、剧场省钱、剧场记忆、账本顺序加载', () => {
+test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护、剧场省钱、连续性、剧场记忆、账本顺序加载', () => {
   const memoryIndex = bootstrapSource.indexOf("require('./memoryLayerPatch')");
   const tokenIndex = bootstrapSource.indexOf("require('./modelTokenLimitPatch')");
   const thinkingIndex = bootstrapSource.indexOf("require('./thinkingTransportPatch')");
@@ -59,6 +64,7 @@ test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护�
   const budgetIndex = bootstrapSource.indexOf("require('./nonChatBudgetPatch')");
   const backgroundIndex = bootstrapSource.indexOf("require('./backgroundAiCostGuardPatch')");
   const theaterEconomyIndex = bootstrapSource.indexOf("require('./theaterMemoryEconomyPatch')");
+  const theaterContinuityIndex = bootstrapSource.indexOf("require('./theaterContinuityGuardPatch')");
   const theaterIndex = bootstrapSource.indexOf("require('./theaterMemoryPatch')");
   const ledgerIndex = bootstrapSource.indexOf("require('./contextLedgerPatch')");
   const autonomyIndex = bootstrapSource.indexOf("require('./intimacyFlowAutonomyPatch')");
@@ -72,7 +78,8 @@ test('运行时补丁按思考、审计、非 Chat 省钱、本地后台保护�
   assert.ok(auditIndex < budgetIndex);
   assert.ok(budgetIndex < backgroundIndex);
   assert.ok(backgroundIndex < theaterEconomyIndex);
-  assert.ok(theaterEconomyIndex < theaterIndex);
+  assert.ok(theaterEconomyIndex < theaterContinuityIndex);
+  assert.ok(theaterContinuityIndex < theaterIndex);
   assert.ok(theaterIndex < ledgerIndex);
   assert.ok(ledgerIndex < autonomyIndex);
   assert.ok(autonomyIndex < cleanupIndex);
@@ -86,11 +93,12 @@ test('direct server start 会加载稳定性保护且顺序与 npm start 对齐'
   const circuit = bootstrapSource.indexOf("require('./supabaseQuotaCircuitPatch')");
   const neon = bootstrapSource.indexOf("require('./neonFailoverFetchPatch')");
   assert.ok(chat >= 0 && chat < circuit && circuit < neon);
-  assert.match(bootstrapSource, /direct-server-start-v6-theater-memory-economy/);
+  assert.match(bootstrapSource, /direct-server-start-v7-theater-continuity/);
   assert.match(bootstrapSource, /chat_idempotency: 'request-id-theater-replay-v2'/);
   assert.match(bootstrapSource, /memory_journal: body\.memory_journal \|\| 'model-owned-working-memory-v3-cost-gated'/);
   assert.match(bootstrapSource, /theater_memory: body\.theater_memory \|\| 'anchor-character-plot-state-v3-cheap-refresh'/);
   assert.match(bootstrapSource, /theater_memory_economy: body\.theater_memory_economy \|\| 'six-turn-major-events-v1'/);
+  assert.match(bootstrapSource, /theater_continuity: body\.theater_continuity \|\| 'live-frontier-no-replay-v1'/);
   assert.match(bootstrapSource, /happiness_diary: '500-900-char-v1'/);
   assert.match(bootstrapSource, /chat_prompt_cost_control: 'selective-tools-context-budget-v2-memory-one-shot'/);
   assert.match(bootstrapSource, /background_persona: 'purpose-projected-v1'/);
