@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createRuntimeConfig } = require('../runtimeConfig');
 
-test('聊天运行时同时暴露共读、玩具箱与陆泽私人房间工具', () => {
+test('聊天运行时同时暴露共读、玩具箱、画室与陆泽私人房间工具', () => {
   const runtime = createRuntimeConfig({});
   const bridge = runtime.getReadingAssistantBridge();
   const names = bridge.tools.map(tool => tool.name);
@@ -19,6 +19,9 @@ test('聊天运行时同时暴露共读、玩具箱与陆泽私人房间工具',
     'read_toybox_room',
     'start_toybox_game',
     'leave_toybox_note',
+    'read_drawing_room',
+    'create_drawing',
+    'delete_drawing',
     'read_luze_private_room',
   ]);
   assert.equal(new Set(names).size, names.length);
