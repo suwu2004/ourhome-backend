@@ -12,7 +12,10 @@ const { isLikelyVisionModel } = require('./modelCompatibility');
 // model; planning, search and other rough work stay cheap.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
+const HEARTBEAT_BACKOFF_MS = 60 * 60 * 1000;
+const AUTOMATION_HEARTBEAT_PURPOSE = 'automation-heartbeat';
 const modelCache = new Map();
+let heartbeatBackoffUntil = 0;
 const SMART_BACKGROUND_PURPOSES = new Set([
   'happiness-diary',
   'luze-learning-synthesis',
@@ -209,6 +212,7 @@ function inferPurpose(body) {
   const text = `${system}\n${messages}`;
   if (isVisionReaderRequest(body)) return 'vision-reader';
   if (isTheaterMemoryRequest(body)) return 'theater-memory';
+  if (/自动心跳提醒你|主动敲门/.test(text)) return AUTOMATION_HEARTBEAT_PURPOSE;
   if (/记忆日志/.test(text)) return 'memory-journal';
   if (/隐藏接续账本|滚动账本/.test(text)) return 'context-ledger';
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
@@ -231,6 +235,10 @@ function localBudgetError(message) {
   });
 }
 
+function isHeartbeatPurpose(purpose) {
+  return String(purpose || '').trim() === AUTOMATION_HEARTBEAT_PURPOSE;
+}
+
 if (typeof providerFetch === 'function') {
   globalThis.fetch = async function nonChatBudgetFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
@@ -240,29 +248,44 @@ if (typeof providerFetch === 'function') {
     try { body = JSON.parse(init.body); } catch { return providerFetch(input, init); }
     if (!isModelRequest(url, body)) return providerFetch(input, init);
 
-    const purpose = requestPurpose(init);
+    const explicitPurpose = requestPurpose(init);
+    const effectivePurpose = explicitPurpose || inferPurpose(body);
+    const heartbeat = isHeartbeatPurpose(effectivePurpose);
+
     // Interactive Chat, Toy Bear, and Theater keep their own selected model.
     // Theater memory is background maintenance and intentionally falls through
-    // to the cheapest-model selector below.
+    // to the cheapest-model selector below. The proactive heartbeat deliberately
+    // bypasses the Chat-shaped exemption: it is a background one-liner, not the
+    // foreground conversation, so it should never inherit Opus/Sonnet pricing.
     // Happiness Diary and final learning-note synthesis deliberately keep the
     // active Chat model; consent, planning and filtering stay behind the guard.
-    if (isMainChatRequest(url, body) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(purpose)) {
+    if ((!heartbeat && isMainChatRequest(url, body)) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(explicitPurpose)) {
       return providerFetch(input, init);
+    }
+
+    if (heartbeat && heartbeatBackoffUntil > Date.now()) {
+      return localBudgetError('主动消息线路刚刚不可用，后台已进入一小时冷却，避免每次心跳重复请求。');
     }
 
     const vision = isVisionReaderRequest(body);
     const model = await cheapestModel({ vision });
     if (!model) {
-      console.warn(`[budget-model] blocked paid non-chat call; no safe cheapest model purpose=${purpose || inferPurpose(body)} requested=${body.model || ''}`);
+      console.warn(`[budget-model] blocked paid non-chat call; no safe cheapest model purpose=${effectivePurpose} requested=${body.model || ''}`);
+      if (heartbeat) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
       return localBudgetError('当前 API 站点暂时没有拿到可确认的省钱模型，后台功能已停止这次调用，避免误用 Chat 的昂贵模型。');
     }
 
     const headers = new Headers(init.headers || undefined);
-    if (!headers.has('X-OurHome-Call-Purpose')) headers.set('X-OurHome-Call-Purpose', inferPurpose(body));
+    if (!headers.has('X-OurHome-Call-Purpose')) headers.set('X-OurHome-Call-Purpose', effectivePurpose);
     const originalModel = String(body.model || '');
     const nextBody = { ...body, model };
-    if (originalModel !== model) console.log(`[budget-model] ${purpose || inferPurpose(body)} ${originalModel} -> ${model}`);
-    return providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+    if (originalModel !== model) console.log(`[budget-model] ${effectivePurpose} ${originalModel} -> ${model}`);
+    const response = await providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+    if (heartbeat) {
+      if (response.status >= 500) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
+      else if (response.ok) heartbeatBackoffUntil = 0;
+    }
+    return response;
   };
 }
 
@@ -273,7 +296,7 @@ try {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
       // Legacy policy marker retained for source-level regression compatibility:
       // cheapest-except-chat-toybear-theater-v2
-      body = { ...body, non_chat_model_policy: 'chat-writing-v5-cheap-theater-memory' };
+      body = { ...body, non_chat_model_policy: 'chat-writing-v6-cheap-heartbeat-theater-memory' };
     }
     return originalJson.call(this, body);
   };
@@ -282,6 +305,7 @@ try {
 }
 
 module.exports = {
+  AUTOMATION_HEARTBEAT_PURPOSE,
   budgetScore,
   pickBudgetModel,
   isToyboxRequest,
@@ -289,6 +313,7 @@ module.exports = {
   isTheaterRequest,
   isVisionReaderRequest,
   inferPurpose,
+  isHeartbeatPurpose,
   requestPurpose,
   preservesRequestedModel,
 };
