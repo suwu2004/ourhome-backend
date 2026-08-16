@@ -35,12 +35,21 @@ function normalizeMessageIds(value) {
 function selectBranchCutRows(rows, targetId, { includeTarget = false } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const index = list.findIndex(row => String(row?.id) === String(targetId));
-  if (index < 0) return { index: -1, target: null, rows: [] };
+  if (index < 0) return { index: -1, target: null, rows: [], previous: null };
   return {
     index,
     target: list[index],
+    previous: index > 0 ? list[index - 1] : null,
     rows: list.slice(includeTarget ? index : index + 1),
   };
+}
+
+function rowsAfterAnchor(rows, anchorId) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!anchorId) return list;
+  const index = list.findIndex(row => String(row?.id) === String(anchorId));
+  if (index < 0) return [];
+  return list.slice(index + 1);
 }
 
 async function assertBook(client, bookId) {
@@ -148,7 +157,11 @@ function registerTheaterBranchRoutes(app) {
 
       await archiveActiveMemory(client, bookId);
       const hiddenIds = await hideRows(client, bookId, cut.rows.map(row => row.id));
-      res.json({ hiddenIds, hiddenCount: hiddenIds.length });
+      res.json({
+        hiddenIds,
+        hiddenCount: hiddenIds.length,
+        restoreAnchorId: cut.previous?.id || null,
+      });
     } catch (error) {
       sendRouteError(res, error, '这条消息暂时没有进入编辑分支');
     }
@@ -160,13 +173,23 @@ function registerTheaterBranchRoutes(app) {
       const bookId = req.params.id;
       await assertBook(client, bookId);
       const requestedIds = normalizeMessageIds(req.body?.message_ids);
-      if (!requestedIds.length) return res.json({ restoredIds: [] });
+      if (!requestedIds.length) return res.json({ restoredIds: [], discardedIds: [] });
+
+      // If an edit-generation request failed after /chat had already persisted a
+      // new user row, prune that partial replacement branch before restoring the
+      // hidden original. This makes edit failure atomic from the user's view.
+      let discardedIds = [];
+      if (req.body?.prune_active_branch === true) {
+        const activeRows = await listActiveMessages(client, bookId);
+        const pruneRows = rowsAfterAnchor(activeRows, req.body?.restore_anchor_id || null);
+        discardedIds = await hideRows(client, bookId, pruneRows.map(row => row.id));
+      }
 
       // Restoring an older branch is also a timeline change, so any memory built
       // after the rollback becomes an archive before the old messages return.
       await archiveActiveMemory(client, bookId);
       const restoredIds = await restoreRows(client, bookId, requestedIds);
-      res.json({ restoredIds });
+      res.json({ restoredIds, discardedIds });
     } catch (error) {
       sendRouteError(res, error, '小剧场这次没有恢复成功');
     }
@@ -185,5 +208,6 @@ module.exports = {
   THEATER_ARCHIVED_MEMORY_CATEGORY,
   normalizeMessageIds,
   selectBranchCutRows,
+  rowsAfterAnchor,
   registerTheaterBranchRoutes,
 };
