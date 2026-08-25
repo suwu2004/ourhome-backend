@@ -87,22 +87,11 @@ function parseImagePayload(payload = {}) {
     if (typeof value === 'string') {
       const text = value.trim();
       if (!text) return null;
-
       const dataUrl = parseDataUrl(text);
       if (dataUrl) return dataUrl;
-
-      if (/^https?:\/\//i.test(text) && /(url|image|src|href|result|output)/i.test(key)) {
-        return { url: text };
-      }
-
-      if (/(b64|base64|image_data|imageData)/i.test(key) && looksLikeBase64(text)) {
-        return decodeBase64Image(text);
-      }
-
-      if (/(result|output|image|content|data)/i.test(key) && looksLikeBase64(text)) {
-        return decodeBase64Image(text);
-      }
-
+      if (/^https?:\/\//i.test(text) && /(url|image|src|href|result|output|content|data)/i.test(key)) return { url: text };
+      if (/(b64|base64|image_data|imageData)/i.test(key) && looksLikeBase64(text)) return decodeBase64Image(text);
+      if (/(result|output|image|content|data)/i.test(key) && looksLikeBase64(text)) return decodeBase64Image(text);
       return null;
     }
 
@@ -195,12 +184,7 @@ async function loadRuntime() {
   if (!connection || connection.enabled === false) throw new Error('画画 API 还没有启用');
   if (!connection.secret) throw new Error('画画 API 还没有保存密钥');
   const model = compactLine(connection.config?.model || DEFAULT_MODEL, 240);
-  return {
-    provider: connection.name || CONNECTION_NAME,
-    baseUrl: connection.url || DEFAULT_BASE_URL,
-    apiKey: String(connection.secret),
-    model,
-  };
+  return { provider: connection.name || CONNECTION_NAME, baseUrl: connection.url || DEFAULT_BASE_URL, apiKey: String(connection.secret), model };
 }
 
 async function fetchGeneratedBytes(parsed) {
@@ -213,32 +197,43 @@ async function fetchGeneratedBytes(parsed) {
   if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
   const arrayBuffer = await response.arrayBuffer();
   if (!arrayBuffer.byteLength || arrayBuffer.byteLength > MAX_IMAGE_BYTES) throw new Error('生成图片大小异常');
-  return {
-    buffer: Buffer.from(arrayBuffer),
-    contentType: response.headers.get('content-type') || 'image/png',
-  };
+  return { buffer: Buffer.from(arrayBuffer), contentType: response.headers.get('content-type') || 'image/png' };
 }
 
 async function callImageProvider(runtime, prompt) {
   const response = await fetch(imagesEndpoint(runtime.baseUrl), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${runtime.apiKey}`,
-      'X-OurHome-Call-Purpose': 'drawing-room',
-    },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.apiKey}`, 'X-OurHome-Call-Purpose': 'drawing-room' },
     body: JSON.stringify({ model: runtime.model, prompt, n: 1 }),
     signal: AbortSignal.timeout(120_000),
   });
-  const raw = await response.text();
-  let payload = {};
-  try { payload = JSON.parse(raw); } catch { /* handled below */ }
+
+  const contentType = response.headers.get('content-type') || '';
   if (!response.ok) {
-    const message = payload?.error?.message || payload?.message || raw.slice(0, 500);
+    const rawError = await response.text();
+    let payload = {};
+    try { payload = JSON.parse(rawError); } catch { /* keep raw text */ }
+    const message = payload?.error?.message || payload?.message || rawError.slice(0, 500);
     throw new Error(`画画 API 暂时没有回应 (${response.status})${message ? `：${message}` : ''}`);
   }
-  const parsed = parseImagePayload(payload);
-  if (!parsed) throw new Error('生图接口返回了无法识别的图片格式');
+
+  // Some OpenAI-compatible gateways return the image bytes directly instead of JSON.
+  if (/^image\//i.test(contentType)) {
+    const arrayBuffer = await response.arrayBuffer();
+    if (!arrayBuffer.byteLength || arrayBuffer.byteLength > MAX_IMAGE_BYTES) throw new Error('生成图片大小异常');
+    return { buffer: Buffer.from(arrayBuffer), contentType: contentType.split(';')[0] || 'image/png' };
+  }
+
+  const raw = await response.text();
+  let payload = null;
+  try { payload = JSON.parse(raw.replace(/^\uFEFF/, '').trim()); } catch { payload = null; }
+
+  // A gateway may return a bare URL/data URL/base64 string instead of a JSON object.
+  const parsed = parseImagePayload(payload ?? { output: raw });
+  if (!parsed) {
+    const detail = compactLine(raw, 260);
+    throw new Error(`生图接口返回了无法识别的图片格式${detail ? `：${detail}` : `（Content-Type: ${contentType || '未知'}）`}`);
+  }
   return fetchGeneratedBytes(parsed);
 }
 
@@ -246,24 +241,12 @@ async function signHistory(rows) {
   getSupabase();
   const paths = rows.map(row => row.image_path).filter(Boolean);
   const signed = await signer.signMany(paths);
-  return rows.map(row => ({
-    id: row.id,
-    prompt: row.prompt,
-    image: signed.get(row.image_path) || '',
-    image_path: row.image_path,
-    provider: row.provider,
-    model: row.model,
-    source: row.source,
-    created_at: row.created_at,
-  }));
+  return rows.map(row => ({ id: row.id, prompt: row.prompt, image: signed.get(row.image_path) || '', image_path: row.image_path, provider: row.provider, model: row.model, source: row.source, created_at: row.created_at }));
 }
 
 async function listDrawingHistory(limit = 24) {
   const safeLimit = Math.max(1, Math.min(HISTORY_LIMIT, Number.parseInt(limit, 10) || 24));
-  const { data, error } = await getSupabase().from('drawing_history')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(safeLimit);
+  const { data, error } = await getSupabase().from('drawing_history').select('*').order('created_at', { ascending: false }).limit(safeLimit);
   if (error) throw error;
   return signHistory(data || []);
 }
@@ -273,25 +256,11 @@ async function persistDrawing({ prompt, bytes, runtime, source, requestId }) {
   const ext = imageExtension(bytes.contentType);
   const day = new Date().toISOString().slice(0, 10);
   const imagePath = `drawing-room/${day}/${crypto.randomUUID()}.${ext}`;
-  const { error: uploadError } = await supabase.storage.from(BUCKET).upload(imagePath, bytes.buffer, {
-    contentType: bytes.contentType || 'image/png',
-    cacheControl: String(30 * 24 * 60 * 60),
-    upsert: false,
-  });
+  const { error: uploadError } = await supabase.storage.from(BUCKET).upload(imagePath, bytes.buffer, { contentType: bytes.contentType || 'image/png', cacheControl: String(30 * 24 * 60 * 60), upsert: false });
   if (uploadError) throw uploadError;
-  const row = {
-    prompt,
-    image_path: imagePath,
-    provider: runtime.provider,
-    model: runtime.model,
-    source: source === 'chat' ? 'chat' : 'drawing-room',
-    metadata: requestId ? { request_id: requestId } : {},
-  };
+  const row = { prompt, image_path: imagePath, provider: runtime.provider, model: runtime.model, source: source === 'chat' ? 'chat' : 'drawing-room', metadata: requestId ? { request_id: requestId } : {} };
   const { data, error } = await supabase.from('drawing_history').insert(row).select('*').single();
-  if (error) {
-    await supabase.storage.from(BUCKET).remove([imagePath]).catch(() => {});
-    throw error;
-  }
+  if (error) { await supabase.storage.from(BUCKET).remove([imagePath]).catch(() => {}); throw error; }
   return (await signHistory([data]))[0];
 }
 
@@ -313,10 +282,7 @@ async function generateDrawing({ prompt, requestId = '', source = 'drawing-room'
   })();
   if (key) requests.set(key, { createdAt: Date.now(), promise });
   try { return await promise; }
-  catch (error) {
-    if (key) requests.delete(key);
-    throw error;
-  }
+  catch (error) { if (key) requests.delete(key); throw error; }
 }
 
 async function deleteDrawing(id) {
@@ -344,23 +310,7 @@ async function downloadDrawing(id) {
   const file = await supabase.storage.from(BUCKET).download(data.image_path);
   if (file.error || !file.data) throw file.error || new Error('图片读取失败');
   const arrayBuffer = await file.data.arrayBuffer();
-  return {
-    buffer: Buffer.from(arrayBuffer),
-    contentType: file.data.type || 'image/png',
-    filename: `ourhome-drawing-${String(data.id).slice(0, 8)}.${imageExtension(file.data.type)}`,
-  };
+  return { buffer: Buffer.from(arrayBuffer), contentType: file.data.type || 'image/png', filename: `ourhome-drawing-${String(data.id).slice(0, 8)}.${imageExtension(file.data.type)}` };
 }
 
-module.exports = {
-  CONNECTION_KIND,
-  DEFAULT_BASE_URL,
-  DEFAULT_MODEL,
-  imagesEndpoint,
-  parseImagePayload,
-  getDrawingConfig,
-  saveDrawingConfig,
-  listDrawingHistory,
-  generateDrawing,
-  deleteDrawing,
-  downloadDrawing,
-};
+module.exports = { CONNECTION_KIND, DEFAULT_BASE_URL, DEFAULT_MODEL, imagesEndpoint, parseImagePayload, getDrawingConfig, saveDrawingConfig, listDrawingHistory, generateDrawing, deleteDrawing, downloadDrawing };
