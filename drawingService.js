@@ -46,20 +46,97 @@ function imageExtension(contentType) {
   return 'png';
 }
 
+function decodeBase64Image(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  try {
+    const buffer = Buffer.from(text, 'base64');
+    if (!buffer.length) return null;
+    return { buffer, contentType: 'image/png' };
+  } catch {
+    return null;
+  }
+}
+
+function parseDataUrl(value) {
+  const text = String(value || '').trim();
+  if (!/^data:image\//i.test(text)) return null;
+  const match = text.match(/^data:([^;,]+);base64,(.+)$/i);
+  if (!match) return null;
+  try {
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length) return null;
+    return { buffer, contentType: match[1] };
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeBase64(value) {
+  const text = String(value || '').trim();
+  return text.length >= 128 && text.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(text);
+}
+
 function parseImagePayload(payload = {}) {
-  const first = Array.isArray(payload?.data) ? payload.data[0] : null;
-  const b64 = first?.b64_json || payload?.b64_json;
-  if (typeof b64 === 'string' && b64.trim()) {
-    return { buffer: Buffer.from(b64.trim(), 'base64'), contentType: 'image/png' };
+  const seen = new Set();
+  const maxDepth = 7;
+
+  function visit(value, key = '', depth = 0) {
+    if (value == null || depth > maxDepth) return null;
+
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (!text) return null;
+
+      const dataUrl = parseDataUrl(text);
+      if (dataUrl) return dataUrl;
+
+      if (/^https?:\/\//i.test(text) && /(url|image|src|href|result|output)/i.test(key)) {
+        return { url: text };
+      }
+
+      if (/(b64|base64|image_data|imageData)/i.test(key) && looksLikeBase64(text)) {
+        return decodeBase64Image(text);
+      }
+
+      if (/(result|output|image|content|data)/i.test(key) && looksLikeBase64(text)) {
+        return decodeBase64Image(text);
+      }
+
+      return null;
+    }
+
+    if (typeof value !== 'object') return null;
+    if (seen.has(value)) return null;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const result = visit(item, key, depth + 1);
+        if (result) return result;
+      }
+      return null;
+    }
+
+    const preferredKeys = [
+      'b64_json', 'b64Json', 'base64', 'base64_data', 'image_data', 'imageData',
+      'data_url', 'dataUrl', 'url', 'image_url', 'imageUrl', 'image', 'result', 'output',
+    ];
+    for (const childKey of preferredKeys) {
+      if (!(childKey in value)) continue;
+      const result = visit(value[childKey], childKey, depth + 1);
+      if (result) return result;
+    }
+
+    for (const [childKey, childValue] of Object.entries(value)) {
+      if (preferredKeys.includes(childKey)) continue;
+      const result = visit(childValue, childKey, depth + 1);
+      if (result) return result;
+    }
+    return null;
   }
-  const dataUrl = first?.image || payload?.image;
-  if (typeof dataUrl === 'string' && /^data:image\//i.test(dataUrl)) {
-    const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/i);
-    if (match) return { buffer: Buffer.from(match[2], 'base64'), contentType: match[1] };
-  }
-  const url = first?.url || payload?.url || payload?.image_url || (typeof dataUrl === 'string' ? dataUrl : '');
-  if (typeof url === 'string' && /^https?:\/\//i.test(url.trim())) return { url: url.trim() };
-  return null;
+
+  return visit(payload);
 }
 
 async function imageConnection({ includeSecret = false } = {}) {
