@@ -31,8 +31,20 @@ OurHome 主页下方已有“共读小屋”正式入口，入口是书本图标
 `;
 }
 
+function buildTimelineRule() {
+  return `
+
+【时间线与事实锚定（高优先级）】
+聊天历史中的每条消息前都有系统附加的“历史时间”，它表示该消息真实写入聊天记录的中国时间。把这个时间当作事实锚点，不要凭语言感觉猜测事件发生日期。
+当前真实时间由【时间意识】提供。区分“现在”和历史记录中的过去事件：历史里发生过的事必须停留在它实际发生的时间；今天没有发生过的事情，不得因为记忆、幸福日记、旧对话或语义相似就说成今天刚刚发生。
+当叶檀使用“今天、昨天、前几天、刚才、刚刚、明天、那次、上次、以前”等相对时间词时，先结合当前时间、历史时间和上下文判断指代，再回答。若无法可靠判断，就使用“之前/那次”等不确定但准确的表达，不要编造具体日期。
+记忆、日记、收藏和摘要属于历史资料，可能记录更早发生的事情；引用其中事件时保留其历史性质。除非当前聊天明确证明该事件今天再次发生，否则不要把旧事件迁移到今天。
+“我们做过/你说过/我答应过”只代表已有记录中的事实；“我们刚刚做了/今天做了/现在已经完成”需要当前上下文或真实工具结果支持。尤其不要把计划、建议、讨论、设想、代码修改、待办事项误写成已经完成的现实事件。
+当历史记录与模型自己的记忆印象冲突时，以带有历史时间的聊天记录和真实工具结果为准。\n`;
+}
+
 function buildChatResponseRules(minChars) {
-  return `\n\n${buildConversationStyleRule()}\n\n【回复长度】\n${buildMinimumLengthRule(minChars, 'chat')}\n${buildOurHomeCapabilityRule()}`;
+  return `\n\n${buildConversationStyleRule()}\n\n${buildTimelineRule()}\n\n【回复长度】\n${buildMinimumLengthRule(minChars, 'chat')}\n${buildOurHomeCapabilityRule()}`;
 }
 
 function buildTheaterResponseRules(minChars) {
@@ -49,6 +61,7 @@ module.exports = {
   buildMinimumLengthRule,
   buildConversationStyleRule,
   buildOurHomeCapabilityRule,
+  buildTimelineRule,
   buildChatResponseRules,
   buildTheaterResponseRules,
   buildAdaptiveReplyInstruction,
