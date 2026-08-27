@@ -22,13 +22,38 @@ function estimateMessageTokens(message = {}) {
   return 16 + estimateTextTokens(message.content) + estimateTextTokens(attachmentText);
 }
 
+function formatTimelineStamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+}
+
+function annotateHistoryTimeline(messages = []) {
+  return messages.map(message => {
+    const stamp = formatTimelineStamp(message.created_at);
+    if (!stamp) return { ...message };
+    return {
+      ...message,
+      content: `[历史时间：${stamp}]\n${String(message.content || '')}`,
+    };
+  });
+}
+
 function selectRecentHistory(history = [], options = {}) {
   const list = Array.isArray(history) ? history : [];
   const maxRounds = normalizePositiveInteger(options.maxRounds, 20, 500);
   const maxMessages = Math.max(2, maxRounds * 2);
   const byRounds = list.slice(-maxMessages);
   const maxTokens = normalizePositiveInteger(options.maxTokens, 0, 1_000_000);
-  if (!maxTokens || !byRounds.length) return byRounds;
+  if (!maxTokens || !byRounds.length) return annotateHistoryTimeline(byRounds);
 
   const minMessages = Math.max(1, Math.min(byRounds.length, normalizePositiveInteger(options.minMessages, 2, 8)));
   let start = byRounds.length;
@@ -40,11 +65,13 @@ function selectRecentHistory(history = [], options = {}) {
     start -= 1;
     estimatedTokens += nextCost;
   }
-  return byRounds.slice(start);
+  return annotateHistoryTimeline(byRounds.slice(start));
 }
 
 module.exports = {
   estimateTextTokens,
   estimateMessageTokens,
+  formatTimelineStamp,
+  annotateHistoryTimeline,
   selectRecentHistory,
 };
