@@ -118,6 +118,20 @@ function selectChatTools(tools, routingContext) {
   return tools.filter(tool => selected.has(tool?.name));
 }
 
+// Shared by the chat-history keyword scorer in server.js.  Keep this helper on
+// the global object because the scorer lives in the legacy monolithic server
+// module and historically referenced textBigrams as a free helper.
+function textBigrams(value) {
+  const text = String(value || '');
+  const result = new Set();
+  for (let i = 0; i < text.length - 1; i += 1) {
+    result.add(text.slice(i, i + 2));
+  }
+  return result;
+}
+
+globalThis.textBigrams = textBigrams;
+
 module.exports = {
   GROUPS,
   CHAT_HISTORY_RE,
@@ -130,4 +144,5 @@ module.exports = {
   chatNeedsRemoteTools,
   chatLocalToolNeeds,
   selectChatTools,
+  textBigrams,
 };
