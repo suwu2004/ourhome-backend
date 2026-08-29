@@ -1,6 +1,7 @@
 'use strict';
 
 const CJK_RE = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g;
+const HISTORY_TIMELINE_MARKER_RE = /(?:^|\n)\s*\[历史时间[：:]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g;
 
 function normalizePositiveInteger(value, fallback, max) {
   const parsed = Number.parseInt(value, 10);
@@ -36,13 +37,19 @@ function formatTimelineStamp(value) {
   }).replace(/\//g, '-');
 }
 
+function stripHistoryTimelineAnnotations(value) {
+  if (typeof value !== 'string' || !value) return value;
+  return value.replace(HISTORY_TIMELINE_MARKER_RE, (match, offset) => offset === 0 ? '' : '\n');
+}
+
 function annotateHistoryTimeline(messages = []) {
   return messages.map(message => {
     const stamp = formatTimelineStamp(message.created_at);
     if (!stamp) return { ...message };
+    const cleanContent = stripHistoryTimelineAnnotations(String(message.content || ''));
     return {
       ...message,
-      content: `[历史时间：${stamp}]\n${String(message.content || '')}`,
+      content: `[历史时间：${stamp}]\n${cleanContent}`,
     };
   });
 }
@@ -72,6 +79,7 @@ module.exports = {
   estimateTextTokens,
   estimateMessageTokens,
   formatTimelineStamp,
+  stripHistoryTimelineAnnotations,
   annotateHistoryTimeline,
   selectRecentHistory,
 };
