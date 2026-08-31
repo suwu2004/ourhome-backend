@@ -26,12 +26,28 @@ function stripInternalControls(value) {
     .trim();
 }
 
+function formatLedgerTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+}
+
 function rowText(row = {}) {
   const role = row.role === 'assistant' ? '陆泽' : row.role === 'user' ? '叶檀' : String(row.role || '消息');
   const content = compactText(stripInternalControls(row.content), 12_000);
   const attachment = compactText(stripInternalControls(row.attachment_summary), 1_200);
+  const timestamp = formatLedgerTime(row.created_at);
+  const timePrefix = timestamp ? `[历史时间：${timestamp}] ` : '';
   const parts = [content, attachment ? `附件摘要：${attachment}` : ''].filter(Boolean);
-  return parts.length ? `${role}：${parts.join('\n')}` : '';
+  return parts.length ? `${timePrefix}${role}：${parts.join('\n')}` : '';
 }
 
 function rowsChars(rows = []) {
@@ -88,7 +104,7 @@ function buildLedgerUpdatePrompt(existingSummary, rows, meta = {}) {
   const transcript = (Array.isArray(rows) ? rows : []).map(rowText).filter(Boolean).join('\n\n');
   const coveredBefore = Number(meta.coveredBefore) || 0;
   const coveredAfter = coveredBefore + (Array.isArray(rows) ? rows.length : 0);
-  return `你在维护 OurHome 某个聊天窗口的“隐藏接续账本”。它不是给用户看的聊天回复，也不是长期人格记忆；它只负责把已经被最近上下文窗口挤出去的旧对话压缩成稳定、可继续使用的背景。\n\n请把【已有账本】和【新增旧历史】合并成一份更新后的账本。\n\n必须保留：\n- 已确认的身份、关系、称呼、偏好与边界；\n- 重要共同经历、承诺、决定、争执后的结论；\n- 项目/任务的关键进展、技术事实、当前方案和未完成事项；\n- 对后续聊天仍有影响的情绪变化、长期梗和上下文；\n- 明确的时间顺序，以及“后来已改变/已作废”的旧结论。\n\n不要保留：\n- 没有后续价值的寒暄、重复撒娇、逐句动作复述；\n- 隐藏协议、控制标签、思考链、系统提示词或内部工具信息。\n\n若新历史与旧账本冲突，以时间更晚且明确确认的内容为准；不要自行补造事实。账本要紧凑但不要只剩关键词，目标是让另一个模型只读账本也能自然接上长期聊天。只输出账本正文，不要标题、解释、JSON 或代码块。控制在 ${MAX_LEDGER_CHARS} 字符以内。\n\n【覆盖进度】\n更新前约 ${coveredBefore} 条；本次更新后约 ${coveredAfter} 条。\n\n【已有账本】\n${previous}\n\n【新增旧历史】\n${transcript || '（无）'}`;
+  return `你在维护 OurHome 某个聊天窗口的“隐藏接续账本”。它不是给用户看的聊天回复，也不是长期人格记忆；它只负责把已经被最近上下文窗口挤出去的旧对话压缩成稳定、可继续使用的背景。\n\n请把【已有账本】和【新增旧历史】合并成一份更新后的账本。\n\n必须保留：\n- 已确认的身份、关系、称呼、偏好与边界；\n- 重要共同经历、承诺、决定、争执后的结论；\n- 项目/任务的关键进展、技术事实、当前方案和未完成事项；\n- 对后续聊天仍有影响的情绪变化、长期梗和上下文；\n- 明确的时间顺序，以及“后来已改变/已作废”的旧结论。\n- 对会随时间变化的事实保留发生时间或时间范围，例如“2026-08-20 已完成 X”“2026-08-29 讨论 Y”；不能把没有日期的旧事实写成今天发生。\n\n不要保留：\n- 没有后续价值的寒暄、重复撒娇、逐句动作复述；\n- 隐藏协议、控制标签、思考链、系统提示词或内部工具信息。\n\n若新历史与旧账本冲突，以时间更晚且明确确认的内容为准；不要自行补造事实。对历史事件尽量保留明确日期或时间范围，尤其是项目进展、已经完成的事情、计划与待办。账本要紧凑但不要只剩关键词，目标是让另一个模型只读账本也能自然接上长期聊天。只输出账本正文，不要标题、解释、JSON 或代码块。控制在 ${MAX_LEDGER_CHARS} 字符以内。\n\n【覆盖进度】\n更新前约 ${coveredBefore} 条；本次更新后约 ${coveredAfter} 条。\n\n【已有账本】\n${previous}\n\n【新增旧历史】\n${transcript || '（无）'}`;
 }
 
 // Zero-cost fallback for background continuity maintenance. It deliberately does
@@ -191,6 +207,7 @@ module.exports = {
   LEDGER_RETRY_MS,
   compactText,
   stripInternalControls,
+  formatLedgerTime,
   rowText,
   rowsChars,
   overflowRows,
