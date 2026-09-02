@@ -41,7 +41,7 @@ test('最近历史会扩大候选读取范围，为近三天生活事实留出�
   assert.equal(recentHistoryCandidateLimit({ maxRounds: 10 }), 320);
   assert.equal(supabase.calls.find(call => call[0] === 'limit')[1], 320);
   assert.equal(recent.length, 20);
-  assert.deepEqual(recent.map(item => item.id), Array.from({ length: 20 }, (_, index) => 221 + index));
+  assert.deepEqual(recent.map(item => item.id), Array.from({ length: 20 }, (_, index) => 401 + index));
   assert.deepEqual(supabase.calls.filter(call => call[0] === 'order').map(call => call[1]), ['created_at', 'id']);
   assert.equal(supabase.calls.some(call => call[0] === 'range'), false);
 });
