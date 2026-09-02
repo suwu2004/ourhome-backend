@@ -54,9 +54,35 @@ function annotateHistoryTimeline(messages = []) {
   });
 }
 
+function shanghaiDateKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+}
+
+function isWithinRecentHours(createdAt, now, recentHours) {
+  const stamp = new Date(createdAt).getTime();
+  if (!Number.isFinite(stamp)) return false;
+  return stamp >= now - (recentHours * 60 * 60 * 1000);
+}
+
+// 最近三天的生活上下文单独保留，避免“今天聊得太多”把“昨天中午吃了什么”挤出上下文。
+function selectRecentLifeHistory(history = [], options = {}) {
+  const list = Array.isArray(history) ? history : [];
+  if (!list.length) return [];
+  const recentHours = normalizePositiveInteger(options.recentHours, 72, 168);
+  const maxMessages = normalizePositiveInteger(options.maxMessages, 80, 160);
+  const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+  const recent = list.filter(message => isWithinRecentHours(message?.created_at, now, recentHours));
+  if (!recent.length) return [];
+  return annotateHistoryTimeline(recent.slice(-maxMessages));
+}
+
 function selectRecentHistory(history = [], options = {}) {
   const list = Array.isArray(history) ? history : [];
-  const maxRounds = normalizePositiveInteger(options.maxRounds, 20, 500);
+  // 原先默认只保留20轮，长聊中日常事实很容易在几小时内掉出窗口。
+  // 扩到48轮仍然是有界的；最近三天则由 selectRecentLifeHistory 单独兜底。
+  const maxRounds = normalizePositiveInteger(options.maxRounds, 48, 500);
   const maxMessages = Math.max(2, maxRounds * 2);
   const byRounds = list.slice(-maxMessages);
   const maxTokens = normalizePositiveInteger(options.maxTokens, 0, 1_000_000);
@@ -81,5 +107,7 @@ module.exports = {
   formatTimelineStamp,
   stripHistoryTimelineAnnotations,
   annotateHistoryTimeline,
+  shanghaiDateKey,
+  selectRecentLifeHistory,
   selectRecentHistory,
 };
