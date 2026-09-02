@@ -1,9 +1,16 @@
 'use strict';
 
-const { selectRecentHistory } = require('./chatContextWindow');
+const {
+  estimateMessageTokens,
+  selectRecentLifeHistory,
+  selectRecentHistory,
+} = require('./chatContextWindow');
 
 const MAX_CONTEXT_ROUNDS = 500;
 const DEFAULT_CONTEXT_ROUNDS = 48;
+const RECENT_LIFE_CANDIDATE_MESSAGES = 160;
+const RECENT_LIFE_MAX_MESSAGES = 16;
+const RECENT_LIFE_TOKEN_BUDGET = 1200;
 const MESSAGE_COLUMNS = 'id, role, content, attachment_url, attachment_type, attachment_name, attachment_summary, reasoning_content, input_tokens, output_tokens, created_at';
 
 function normalizeContextRounds(value, fallback = DEFAULT_CONTEXT_ROUNDS) {
@@ -15,7 +22,7 @@ function normalizeContextRounds(value, fallback = DEFAULT_CONTEXT_ROUNDS) {
 function recentHistoryCandidateLimit({ maxRounds, extraRows = 0 } = {}) {
   const rounds = normalizeContextRounds(maxRounds);
   const extra = Math.max(0, Math.min(8, Number.parseInt(extraRows, 10) || 0));
-  return rounds * 2 + extra;
+  return Math.max(rounds * 2 + extra, RECENT_LIFE_CANDIDATE_MESSAGES);
 }
 
 async function loadVisibleHistoryCandidates(supabase, sessionId, options = {}) {
@@ -33,13 +40,47 @@ async function loadVisibleHistoryCandidates(supabase, sessionId, options = {}) {
   return [...(data || [])].reverse();
 }
 
-async function loadRecentVisibleHistory(supabase, sessionId, options = {}) {
-  const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, options);
-  return selectRecentHistory(candidates, {
+function mergeRecentLifeHistory(history, options = {}) {
+  const normal = selectRecentHistory(history, {
     maxRounds: options.maxRounds,
-    maxTokens: options.maxTokens,
+    maxTokens: options.maxTokens ? Math.max(1, Number(options.maxTokens) - RECENT_LIFE_TOKEN_BUDGET) : options.maxTokens,
     minMessages: options.minMessages,
   });
+  const life = selectRecentLifeHistory(history, {
+    recentHours: 72,
+    maxMessages: RECENT_LIFE_MAX_MESSAGES,
+  });
+  if (!life.length) return normal;
+
+  const normalIds = new Set(normal.map(message => message?.id).filter(Boolean));
+  const extras = life.filter(message => message?.id && !normalIds.has(message.id));
+  if (!extras.length) return normal;
+
+  const merged = [...normal, ...extras].sort((a, b) => {
+    const at = new Date(a?.created_at || 0).getTime();
+    const bt = new Date(b?.created_at || 0).getTime();
+    if (at !== bt) return at - bt;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  });
+
+  const maxTokens = Number.parseInt(options.maxTokens, 10);
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) return merged;
+
+  // 普通历史先占主要预算；最近生活事实最多占约1200 tokens，避免把上下文重新撑爆。
+  let total = merged.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+  const extraIds = new Set(extras.map(message => message.id));
+  for (let index = 0; index < merged.length && total > maxTokens; index += 1) {
+    const message = merged[index];
+    if (!extraIds.has(message?.id)) continue;
+    total -= estimateMessageTokens(message);
+    merged[index] = null;
+  }
+  return merged.filter(Boolean);
+}
+
+async function loadRecentVisibleHistory(supabase, sessionId, options = {}) {
+  const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, options);
+  return mergeRecentLifeHistory(candidates, options);
 }
 
 module.exports = {
@@ -50,4 +91,5 @@ module.exports = {
   recentHistoryCandidateLimit,
   loadVisibleHistoryCandidates,
   loadRecentVisibleHistory,
+  mergeRecentLifeHistory,
 };
