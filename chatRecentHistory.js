@@ -3,9 +3,10 @@
 const { selectRecentHistory } = require('./chatContextWindow');
 
 const MAX_CONTEXT_ROUNDS = 500;
+const DEFAULT_CONTEXT_ROUNDS = 48;
 const MESSAGE_COLUMNS = 'id, role, content, attachment_url, attachment_type, attachment_name, attachment_summary, reasoning_content, input_tokens, output_tokens, created_at';
 
-function normalizeContextRounds(value, fallback = 20) {
+function normalizeContextRounds(value, fallback = DEFAULT_CONTEXT_ROUNDS) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(MAX_CONTEXT_ROUNDS, parsed);
@@ -43,6 +44,7 @@ async function loadRecentVisibleHistory(supabase, sessionId, options = {}) {
 
 module.exports = {
   MAX_CONTEXT_ROUNDS,
+  DEFAULT_CONTEXT_ROUNDS,
   MESSAGE_COLUMNS,
   normalizeContextRounds,
   recentHistoryCandidateLimit,
