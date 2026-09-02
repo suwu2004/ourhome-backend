@@ -8,9 +8,12 @@ const {
 
 const MAX_CONTEXT_ROUNDS = 500;
 const DEFAULT_CONTEXT_ROUNDS = 48;
-const RECENT_LIFE_CANDIDATE_MESSAGES = 160;
-const RECENT_LIFE_MAX_MESSAGES = 16;
-const RECENT_LIFE_TOKEN_BUDGET = 1200;
+// Keep a wider cheap candidate window than the final prompt slice. A busy day can
+// easily push yesterday's lunch/sleep/work fact beyond the previous 160-message
+// boundary even though it is still inside the 72-hour life window.
+const RECENT_LIFE_CANDIDATE_MESSAGES = 320;
+const RECENT_LIFE_MAX_MESSAGES = 24;
+const RECENT_LIFE_TOKEN_BUDGET = 1600;
 const MESSAGE_COLUMNS = 'id, role, content, attachment_url, attachment_type, attachment_name, attachment_summary, reasoning_content, input_tokens, output_tokens, created_at';
 
 function normalizeContextRounds(value, fallback = DEFAULT_CONTEXT_ROUNDS) {
@@ -66,7 +69,7 @@ function mergeRecentLifeHistory(history, options = {}) {
   const maxTokens = Number.parseInt(options.maxTokens, 10);
   if (!Number.isFinite(maxTokens) || maxTokens <= 0) return merged;
 
-  // 普通历史先占主要预算；最近生活事实最多占约1200 tokens，避免把上下文重新撑爆。
+  // 普通历史先占主要预算；最近生活事实最多占约1600 tokens，避免把上下文重新撑爆。
   let total = merged.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   const extraIds = new Set(extras.map(message => message.id));
   for (let index = 0; index < merged.length && total > maxTokens; index += 1) {
