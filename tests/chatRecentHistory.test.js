@@ -7,6 +7,7 @@ const {
   loadRecentVisibleHistory,
   mergeRecentLifeHistory,
 } = require('../chatRecentHistory');
+const { selectRecentLifeHistory } = require('../chatContextWindow');
 
 function fakeSupabase(rows) {
   const calls = [];
@@ -80,20 +81,29 @@ test('最近三天的生活事实会从普通历史之外补回来', () => {
   assert.match(merged.find(item => item.id === 'lunch-yesterday').content, /历史时间：/);
 });
 
-test('更忙的聊天里，超过普通窗口的昨天事实仍进入候选区并被保留', () => {
+test('更忙的聊天里，夹在大量项目消息中的昨天午饭也会被事实候选单独保留', () => {
   const now = Date.now();
-  const history = Array.from({ length: 360 }, (_, index) => ({
+  const history = Array.from({ length: 140 }, (_, index) => ({
     id: `busy-${index}`,
     role: index % 2 ? 'user' : 'assistant',
-    content: `连续聊天消息 ${index}`,
-    created_at: new Date(now - (71 - (index * 0.18)) * 60 * 60 * 1000).toISOString(),
+    content: `项目讨论 ${index}`,
+    created_at: new Date(now - (50 - (index * 0.2)) * 60 * 60 * 1000).toISOString(),
   }));
   history.push({
     id: 'important-lunch',
     role: 'user',
-    content: '昨天中午我吃了酸辣粉，这件事很重要。',
+    content: '昨天中午我吃了酸辣粉。',
     created_at: new Date(now - 26 * 60 * 60 * 1000).toISOString(),
   });
+  history.push(...Array.from({ length: 60 }, (_, index) => ({
+    id: `newer-${index}`,
+    role: index % 2 ? 'user' : 'assistant',
+    content: `后续项目消息 ${index}`,
+    created_at: new Date(now - (20 - index * 0.2) * 60 * 60 * 1000).toISOString(),
+  })));
+
+  const life = selectRecentLifeHistory(history, { recentHours: 72, maxMessages: 24, factMessages: 8, now });
+  assert.equal(life.some(item => item.id === 'important-lunch'), true);
   const merged = mergeRecentLifeHistory(history, { maxRounds: 10, maxTokens: 8000 });
   assert.equal(merged.some(item => item.id === 'important-lunch'), true);
 });
