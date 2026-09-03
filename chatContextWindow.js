@@ -5,7 +5,6 @@ const HISTORY_TIMELINE_MARKER_RE = /(?:^|\n)\s*\[历史时间[：:]\s*\d{4}-\d{2
 const RECENT_LIFE_FACT_RE = /(?:今天|昨天|前天|刚才|刚刚|早上|上午|中午|下午|晚上|昨晚|今早|今晚|早餐|早饭|午饭|午餐|晚饭|晚餐|吃了|喝了|睡了|起床|回家|出门|上班|下班|上课|下课|买了|去了|回来|到家|在家|路上|明天|后天)/u;
 const RECENT_LIFE_CONTEXT_HOURS = 72;
 const RECENT_LIFE_FACT_MESSAGES = 8;
-const RECENT_LIFE_TOKEN_BUDGET = 1600;
 
 function normalizePositiveInteger(value, fallback, max) {
   const parsed = Number.parseInt(value, 10);
@@ -32,12 +31,7 @@ function formatTimelineStamp(value) {
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleString('zh-CN', {
     timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   }).replace(/\//g, '-');
 }
 
@@ -51,10 +45,7 @@ function annotateHistoryTimeline(messages = []) {
     const stamp = formatTimelineStamp(message.created_at);
     if (!stamp) return { ...message };
     const cleanContent = stripHistoryTimelineAnnotations(String(message.content || ''));
-    return {
-      ...message,
-      content: `[历史时间：${stamp}]\n${cleanContent}`,
-    };
+    return { ...message, content: `[历史时间：${stamp}]\n${cleanContent}` };
   });
 }
 
@@ -71,13 +62,9 @@ function isWithinRecentHours(createdAt, now, recentHours) {
 }
 
 function isExplicitRecentLifeFact(message = {}) {
-  if (message?.role !== 'user') return false;
-  return RECENT_LIFE_FACT_RE.test(String(message?.content || ''));
+  return message?.role === 'user' && RECENT_LIFE_FACT_RE.test(String(message?.content || ''));
 }
 
-// 最近三天的生活上下文单独保留，避免“今天聊得太多”把“昨天中午吃了什么”挤出上下文。
-// 除了最新一小段原始生活对话，再从候选区挑出用户明确说过的日常事实；这样“昨天午饭”
-// 即使夹在大量项目聊天中，也不会因为只取最后24条而直接消失。
 function selectRecentLifeHistory(history = [], options = {}) {
   const list = Array.isArray(history) ? history : [];
   if (!list.length) return [];
@@ -87,11 +74,8 @@ function selectRecentLifeHistory(history = [], options = {}) {
   const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const recent = list.filter(message => isWithinRecentHours(message?.created_at, now, recentHours));
   if (!recent.length) return [];
-
   const recentSlice = recent.slice(-maxMessages);
-  const factCandidates = recent
-    .filter(isExplicitRecentLifeFact)
-    .slice(-factMessages);
+  const factCandidates = recent.filter(isExplicitRecentLifeFact).slice(-factMessages);
   const ids = new Set(recentSlice.map(message => message?.id).filter(Boolean));
   const extras = factCandidates.filter(message => message?.id && !ids.has(message.id));
   return annotateHistoryTimeline([...recentSlice, ...extras]);
@@ -99,24 +83,23 @@ function selectRecentLifeHistory(history = [], options = {}) {
 
 function selectRecentHistory(history = [], options = {}) {
   const list = Array.isArray(history) ? history : [];
-  // 原先默认只保留20轮，长聊中日常事实很容易在几小时内掉出窗口。
-  // 扩到48轮仍然是有界的；最近三天的明确生活事实再从候选历史中单独兜底。
   const maxRounds = normalizePositiveInteger(options.maxRounds, 48, 500);
   const maxMessages = Math.max(2, maxRounds * 2);
   const maxTokens = normalizePositiveInteger(options.maxTokens, 0, 1_000_000);
   const minMessages = Math.max(1, Math.min(list.length, normalizePositiveInteger(options.minMessages, 2, 8)));
 
-  let byRounds = list.slice(-maxMessages);
+  // First keep the normal chronological window. Recent-life messages are protected only
+  // after this selection, so they never steal budget from the core recent conversation.
+  let selected = list.slice(-maxMessages);
   const now = Date.now();
   const recentFacts = list
     .filter(message => isWithinRecentHours(message?.created_at, now, RECENT_LIFE_CONTEXT_HOURS))
     .filter(isExplicitRecentLifeFact)
     .slice(-RECENT_LIFE_FACT_MESSAGES);
-  const ids = new Set(byRounds.map(message => message?.id).filter(Boolean));
+  const ids = new Set(selected.map(message => message?.id).filter(Boolean));
   const lifeExtras = recentFacts.filter(message => message?.id && !ids.has(message.id));
-
   if (lifeExtras.length) {
-    byRounds = [...byRounds, ...lifeExtras].sort((a, b) => {
+    selected = [...selected, ...lifeExtras].sort((a, b) => {
       const at = new Date(a?.created_at || 0).getTime();
       const bt = new Date(b?.created_at || 0).getTime();
       if (at !== bt) return at - bt;
@@ -124,39 +107,31 @@ function selectRecentHistory(history = [], options = {}) {
     });
   }
 
-  if (!maxTokens || !byRounds.length) return annotateHistoryTimeline(byRounds);
+  if (!maxTokens || !selected.length) return annotateHistoryTimeline(selected);
 
-  // 最近生活事实最多占约1600 tokens，给它留出明确预算；这样即使普通历史已经很长，
-  // “昨天午饭”这类事实也不会在最终 prompt 裁剪时全部消失。
   const extraIds = new Set(lifeExtras.map(message => message?.id).filter(Boolean));
-  const normalTokenBudget = Math.max(1, maxTokens - (lifeExtras.length ? RECENT_LIFE_TOKEN_BUDGET : 0));
-  let start = byRounds.length;
-  let estimatedTokens = 0;
-  while (start > 0) {
-    const message = byRounds[start - 1];
-    if (extraIds.has(message?.id)) {
-      start -= 1;
-      continue;
-    }
-    const nextCost = estimateMessageTokens(message);
-    const keptNormal = byRounds.length - start - [...extraIds].filter(id => byRounds.slice(start).some(item => item?.id === id)).length;
-    if (keptNormal >= minMessages && estimatedTokens + nextCost > normalTokenBudget) break;
-    start -= 1;
-    estimatedTokens += nextCost;
-  }
+  let total = selected.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
 
-  let selected = byRounds.slice(start);
-  if (lifeExtras.length) {
-    // 若生活事实自身超过预算，只从最旧的事实开始淘汰，保留最新事实。
-    let total = selected.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
-    for (let index = 0; index < selected.length && total > maxTokens; index += 1) {
-      if (!extraIds.has(selected[index]?.id)) continue;
-      total -= estimateMessageTokens(selected[index]);
-      selected[index] = null;
-    }
-    selected = selected.filter(Boolean);
+  // Trim oldest ordinary history first. Never delete a protected recent-life fact while
+  // there is ordinary history left to trim. This avoids the previous double-budget logic
+  // where normal history was reduced up front and then life facts were trimmed again.
+  for (let index = 0; index < selected.length && total > maxTokens; index += 1) {
+    const message = selected[index];
+    if (extraIds.has(message?.id)) continue;
+    const remainingOrdinary = selected.slice(index + 1).filter(item => !extraIds.has(item?.id)).length;
+    if (remainingOrdinary < minMessages) continue;
+    total -= estimateMessageTokens(message);
+    selected[index] = null;
   }
-  return annotateHistoryTimeline(selected);
+  selected = selected.filter(Boolean);
+
+  // If the budget is still exceeded, only then trim the oldest protected facts.
+  for (let index = 0; index < selected.length && total > maxTokens; index += 1) {
+    if (!extraIds.has(selected[index]?.id)) continue;
+    total -= estimateMessageTokens(selected[index]);
+    selected[index] = null;
+  }
+  return annotateHistoryTimeline(selected.filter(Boolean));
 }
 
 module.exports = {
