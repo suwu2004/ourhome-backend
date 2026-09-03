@@ -2,7 +2,11 @@
 
 const CJK_RE = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g;
 const HISTORY_TIMELINE_MARKER_RE = /(?:^|\n)\s*\[历史时间[：:]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g;
-const RECENT_LIFE_FACT_RE = /(?:今天|昨天|前天|刚才|刚刚|早上|上午|中午|下午|晚上|昨晚|今早|今晚|早餐|早饭|午饭|午餐|晚饭|晚餐|吃了|喝了|睡了|起床|回家|出门|上班|下班|上课|下课|买了|去了|回来|到家|在家|路上|明天|后天)/u;
+// Only protect concrete recent-life statements. Future-only phrases such as
+// “明天/后天” are deliberately excluded: they describe plans, not facts that
+// should be smuggled into the working-memory window.
+const RECENT_LIFE_FACT_RE = /(?:我|今天|昨天|前天|刚才|刚刚|早上|上午|中午|下午|晚上|昨晚|今早|今晚|早餐|早饭|午饭|午餐|晚饭|晚餐|吃了|喝了|睡了|起床|回家|出门|上班|下班|上课|下课|买了|去了|回来|到家|在家|路上)/u;
+const RECENT_LIFE_PLAN_RE = /(?:明天|后天|以后|下周|周末|准备|打算|想要|计划|可能会|应该会)/u;
 const RECENT_LIFE_CONTEXT_HOURS = 72;
 const RECENT_LIFE_FACT_MESSAGES = 8;
 
@@ -62,7 +66,10 @@ function isWithinRecentHours(createdAt, now, recentHours) {
 }
 
 function isExplicitRecentLifeFact(message = {}) {
-  return message?.role === 'user' && RECENT_LIFE_FACT_RE.test(String(message?.content || ''));
+  if (message?.role !== 'user') return false;
+  const content = String(message?.content || '').trim();
+  if (!content || RECENT_LIFE_PLAN_RE.test(content)) return false;
+  return RECENT_LIFE_FACT_RE.test(content);
 }
 
 function selectRecentLifeHistory(history = [], options = {}) {
@@ -141,6 +148,7 @@ module.exports = {
   stripHistoryTimelineAnnotations,
   annotateHistoryTimeline,
   shanghaiDateKey,
+  isExplicitRecentLifeFact,
   selectRecentLifeHistory,
   selectRecentHistory,
 };
