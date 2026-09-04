@@ -64,6 +64,10 @@ require('./runtimeTimeoutGuardPatch');
 // analysis already exists. Photo memories, avatars/backgrounds, favorites and
 // Toybox assets are protected. The conversation keeps the analysis text.
 require('./photoRetentionPatch');
+// When Chat explicitly asks to look at a saved photo, bridge the existing
+// read_photo_memories tool result into real image blocks. This is intentionally
+// lazy and capped so merely listing album metadata does not download photos.
+require('./photoMemoryVisionPatch');
 
 // The rolling ledger runs after the cost guards. Its default path is local-first;
 // if a paid ledger model is explicitly enabled later, it is still subject to the
