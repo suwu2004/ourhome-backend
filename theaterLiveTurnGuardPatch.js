@@ -41,7 +41,7 @@ function extractLatestHistoryEntries(prompt, maxEntries = 4) {
 }
 
 function guardTheaterBody(body) {
-  if (!isTheaterProviderRequest('', body)) return body;
+  if (!body || !Array.isArray(body.messages) || !body.messages.length) return body;
   const messages = body.messages.map(message => ({ ...message }));
   const lastIndex = messages.length - 1;
   const last = messages[lastIndex];
@@ -50,8 +50,10 @@ function guardTheaterBody(body) {
   const entries = extractLatestHistoryEntries(prompt, 4);
   if (!entries.length) return body;
 
-  const currentMarker = prompt.lastIndexOf('【叶檀刚刚发来】');
-  const latestLabel = currentMarker >= 0 ? prompt.slice(currentMarker) : '';
+  const currentMarkerMatch = prompt.match(/【[^\n】]+刚刚发来】/u);
+  if (!currentMarkerMatch || currentMarkerMatch.index == null) return body;
+  const currentMarker = currentMarkerMatch.index;
+  const latestLabel = prompt.slice(currentMarker);
   if (!latestLabel) return body;
 
   const prefix = prompt.slice(0, currentMarker).replace(/\s+$/u, '');
