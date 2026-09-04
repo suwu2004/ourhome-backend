@@ -31,6 +31,11 @@ function shouldRefreshMemoryEconomically(memoryValue, latestUserText = '', reply
 
 support.shouldRefreshMemory = shouldRefreshMemoryEconomically;
 
+// Keep the literal latest Theater exchange at the end of the provider prompt. This
+// is deliberately a zero-model-cost ordering guard and does not touch persisted
+// history or the selected Chat model.
+require('./theaterLiveTurnGuardPatch');
+
 try {
   const express = require('express');
   const originalJson = express.response.json;
