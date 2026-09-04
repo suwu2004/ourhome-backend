@@ -11,40 +11,29 @@ const MAJOR_THEATER_EVENT_RE = /(?:求婚|结婚|订婚|离婚|怀孕|生子|分
 
 function shouldRefreshMemoryEconomically(memoryValue, latestUserText = '', replyText = '') {
   const memory = support.normalizeTheaterMemory(memoryValue || {});
-
-  // Brand-new / incomplete memory still gets repaired promptly. This preserves
-  // the v2 -> v3 learned-character upgrade path and deterministic fallbacks.
   if (!memory.character_anchor && !memory.plot_facts.length) return true;
   if (!memory.character_memory) return true;
-
-  // Six successful Theater turns between ordinary checkpoints. The normal Theater
-  // prompt still carries recent raw turns, so this remains inside that safety net.
   if (memory.turns_since_refresh >= 5) return true;
-
-  // Never spend two memory-model calls on back-to-back replies. A major event that
-  // happens immediately after a refresh remains in recent raw context and will be
-  // folded in on the next eligible turn/checkpoint.
   if (memory.turns_since_refresh < 1) return false;
-
   return MAJOR_THEATER_EVENT_RE.test(`${latestUserText}\n${replyText}`);
 }
 
 support.shouldRefreshMemory = shouldRefreshMemoryEconomically;
 
-// Keep the literal latest Theater exchange at the end of the provider prompt. This
-// is deliberately a zero-model-cost ordering guard and does not touch persisted
-// history or the selected Chat model.
+// Keep the literal latest Theater exchange at the end of the provider prompt.
+// This is a zero-model-cost ordering guard and does not touch persisted history.
 require('./theaterLiveTurnGuardPatch');
+
+// Rules/worldbooks are soft creative aids: after lorebook injection has assembled
+// the provider body, give the Theater model explicit autonomy to select what fits.
+require('./theaterPromptAutonomyPatch');
 
 try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function theaterMemoryEconomyHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = {
-        ...body,
-        theater_memory_economy: 'six-turn-major-events-v1',
-      };
+      body = { ...body, theater_memory_economy: 'six-turn-major-events-v1' };
     }
     return originalJson.call(this, body);
   };
@@ -52,7 +41,4 @@ try {
   console.warn('[theater:memory:economy] express integration unavailable:', error.message);
 }
 
-module.exports = {
-  MAJOR_THEATER_EVENT_RE,
-  shouldRefreshMemoryEconomically,
-};
+module.exports = { MAJOR_THEATER_EVENT_RE, shouldRefreshMemoryEconomically };
