@@ -14,6 +14,10 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
+// Merge accidental concurrent byte-identical provider calls into one upstream
+// request. This sits at the final model boundary so every route benefits without
+// changing the intentional Chat -> tool -> Chat follow-up flow.
+require('./modelCallSingleflightPatch');
 // Theater memory is a sparse checkpoint, not a second reply engine.
 // The economy patch only decides when a checkpoint is worthwhile.
 require('./theaterMemoryEconomyPatch');
