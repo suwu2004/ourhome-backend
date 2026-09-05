@@ -10,9 +10,12 @@ function loadPatchWithFetch(fakeFetch) {
   globalThis.fetch = fakeFetch;
   delete require.cache[PATCH];
   const helpers = require(PATCH);
-  return () => {
-    delete require.cache[PATCH];
-    globalThis.fetch = originalFetch;
+  return {
+    helpers,
+    restore() {
+      delete require.cache[PATCH];
+      globalThis.fetch = originalFetch;
+    },
   };
 }
 
@@ -21,7 +24,7 @@ test('singleflight coalesces identical concurrent non-streaming model calls', as
   let release;
   const gate = new Promise(resolve => { release = resolve; });
 
-  const restore = loadPatchWithFetch(async () => {
+  const { restore } = loadPatchWithFetch(async () => {
     calls += 1;
     await gate;
     return new Response(JSON.stringify({ ok: true }), {
@@ -50,7 +53,7 @@ test('singleflight coalesces identical concurrent non-streaming model calls', as
 
 test('singleflight does not intercept streaming model calls', async () => {
   let calls = 0;
-  const restore = loadPatchWithFetch(async () => {
+  const { restore } = loadPatchWithFetch(async () => {
     calls += 1;
     return new Response('stream-body', { status: 200 });
   });
@@ -68,12 +71,17 @@ test('singleflight does not intercept streaming model calls', async () => {
 });
 
 test('singleflight ignores malformed or non-model requests', () => {
-  assert.equal(require(PATCH).isModelRequest('https://example.test/v1/messages', {
-    method: 'POST',
-    body: '{not-json}',
-  }), false);
-  assert.equal(require(PATCH).isModelRequest('https://example.test/v1/messages', {
-    method: 'POST',
-    body: JSON.stringify({ messages: [] }),
-  }), false);
+  const { helpers, restore } = loadPatchWithFetch(globalThis.fetch);
+  try {
+    assert.equal(helpers.isModelRequest('https://example.test/v1/messages', {
+      method: 'POST',
+      body: '{not-json}',
+    }), false);
+    assert.equal(helpers.isModelRequest('https://example.test/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({ messages: [] }),
+    }), false);
+  } finally {
+    restore();
+  }
 });
