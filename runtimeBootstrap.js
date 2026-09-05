@@ -14,13 +14,14 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
+// Theater memory is a sparse checkpoint, not a second reply engine.
+// The economy patch only decides when a checkpoint is worthwhile.
 require('./theaterMemoryEconomyPatch');
-require('./theaterContinuityGuardPatch');
-// Convert Theater's serialized recent-history block into real user/assistant turns
-// at the final provider boundary. Keep timestamps attached so the model can reason
-// about sequence and relative dates instead of treating summaries as the live scene.
-require('./theaterRawTurnsPatch');
 require('./theaterMemoryPatch');
+// The single authoritative Theater continuity layer: real user/assistant turns
+// plus one compact timeline instruction at the final provider boundary.
+require('./theaterRawTurnsPatch');
+require('./theaterPromptAutonomyPatch');
 const { guardRenderFrontend } = require('./renderFrontendIntegrityGuard');
 guardRenderFrontend();
 const renderFrontdoorPatch = require('./renderFrontdoorPatch');
