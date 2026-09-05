@@ -7,9 +7,8 @@ const {
   injectMemoryIntoBody,
   mergeTheaterFacts,
   normalizeTheaterMemory,
-  sampleTheaterHistory,
-  shouldRefreshMemory,
 } = require('../theaterMemorySupport');
+const { shouldRefreshMemoryEconomically } = require('../theaterMemoryEconomyPatch');
 
 test('extracts theater title names and latest user input', () => {
   const body = {
@@ -97,12 +96,19 @@ test('tight history budgets still preserve the literal newest scene', () => {
   assert.match(sampled, /120\. /u);
 });
 
-test('refreshes old v2 books once to acquire role memory, then every third turn or significant event', () => {
-  assert.equal(shouldRefreshMemory({ character_anchor: '', plot_facts: [] }, '', ''), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 0 }, '普通聊天', '普通回复'), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 1 }, '普通聊天', '普通回复'), false);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 2 }, '普通聊天', '普通回复'), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 0 }, '我答应和你结婚', '他愣住了'), true);
+test('refreshes only at the six-turn checkpoint or a structural event', () => {
+  const memory = {
+    character_anchor: '稳定角色设定',
+    character_memory: '',
+    plot_facts: [],
+    current_state: '两人仍在客厅继续对话',
+    turns_since_refresh: 0,
+  };
+  assert.equal(shouldRefreshMemoryEconomically(memory, '普通一句话', '普通回复'), false);
+  assert.equal(shouldRefreshMemoryEconomically({ ...memory, turns_since_refresh: 4 }, '普通一句话', '普通回复'), false);
+  assert.equal(shouldRefreshMemoryEconomically({ ...memory, turns_since_refresh: 5 }, '普通一句话', '普通回复'), true);
+  assert.equal(shouldRefreshMemoryEconomically({ ...memory, turns_since_refresh: 1 }, '我们结婚吧', '他答应了'), true);
+  assert.equal(shouldRefreshMemoryEconomically({ ...memory, turns_since_refresh: 0 }, '我们结婚吧', '他答应了'), false);
 });
 
 test('incremental theater facts merge without deleting old unique events', () => {
