@@ -35,6 +35,8 @@ function relevantHeaders(init = {}) {
     'x-api-key',
     'anthropic-version',
     'anthropic-beta',
+    'content-type',
+    'accept',
     'x-ourhome-call-purpose',
   ].map(name => `${name}:${headers.get(name) || ''}`).join('\n');
 }
