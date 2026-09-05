@@ -88,6 +88,14 @@ function buildStructuredMessages(body) {
         messages: historyMessages,
       };
     }
+    // Never create consecutive user messages. If the stored recent block ends
+    // with a user turn, the current input is the continuation of that turn.
+    previousLast.content = `${previousLast.content}\n\n${currentText}`;
+    return {
+      ...body,
+      system,
+      messages: historyMessages,
+    };
   }
 
   historyMessages.push({ role: 'user', content: currentText });
