@@ -108,6 +108,32 @@ test('singleflight keeps distinct call purposes separate', async () => {
   }
 });
 
+test('singleflight retries after an upstream failure instead of poisoning the key', async () => {
+  let calls = 0;
+  const { restore } = loadPatchWithFetch(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('upstream failed');
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  try {
+    const init = {
+      method: 'POST',
+      headers: { authorization: 'Bearer test', 'x-ourhome-call-purpose': 'chat' },
+      body: JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: 'retry' }] }),
+    };
+    await assert.rejects(fetch('https://example.test/v1/chat/completions', init), /upstream failed/);
+    const response = await fetch('https://example.test/v1/chat/completions', init);
+    assert.equal(calls, 2);
+    assert.deepEqual(await response.json(), { ok: true });
+  } finally {
+    restore();
+  }
+});
+
 test('singleflight does not intercept streaming model calls', async () => {
   let calls = 0;
   const { restore } = loadPatchWithFetch(async () => {
