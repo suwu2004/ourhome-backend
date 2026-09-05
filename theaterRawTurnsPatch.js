@@ -21,15 +21,30 @@ function isTheaterBody(body) {
   return Array.isArray(body?.messages) && body.messages.length > 0 && THEATER_RE.test(textOf(body.system));
 }
 
+function parseHistoryChunk(item) {
+  const match = String(item || '').trim().match(/^(?:\s*\d+\.\s*)?(?:【([^】]+)】)?([^：\n]{1,80})：([\s\S]*)$/u);
+  if (!match) return null;
+  return { timestamp: match[1] || null, label: match[2].trim(), text: match[3].trim() };
+}
+
 function splitHistoryEntries(text) {
   const raw = String(text || '').trim();
   if (!raw || raw === '（还没有正式开始。）') return [];
+
+  // sampleTheaterHistory serializes every real turn as `N. 【time】speaker：text`
+  // on a single line. The old parser only split on a blank line, so the current
+  // format collapsed into one giant user message and the model lost the actual
+  // user/assistant turn boundary. Prefer the numbered format, then retain a
+  // compatibility fallback for older unnumbered histories.
+  const numberedChunks = raw.split(/\n(?=\s*\d+\.\s*)/u).map(item => item.trim()).filter(Boolean);
+  const numberedEntries = numberedChunks.map(parseHistoryChunk).filter(Boolean);
+  if (numberedEntries.length === numberedChunks.length && numberedEntries.length > 0) {
+    return numberedEntries;
+  }
+
   return raw.split(/\n\n(?=(?:\d+\.\s*)?(?:【[^】]+】)?[^\n]{1,80}：)/u)
-    .map(item => item.trim()).filter(Boolean).map(item => {
-      const match = item.match(/^(?:\d+\.\s*)?(?:【([^】]+)】)?([^：\n]{1,80})：([\s\S]*)$/u);
-      if (!match) return null;
-      return { timestamp: match[1] || null, label: match[2].trim(), text: match[3].trim() };
-    }).filter(item => item?.text);
+    .map(item => parseHistoryChunk(item))
+    .filter(Boolean);
 }
 
 function currentShanghaiTime() {
