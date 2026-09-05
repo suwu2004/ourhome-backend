@@ -8,8 +8,8 @@ const {
   mergeTheaterFacts,
   normalizeTheaterMemory,
   sampleTheaterHistory,
-  shouldRefreshMemory,
 } = require('../theaterMemorySupport');
+const { shouldRefreshMemoryEconomically } = require('../theaterMemoryEconomyPatch');
 
 test('extracts theater title names and latest user input', () => {
   const body = {
@@ -97,12 +97,12 @@ test('tight history budgets still preserve the literal newest scene', () => {
   assert.match(sampled, /120\. /u);
 });
 
-test('refreshes old v2 books once to acquire role memory, then every third turn or significant event', () => {
-  assert.equal(shouldRefreshMemory({ character_anchor: '', plot_facts: [] }, '', ''), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', plot_facts: ['事实'], turns_since_refresh: 0 }, '普通聊天', '普通回复'), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 1 }, '普通聊天', '普通回复'), false);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 2 }, '普通聊天', '普通回复'), true);
-  assert.equal(shouldRefreshMemory({ character_anchor: '稳定', character_memory: '已建立角色长期记忆', plot_facts: ['事实'], turns_since_refresh: 0 }, '我答应和你结婚', '他愣住了'), true);
+test('memory economy initializes genuinely empty memory, then refreshes at six-turn checkpoints or major events', () => {
+  assert.equal(shouldRefreshMemoryEconomically({ character_anchor: '', plot_facts: [] }, '', ''), true);
+  assert.equal(shouldRefreshMemoryEconomically({ character_anchor: '稳定', plot_facts: ['事实'] , turns_since_refresh: 0 }, '普通聊天', '普通回复'), false);
+  assert.equal(shouldRefreshMemoryEconomically({ character_anchor: '稳定', plot_facts: ['事实'] , turns_since_refresh: 4 }, '普通聊天', '普通回复'), false);
+  assert.equal(shouldRefreshMemoryEconomically({ character_anchor: '稳定', plot_facts: ['事实'] , turns_since_refresh: 5 }, '普通聊天', '普通回复'), true);
+  assert.equal(shouldRefreshMemoryEconomically({ character_anchor: '稳定', plot_facts: ['事实'] , turns_since_refresh: 1 }, '普通聊天', '我们结婚吧'), true);
 });
 
 test('incremental theater facts merge without deleting old unique events', () => {
