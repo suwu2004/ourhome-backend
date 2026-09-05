@@ -39,8 +39,8 @@ test('buildStructuredMessages restores user and assistant turns instead of one g
 
   const structured = buildStructuredMessages(body);
   assert.ok(structured.system.includes('【小剧场原始对话层·Raw Turns】'));
-  assert.deepEqual(structured.messages.map(message => message.role), ['user', 'assistant', 'user', 'user']);
-  assert.match(structured.messages.at(-2).content, /那你现在告诉我答案/);
+  assert.deepEqual(structured.messages.map(message => message.role), ['user', 'assistant', 'user']);
+  assert.match(structured.messages.at(-1).content, /那你现在告诉我答案/);
   assert.match(structured.messages.at(-1).content, /所以呢/);
 });
 
