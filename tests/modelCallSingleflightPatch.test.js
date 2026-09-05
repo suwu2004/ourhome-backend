@@ -51,6 +51,63 @@ test('singleflight coalesces identical concurrent non-streaming model calls', as
   }
 });
 
+test('singleflight does not suppress a later sequential model call', async () => {
+  let calls = 0;
+  const { restore } = loadPatchWithFetch(async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ call: calls }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  try {
+    const init = {
+      method: 'POST',
+      headers: { authorization: 'Bearer test', 'x-ourhome-call-purpose': 'chat' },
+      body: JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: 'hi' }] }),
+    };
+    const first = await fetch('https://example.test/v1/chat/completions', init);
+    const second = await fetch('https://example.test/v1/chat/completions', init);
+    assert.equal(calls, 2);
+    assert.deepEqual(await first.json(), { call: 1 });
+    assert.deepEqual(await second.json(), { call: 2 });
+  } finally {
+    restore();
+  }
+});
+
+test('singleflight keeps distinct call purposes separate', async () => {
+  let calls = 0;
+  const { restore } = loadPatchWithFetch(async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ call: calls }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  try {
+    const body = JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: 'hi' }] });
+    const base = { method: 'POST', body };
+    const [chat, memory] = await Promise.all([
+      fetch('https://example.test/v1/chat/completions', {
+        ...base,
+        headers: { authorization: 'Bearer test', 'x-ourhome-call-purpose': 'chat' },
+      }),
+      fetch('https://example.test/v1/chat/completions', {
+        ...base,
+        headers: { authorization: 'Bearer test', 'x-ourhome-call-purpose': 'memory' },
+      }),
+    ]);
+    assert.equal(calls, 2);
+    assert.deepEqual(await chat.json(), { call: 1 });
+    assert.deepEqual(await memory.json(), { call: 2 });
+  } finally {
+    restore();
+  }
+});
+
 test('singleflight does not intercept streaming model calls', async () => {
   let calls = 0;
   const { restore } = loadPatchWithFetch(async () => {
