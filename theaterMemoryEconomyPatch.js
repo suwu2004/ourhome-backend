@@ -1,10 +1,10 @@
 'use strict';
 
-// The Theater already keeps the latest raw turns in its normal context window, so
-// its long-lived role/plot memory does not need a paid model refresh every couple
-// of replies. Patch the refresh predicate before theaterMemoryPatch captures it:
-// ordinary scenes roll forward locally and only a periodic checkpoint or a truly
-// structural story event spends a background model call.
+// Theater already keeps the latest raw turns in its normal context window, so
+// long-lived role/plot memory does not need a paid model refresh every reply.
+// This module ONLY decides when a memory checkpoint is worthwhile. Prompt
+// assembly and continuity are intentionally owned by theaterRawTurnsPatch so
+// there is one source of truth instead of several overlapping fetch wrappers.
 const support = require('./theaterMemorySupport');
 
 const MAJOR_THEATER_EVENT_RE = /(?:求婚|结婚|订婚|离婚|怀孕|生子|分手|复合|和好后正式|确认(?:恋爱|伴侣|夫妻|婚姻)关系|正式(?:交往|在一起)|死亡|去世|失踪|昏迷|重伤|住院|被捕|入狱|身份(?:暴露|揭晓|公开)|真相(?:揭开|揭晓|大白)|秘密(?:曝光|揭开|坦白)|背叛|逃婚|搬家|离家出走|立下誓言|签订婚约)/u;
@@ -12,41 +12,28 @@ const MAJOR_THEATER_EVENT_RE = /(?:求婚|结婚|订婚|离婚|怀孕|生子|分
 function shouldRefreshMemoryEconomically(memoryValue, latestUserText = '', replyText = '') {
   const memory = support.normalizeTheaterMemory(memoryValue || {});
 
-  // A truly empty memory has to be initialized once. After initialization, an
-  // empty optional section (especially character_memory) is not evidence that
-  // every subsequent reply needs another paid summarization call.
+  // Initialize only when there is genuinely no usable checkpoint at all.
+  // An intentionally empty optional section such as character_memory must not
+  // turn every ordinary reply into another paid summarization call.
   if (!memory.character_anchor && !memory.plot_facts.length && !memory.current_state) return true;
 
-  // Normal scenes are allowed to advance from the live raw turns without a
-  // background model call. This also prevents deterministic-fallback memories
-  // from entering an every-turn refresh loop just because character_memory is
-  // intentionally empty.
+  // Five completed turns means the NEXT turn reaches the six-turn checkpoint.
   if (memory.turns_since_refresh >= 5) return true;
+
+  // Major structural changes can justify an early checkpoint, but never because
+  // a memory field happens to be empty.
   if (memory.turns_since_refresh < 1) return false;
   return MAJOR_THEATER_EVENT_RE.test(`${latestUserText}\n${replyText}`);
 }
 
 support.shouldRefreshMemory = shouldRefreshMemoryEconomically;
 
-// Keep the literal latest Theater exchange at the end of the provider prompt.
-// This is a zero-model-cost ordering guard and does not touch persisted history.
-require('./theaterLiveTurnGuardPatch');
-
-// Rules/worldbooks are soft creative aids: after lorebook injection has assembled
-// the provider body, give the Theater model explicit autonomy to select what fits.
-require('./theaterPromptAutonomyPatch');
-
-// The generator currently serializes recent raw turns into one large user prompt.
-// Re-expose those turns as actual user/assistant messages immediately before the
-// provider call so the model gets true conversational context, not only summaries.
-require('./theaterRawTurnsPatch');
-
 try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function theaterMemoryEconomyHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, theater_memory_economy: 'six-turn-major-events-v2' };
+      body = { ...body, theater_memory_economy: 'six-turn-major-events-v3-single-context' };
     }
     return originalJson.call(this, body);
   };
