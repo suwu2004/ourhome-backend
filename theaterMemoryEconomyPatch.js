@@ -28,6 +28,11 @@ require('./theaterLiveTurnGuardPatch');
 // the provider body, give the Theater model explicit autonomy to select what fits.
 require('./theaterPromptAutonomyPatch');
 
+// The generator currently serializes recent raw turns into one large user prompt.
+// Re-expose those turns as actual user/assistant messages immediately before the
+// provider call so the model gets true conversational context, not only summaries.
+require('./theaterRawTurnsPatch');
+
 try {
   const express = require('express');
   const originalJson = express.response.json;
