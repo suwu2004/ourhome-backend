@@ -11,8 +11,16 @@ const MAJOR_THEATER_EVENT_RE = /(?:求婚|结婚|订婚|离婚|怀孕|生子|分
 
 function shouldRefreshMemoryEconomically(memoryValue, latestUserText = '', replyText = '') {
   const memory = support.normalizeTheaterMemory(memoryValue || {});
-  if (!memory.character_anchor && !memory.plot_facts.length) return true;
-  if (!memory.character_memory) return true;
+
+  // A truly empty memory has to be initialized once. After initialization, an
+  // empty optional section (especially character_memory) is not evidence that
+  // every subsequent reply needs another paid summarization call.
+  if (!memory.character_anchor && !memory.plot_facts.length && !memory.current_state) return true;
+
+  // Normal scenes are allowed to advance from the live raw turns without a
+  // background model call. This also prevents deterministic-fallback memories
+  // from entering an every-turn refresh loop just because character_memory is
+  // intentionally empty.
   if (memory.turns_since_refresh >= 5) return true;
   if (memory.turns_since_refresh < 1) return false;
   return MAJOR_THEATER_EVENT_RE.test(`${latestUserText}\n${replyText}`);
@@ -38,7 +46,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function theaterMemoryEconomyHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, theater_memory_economy: 'six-turn-major-events-v1' };
+      body = { ...body, theater_memory_economy: 'six-turn-major-events-v2' };
     }
     return originalJson.call(this, body);
   };
