@@ -32,12 +32,11 @@ test('剧场最近原始对话被拆成真正的 user/assistant 消息', () => {
   const result = buildStructuredMessages(body);
   assert.match(result.system, new RegExp(MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(result.system, /测试小世界/);
-  assert.equal(result.messages.length, 4);
-  assert.deepEqual(result.messages.map(item => item.role), ['user', 'assistant', 'user', 'user']);
+  assert.equal(result.messages.length, 3);
+  assert.deepEqual(result.messages.map(item => item.role), ['user', 'assistant', 'user']);
   assert.equal(result.messages[0].content, '我把药瓶放到桌上。');
   assert.equal(result.messages[1].content, '我接过药瓶，低头看了一眼。');
-  assert.equal(result.messages[2].content, '你刚才说会陪我回去。');
-  assert.equal(result.messages[3].content, '那你现在还算数吗？');
+  assert.equal(result.messages[2].content, '你刚才说会陪我回去。\n\n那你现在还算数吗？');
 });
 
 test('同角色连续原始记录会合并，避免破坏 Anthropic 消息交替', () => {
