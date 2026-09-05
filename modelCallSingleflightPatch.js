@@ -1,10 +1,9 @@
 'use strict';
 
 // Provider-boundary singleflight: if two internal paths accidentally ask for the
-// exact same model request at the same time, send it upstream once and fan the
-// Response out to all waiters. This is intentionally narrower than HTTP
-// idempotency: it only coalesces byte-for-byte equivalent model requests that are
-// concurrent, so legitimate follow-up generations are never suppressed.
+// exact same non-streaming model request at the same time, send it upstream once
+// and fan the Response out to all waiters. Streaming responses are excluded because
+// their body is a live stream and cannot safely be replayed by this layer.
 const providerFetch = globalThis.fetch;
 const inFlight = new Map();
 const MAX_ENTRIES = 128;
@@ -17,9 +16,16 @@ function requestBody(init) {
   return typeof init?.body === 'string' ? init.body : '';
 }
 
+function parsedBody(init) {
+  try { return JSON.parse(requestBody(init)); } catch { return null; }
+}
+
 function isModelRequest(url, init) {
   if (!init || String(init.method || 'POST').toUpperCase() !== 'POST') return false;
-  return /\/(?:messages|chat\/completions|responses)\/?(?:\?|$)/i.test(url) && Boolean(requestBody(init));
+  const body = parsedBody(init);
+  return /\/(?:messages|chat\/completions|responses)\/?(?:\?|$)/i.test(url)
+    && Boolean(body?.model)
+    && body?.stream !== true;
 }
 
 function relevantHeaders(init = {}) {
@@ -44,7 +50,7 @@ function trimEntries() {
 async function fanOutResponse(promise, isFirst) {
   const response = await promise;
   // The first caller receives the original response. Waiting callers receive a
-  // clone made before the first caller can consume its body.
+  // clone before their surrounding route gets a chance to consume the body.
   return isFirst ? response : response.clone();
 }
 
