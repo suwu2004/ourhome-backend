@@ -21,10 +21,6 @@ require('./theaterMemoryPatch');
 // The single authoritative Theater continuity layer: real user/assistant turns
 // plus one compact timeline instruction at the final provider boundary.
 require('./theaterRawTurnsPatch');
-// Keep the generation context aligned with the intended recent-dialogue window.
-// This runs after Raw Turns so every downstream provider sees at most the
-// configured recent Theater messages, while long-term memory stays separate.
-require('./theaterContextWindowPatch');
 require('./theaterPromptAutonomyPatch');
 const { guardRenderFrontend } = require('./renderFrontendIntegrityGuard');
 guardRenderFrontend();
@@ -51,5 +47,8 @@ require('./drawingRoutePatch');
 require('./luzePrivateRoomPatch');
 require('./luzeAutonomySettingsPatch');
 require('./intimacyFlowPatch');
+// Final provider-boundary guard: keep Theater generation inside the intended
+// recent-dialogue window after all other fetch wrappers have had their chance.
+require('./theaterContextWindowPatch');
 
 module.exports = { renderFrontdoorPatch };
