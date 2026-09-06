@@ -61,12 +61,13 @@ function buildTimelineInstruction() {
 
 function buildContinuityAnchor(historyMessages, currentUserName, currentText) {
   const latestAssistant = [...historyMessages].reverse().find(message => message.role === 'assistant');
-  const latestUser = [...historyMessages].reverse().find(message => message.role === 'user');
+  const priorUsers = [...historyMessages].filter(message => message.role === 'user');
+  const priorUser = priorUsers.length > 1 ? priorUsers.at(-2) : null;
   const previousAssistantText = latestAssistant?.content ? latestAssistant.content.replace(/^【历史剧情时间：[^】]+】\n/u, '').trim() : '';
-  const previousUserText = latestUser?.content ? latestUser.content.replace(/^【历史剧情时间：[^】]+】\n/u, '').trim() : '';
+  const previousUserText = priorUser?.content ? priorUser.content.replace(/^【历史剧情时间：[^】]+】\n/u, '').trim() : '';
   const parts = [
     CONTINUITY_MARKER,
-    '下面两段是上一轮已经实际发生的原话，不是摘要，也不是可选背景。生成本轮回复前，先回答并承接它们明确提出、做出或正在进行的事情。',
+    '下面的角色原话与上一轮玩家输入属于已经发生的剧情，不是摘要，也不是可选背景。生成本轮回复前，必须先承接上一轮角色原话中的具体问题、动作、承诺、情绪或信息。',
     previousAssistantText ? `【上一轮角色最后一句】\n${previousAssistantText.slice(-6000)}` : '',
     previousUserText ? `【上一轮玩家最后一句】\n${previousUserText.slice(-4000)}` : '',
     `【本轮玩家刚刚说】\n${String(currentText || '').slice(0, 6000)}`,
@@ -88,8 +89,8 @@ function buildStructuredMessages(body) {
   const setup = prompt.slice(0, recentStart).trim();
   let system = textOf(body.system);
   const bookTitle = setup.match(/【剧本名】\s*\n([^\n]+)/u)?.[1]?.trim() || '';
-  const assistantLine = setup.match(/【([^\n】]+)：你在这本书里承担的角色、旁白或对手戏称呼。/u);
-  const assistantName = assistantLine?.[1]?.trim() || '';
+  const nameBlock = setup.match(/【本书称呼】\s*\n([^\n：:]+)[：:]叶檀[^\n]*\n([^\n：:]+)[：:]/u);
+  const assistantName = nameBlock?.[2]?.trim() || '';
   if (!system.includes(MARKER)) {
     system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n本轮玩家输入：${currentText.slice(0, 6000)}\n\n${CONTINUITY_MARKER}\n以下原话优先于旧摘要与背景设定；不要改写成总结，不要忽略上一轮角色最后一句。\n${setup}`;
   }
@@ -109,7 +110,9 @@ function buildStructuredMessages(body) {
   if (previousLast?.role === 'user') {
     const normalizedA = previousLast.content.replace(TIME_PREFIX_RE, '').replace(/\s+/gu, ' ').trim();
     const normalizedB = currentText.replace(/\s+/gu, ' ').trim();
-    if (normalizedA.endsWith(normalizedB)) return { ...body, system, messages: historyMessages };
+    if (normalizedA.endsWith(normalizedB)) {
+      return { ...body, system: `${system}\n\n${buildContinuityAnchor(historyMessages, currentUserName, currentText)}`, messages: historyMessages };
+    }
     previousLast.content = `${previousLast.content}\n\n${currentStamp}`;
     return { ...body, system: `${system}\n\n${buildContinuityAnchor(historyMessages, currentUserName, currentText)}`, messages: historyMessages };
   }
