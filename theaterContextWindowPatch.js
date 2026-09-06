@@ -5,7 +5,6 @@
 // cannot accidentally widen the generation context again.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
-const RAW_TURNS_MARKER = '【小剧场原始对话层·Raw Turns】';
 const RECENT_MESSAGE_WINDOW = 18;
 
 function textOf(value) {
@@ -19,10 +18,9 @@ function isTheaterBody(body) {
 }
 
 function trimToRecentTheaterWindow(body) {
-  if (!isTheaterBody(body) || !body.messages.some(message => textOf(message?.content).includes(RAW_TURNS_MARKER))) return body;
+  if (!isTheaterBody(body)) return body;
   if (body.messages.length <= RECENT_MESSAGE_WINDOW) return body;
-  const kept = body.messages.slice(-RECENT_MESSAGE_WINDOW);
-  return { ...body, messages: kept };
+  return { ...body, messages: body.messages.slice(-RECENT_MESSAGE_WINDOW) };
 }
 
 if (typeof previousFetch === 'function') {
