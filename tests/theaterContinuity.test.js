@@ -39,9 +39,22 @@ test('buildStructuredMessages restores user and assistant turns instead of one g
 
   const structured = buildStructuredMessages(body);
   assert.ok(structured.system.includes('【小剧场原始对话层·Raw Turns】'));
+  assert.ok(structured.system.includes('【小剧场上一轮承接锚点】'));
+  assert.ok(structured.system.includes('【上一轮角色最后一句】'));
+  assert.match(structured.system, /算数，我记得。/);
   assert.deepEqual(structured.messages.map(message => message.role), ['user', 'assistant', 'user']);
   assert.match(structured.messages.at(-1).content, /那你现在告诉我答案/);
   assert.match(structured.messages.at(-1).content, /所以呢/);
+});
+
+test('buildStructuredMessages preserves the immediate previous assistant turn when the latest history entry is user', () => {
+  const body = makeBody([
+    '叶檀：你答应过我的。',
+    '陆泽：我答应过，我现在还记得。',
+  ].join('\n\n'), '你真的还记得？');
+  const structured = buildStructuredMessages(body);
+  assert.match(structured.system, /我答应过，我现在还记得。/);
+  assert.deepEqual(structured.messages.map(message => message.role), ['user', 'assistant', 'user']);
 });
 
 test('memory economy does not refresh every turn just because character_memory is empty', () => {
