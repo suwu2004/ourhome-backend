@@ -21,6 +21,10 @@ require('./theaterMemoryPatch');
 // The single authoritative Theater continuity layer: real user/assistant turns
 // plus one compact timeline instruction at the final provider boundary.
 require('./theaterRawTurnsPatch');
+// Keep the generation context aligned with the intended recent-dialogue window.
+// This runs after Raw Turns so every downstream provider sees at most the
+// configured recent Theater messages, while long-term memory stays separate.
+require('./theaterContextWindowPatch');
 require('./theaterPromptAutonomyPatch');
 const { guardRenderFrontend } = require('./renderFrontendIntegrityGuard');
 guardRenderFrontend();
