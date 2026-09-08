@@ -1,9 +1,8 @@
 'use strict';
 
-// Keep static Theater setup from crowding out the actual conversational turns.
-// This is a context-budget guard, not a continuity/prompt anchor: recent
-// user/assistant messages remain untouched and are always the highest-value
-// live context at the provider boundary.
+// Keep static Theater setup and generated memory from crowding out the actual
+// conversational turns. This is a context-budget guard, not a continuity/
+// prompt-anchor workaround: recent user/assistant messages remain untouched.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
 const INTERACTIVE_CONTEXT_RE = /【小剧场请求上下文】/u;
@@ -14,6 +13,11 @@ const BLOCK_LIMITS = new Map([
   ['【世界观/剧情设定】', 4500],
   ['【角色卡/关系】', 4500],
   ['【禁区/写作规则】', 3500],
+  // Memory is useful for durable facts, but it is not a substitute for the
+  // live transcript. The previous uncapped memory block could grow to tens
+  // of thousands of characters and make the model attend to summaries instead
+  // of the actual preceding dialogue.
+  ['【角色与剧情记忆】', 6500],
 ]);
 
 function textOf(value) {
