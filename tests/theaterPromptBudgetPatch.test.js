@@ -40,7 +40,7 @@ test('budget guard never trims or rewrites a small structured recent exchange', 
 test('live dialogue token budget removes only the oldest turns and keeps the current exchange', () => {
   const messages = Array.from({ length: 18 }, (_, index) => ({
     role: index % 2 === 0 ? 'user' : 'assistant',
-    content: `${index === 0 ? '最早的对话' : '对话'}${'甲'.repeat(700)}`,
+    content: `${index === 0 ? '最早的对话' : '对话'}${'甲'.repeat(900)}`,
   }));
   const trimmed = trimRecentTheaterMessages(messages);
   const total = trimmed.reduce((sum, message) => sum + 16 + message.content.length, 0);
