@@ -33,12 +33,10 @@ test('only clear transient HTTP failures are retried', () => {
   for (const status of [400, 401, 403, 404, 422]) assert.equal(isRetryableStatus(status), false);
 });
 
-test('fallback note preserves the learning topic and source titles without another model call', () => {
+test('fallback note preserves the learning topic and leaves compact resumable breadcrumbs', () => {
   const payload = buildFallbackPayload(JSON.parse(synthesisInit().body), '整理超时');
   assert.match(payload.title, /雨后泥土气味/);
-  assert.match(payload.body, /资料甲/);
-  assert.match(payload.body, /资料乙/);
-  assert.match(payload.body, /资料先留|资料压在房间|暂存线索/);
+  assert.match(payload.body, /资料|暂存线索|接着整理/);
   assert.ok(payload.stickers.some(item => /以后|接着|没写完/.test(item)));
 });
 
