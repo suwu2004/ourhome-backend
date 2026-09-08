@@ -45,13 +45,17 @@ require('./luzePrivateRoomPatch');
 require('./luzeAutonomySettingsPatch');
 require('./intimacyFlowPatch');
 // Reserve provider context for actual recent Theater dialogue after all static
-// lore/memory layers have been assembled. This never trims user/assistant turns.
+// lore/memory layers have been assembled. This mirrors formal Chat's 15k-token
+// context economy and preserves literal live turns as the highest-priority layer.
 require('./theaterPromptBudgetPatch');
-// Final provider-boundary guard: keep Theater generation inside the intended
-// recent-dialogue window after all other fetch wrappers have had their chance.
+// Final provider-boundary guard: keep Theater generation inside the same
+// 50-round / 100-message ceiling used by formal Chat.
 require('./theaterContextWindowPatch');
 // Last provider-boundary guard: prevent the server's generous fallback
 // max_tokens from overriding the Theater reply-length setting.
 require('./theaterReplyLengthGuardPatch');
+// Finally, carry formal Chat's provider-native thinking transport into Theater.
+// This never creates a second completion just to manufacture a thinking panel.
+require('./theaterThinkingPatch');
 
 module.exports = { renderFrontdoorPatch };
