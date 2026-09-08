@@ -52,6 +52,33 @@ function buildTimelineInstruction() {
   return `${TIME_MARKER}\n现在是 ${currentShanghaiTime()}（北京时间，Asia/Shanghai）。这是本轮请求的现实时间锚点。\n\n${JUMP_MARKER}\n默认：严格承接最近一次正在发生的剧情，不把旧消息误当成现在。\n允许：用户明确说“第二天、几天后、半年后、十年后、多年以后、后来、回到三年前、回忆起、与此同时、镜头转到”等时间跳跃、倒叙或平行场景时，立即建立新的剧情时间点并继续演绎。\n规则：时间跳跃后的后续剧情默认沿用新的时间点；明确回忆/倒叙属于临时过去场景，不自动覆盖主时间线；“与此同时”可以建立并行场景，不把两地事件强行合并成同一时刻。\n如果用户只使用模糊的“过了一会儿/后来”而没有明确跨度，只做自然、短距离推进，不擅自跨越数月或数年。\n如果旧整理记忆与最近真实对话冲突，以最近真实对话和本轮明确时间跳跃为准。`;
 }
 
+function normalizeTurnText(value) {
+  return String(value || '')
+    .replace(/^【当前剧情时间待判定】\s*/u, '')
+    .replace(/^【历史剧情时间：[^】]+（Asia\/Shanghai）】\s*/u, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function appendCurrentUserTurn(historyMessages, currentText) {
+  const currentNormalized = normalizeTurnText(currentText);
+  const last = historyMessages.at(-1);
+
+  // The frontend may already include the just-sent user message in
+  // 最近互动记录 and then repeat it as 刚刚发来. Never send it twice.
+  if (last?.role === 'user' && normalizeTurnText(last.content) === currentNormalized) return;
+
+  // Providers expect alternating conversational boundaries. When the stored
+  // history already ends with the player's turn, the new live input is part
+  // of that same user-side turn until the next assistant reply exists.
+  if (last?.role === 'user') {
+    last.content = `${last.content}\n\n【当前剧情时间待判定】\n${currentText}`;
+    return;
+  }
+
+  historyMessages.push({ role: 'user', content: `【当前剧情时间待判定】\n${currentText}` });
+}
+
 function buildStructuredMessages(body) {
   const last = body.messages[body.messages.length - 1];
   const prompt = textOf(last?.content);
@@ -77,8 +104,6 @@ function buildStructuredMessages(body) {
   const assistantName = nameBlock?.[2]?.trim() || '';
 
   if (!system.includes(MARKER)) {
-    // Keep the system message for instructions/setup only. The live player
-    // input belongs exclusively to the final user message below.
     system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
   }
 
@@ -94,18 +119,12 @@ function buildStructuredMessages(body) {
     }
   }
 
-  // The current request is exactly one new user turn. It is deliberately not
-  // copied into system and is never merged into a previous user turn.
-  historyMessages.push({ role: 'user', content: `【当前剧情时间待判定】\n${currentText}` });
+  appendCurrentUserTurn(historyMessages, currentText);
 
-  // Limit the final provider history after Raw Turns expansion. Preserve the
-  // newest complete conversation boundary whenever possible.
   let recentMessages = historyMessages.length > RECENT_MESSAGE_WINDOW
     ? historyMessages.slice(-RECENT_MESSAGE_WINDOW)
     : historyMessages;
 
-  // If trimming starts on an assistant turn, drop that orphaned assistant so
-  // the provider never sees a reply without its immediately preceding user.
   if (recentMessages.length && recentMessages[0].role === 'assistant') {
     recentMessages = recentMessages.slice(1);
   }
@@ -128,4 +147,4 @@ if (typeof previousFetch === 'function') {
   };
 }
 
-module.exports = { MARKER, TIME_MARKER, JUMP_MARKER, CONTEXT_MARKER, RECENT_MESSAGE_WINDOW, isTheaterBody, splitHistoryEntries, buildStructuredMessages, currentShanghaiTime, buildTimelineInstruction };
+module.exports = { MARKER, TIME_MARKER, JUMP_MARKER, CONTEXT_MARKER, RECENT_MESSAGE_WINDOW, isTheaterBody, splitHistoryEntries, buildStructuredMessages, currentShanghaiTime, buildTimelineInstruction, normalizeTurnText, appendCurrentUserTurn };
