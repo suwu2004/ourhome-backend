@@ -11,5 +11,6 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'packa
 test('Theater history paging loads through the single production startup path', () => {
   assert.equal(packageJson.scripts.start, 'node server.js');
   assert.match(runtimeBootstrap, /require\('\.\/theaterMessagePagingPatch'\)/);
-  assert.match(runtimeBootstrap, /theater_message_paging:\s*'supabase-range-v1'/);
+  assert.match(runtimeBootstrap, /require\('\.\/theaterRawTurnsPatch'\)/);
+  assert.match(runtimeBootstrap, /Final provider-boundary guard/);
 });
