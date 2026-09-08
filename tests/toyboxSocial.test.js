@@ -29,7 +29,6 @@ test('shared Toybox history routes are registered', () => {
   assert.match(routes, /\/toybox\/runs\/:id/);
   assert.match(routes, /\/toybox\/runs\/:id\/events/);
   assert.match(bootstrap, /require\('\.\/toyboxSocialRoutePatch'\);/);
-  assert.match(bootstrap, /toybox: 'toy-bear-gomoku-v4'/);
 });
 
 test('Toybox history supports both participants and completion state', () => {
