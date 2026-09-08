@@ -49,10 +49,11 @@ function imageExtension(contentType) {
 function decodeBase64Image(value, contentType = 'image/png') {
   const text = String(value || '').trim();
   if (!text) return null;
-  const normalized = text.replace(/\s+/g, '');
-  if (!normalized || normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return null;
+  const normalized = text.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  if (!normalized || normalized.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) return null;
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
   try {
-    const buffer = Buffer.from(normalized, 'base64');
+    const buffer = Buffer.from(padded, 'base64');
     if (!buffer.length) return null;
     return { buffer, contentType: String(contentType || 'image/png').split(';')[0] || 'image/png' };
   } catch {
@@ -76,7 +77,6 @@ function looksLikeBase64(value) {
 function parseImagePayload(payload = {}) {
   const seen = new Set();
   const maxDepth = 7;
-
   function visit(value, key = '', depth = 0) {
     if (value == null || depth > maxDepth) return null;
     if (typeof value === 'string') {
@@ -93,10 +93,7 @@ function parseImagePayload(payload = {}) {
     if (seen.has(value)) return null;
     seen.add(value);
     if (Array.isArray(value)) {
-      for (const item of value) {
-        const result = visit(item, key, depth + 1);
-        if (result) return result;
-      }
+      for (const item of value) { const result = visit(item, key, depth + 1); if (result) return result; }
       return null;
     }
     const preferredKeys = ['b64_json', 'b64Json', 'base64', 'base64_data', 'image_data', 'imageData', 'data_url', 'dataUrl', 'url', 'image_url', 'imageUrl', 'image', 'result', 'output'];
