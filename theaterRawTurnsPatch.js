@@ -53,8 +53,7 @@ function buildTimelineInstruction() {
 }
 
 function buildStructuredMessages(body) {
-  const lastIndex = body.messages.length - 1;
-  const last = body.messages[lastIndex];
+  const last = body.messages[body.messages.length - 1];
   const prompt = textOf(last?.content);
   if (!prompt || prompt.includes(MARKER)) return body;
 
@@ -78,7 +77,9 @@ function buildStructuredMessages(body) {
   const assistantName = nameBlock?.[2]?.trim() || '';
 
   if (!system.includes(MARKER)) {
-    system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n本轮玩家输入：${currentText.slice(0, 6000)}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
+    // Keep the system message for instructions/setup only. The live player
+    // input belongs exclusively to the final user message below.
+    system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
   }
 
   const historyMessages = [];
@@ -93,16 +94,21 @@ function buildStructuredMessages(body) {
     }
   }
 
-  // The current request must remain a distinct user turn. Never merge it into
-  // the previous user message: the provider needs the real assistant -> user
-  // boundary to know what the character is replying to.
+  // The current request is exactly one new user turn. It is deliberately not
+  // copied into system and is never merged into a previous user turn.
   historyMessages.push({ role: 'user', content: `【当前剧情时间待判定】\n${currentText}` });
 
-  // Limit the final provider history after serialized Raw Turns have expanded.
-  // This keeps the newest turns while preserving the current user message.
-  const recentMessages = historyMessages.length > RECENT_MESSAGE_WINDOW
+  // Limit the final provider history after Raw Turns expansion. Preserve the
+  // newest complete conversation boundary whenever possible.
+  let recentMessages = historyMessages.length > RECENT_MESSAGE_WINDOW
     ? historyMessages.slice(-RECENT_MESSAGE_WINDOW)
     : historyMessages;
+
+  // If trimming starts on an assistant turn, drop that orphaned assistant so
+  // the provider never sees a reply without its immediately preceding user.
+  if (recentMessages.length && recentMessages[0].role === 'assistant') {
+    recentMessages = recentMessages.slice(1);
+  }
 
   return { ...body, system, messages: recentMessages };
 }
