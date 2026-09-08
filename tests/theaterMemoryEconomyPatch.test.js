@@ -17,15 +17,9 @@ function stableMemory(turns = 0) {
 
 test('ordinary Theater scenes checkpoint every sixth successful turn', () => {
   for (let turns = 0; turns < 5; turns += 1) {
-    assert.equal(
-      shouldRefreshMemoryEconomically(stableMemory(turns), '一起喝茶', '他把茶杯推过来。'),
-      false,
-    );
+    assert.equal(shouldRefreshMemoryEconomically(stableMemory(turns), '一起喝茶', '他把茶杯推过来。'), false);
   }
-  assert.equal(
-    shouldRefreshMemoryEconomically(stableMemory(5), '一起喝茶', '他把茶杯推过来。'),
-    true,
-  );
+  assert.equal(shouldRefreshMemoryEconomically(stableMemory(5), '一起喝茶', '他把茶杯推过来。'), true);
 });
 
 test('common roleplay beats do not spend an immediate memory-model call', () => {
@@ -37,20 +31,14 @@ test('common roleplay beats do not spend an immediate memory-model call', () => 
 
 test('structural relationship or life events refresh early but never back-to-back', () => {
   assert.equal(MAJOR_THEATER_EVENT_RE.test('他向我求婚，我们决定结婚'), true);
-  assert.equal(
-    shouldRefreshMemoryEconomically(stableMemory(0), '他向我求婚，我们决定结婚', '剧情继续。'),
-    false,
-  );
-  assert.equal(
-    shouldRefreshMemoryEconomically(stableMemory(1), '他向我求婚，我们决定结婚', '剧情继续。'),
-    true,
-  );
+  assert.equal(shouldRefreshMemoryEconomically(stableMemory(0), '他向我求婚，我们决定结婚', '剧情继续。'), false);
+  assert.equal(shouldRefreshMemoryEconomically(stableMemory(1), '他向我求婚，我们决定结婚', '剧情继续。'), true);
 });
 
-test('brand-new or incomplete Theater memory is still repaired immediately', () => {
+test('brand-new memory initializes immediately while an optional empty field does not', () => {
   assert.equal(shouldRefreshMemoryEconomically({ character_anchor: '', plot_facts: [] }, '', ''), true);
   assert.equal(
     shouldRefreshMemoryEconomically({ character_anchor: '稳定', plot_facts: ['事实'], character_memory: '' }, '普通聊天', '普通回复'),
-    true,
+    false,
   );
 });
