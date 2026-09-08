@@ -1,12 +1,11 @@
 'use strict';
 
 // The Theater setting is a character-length budget, while providers receive
-// token limits. Keep the existing flexible minimum semantics, but prevent the
-// server's generous fallback max_tokens (2600+) from silently turning a small
-// configured reply into a long essay.
+// token limits. Read the same explicit adaptive-length instruction used by the
+// server and prevent a generous fallback max_tokens from silently overriding it.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
-const LENGTH_RE = /最低长度约为\s*(\d+)\s*个中文字符/u;
+const LENGTH_RE = /(?:完整回复至少|最低长度约为)\s*(\d+)\s*字(?:左右|的最低篇幅)?/u;
 const MAX_MULTIPLIER = 1.25;
 const SAFETY_TOKENS = 40;
 const MIN_PROVIDER_TOKENS = 128;
