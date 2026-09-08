@@ -5,7 +5,7 @@
 // server's generous fallback max_tokens (2600+) from silently turning a small
 // configured reply into a long essay.
 const previousFetch = globalThis.fetch;
-const THEATER_RE = /OurHome 的[“\"]小剧场[”](?:长文|互动)写作引擎/u;
+const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
 const LENGTH_RE = /最低长度约为\s*(\d+)\s*个中文字符/u;
 const MAX_MULTIPLIER = 1.25;
 const SAFETY_TOKENS = 40;
