@@ -11,6 +11,7 @@ const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引�
 const RECENT_MESSAGE_WINDOW = 18;
 const RECENT_RE = /【最近互动记录】\s*([\s\S]*?)(?=\n【[^\n】]+刚刚发来】)/u;
 const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*)$/u;
+const EARLIER_DIGEST_RE = /【较早剧情提要】\s*[\s\S]*?(?=\n【最近互动记录】)/u;
 
 function textOf(value) {
   if (typeof value === 'string') return value;
@@ -68,9 +69,8 @@ function appendCurrentUserTurn(historyMessages, currentText) {
   // 最近互动记录 and then repeat it as 刚刚发来. Never send it twice.
   if (last?.role === 'user' && normalizeTurnText(last.content) === currentNormalized) return;
 
-  // Providers expect alternating conversational boundaries. When the stored
-  // history already ends with the player's turn, the new live input is part
-  // of that same user-side turn until the next assistant reply exists.
+  // Keep the provider request valid even if persistence temporarily contains
+  // two adjacent player records: fold the live input into that same user turn.
   if (last?.role === 'user') {
     last.content = `${last.content}\n\n【当前剧情时间待判定】\n${currentText}`;
     return;
@@ -97,7 +97,12 @@ function buildStructuredMessages(body) {
   const currentStart = currentMatch.index;
   if (recentStart < 0 || currentStart <= recentStart) return body;
 
-  const setup = prompt.slice(0, recentStart).trim();
+  // The server-side Theater history builder also creates a “较早剧情提要”
+  // containing up to 42 older messages. That block used to survive here and
+  // bypass the recent-N window, allowing an old scene to compete with the live
+  // conversation. It is deliberately discarded at the provider boundary.
+  // Sparse Theater memory remains available through its dedicated memory layer.
+  const setup = prompt.slice(0, recentStart).replace(EARLIER_DIGEST_RE, '').trim();
   let system = textOf(body.system);
   const bookTitle = setup.match(/【剧本名】\s*\n([^\n]+)/u)?.[1]?.trim() || '';
   const nameBlock = setup.match(/【本书称呼】\s*\n([^\n：:]+)[：:]叶檀[^\n]*\n([^\n：:]+)[：:]/u);
