@@ -50,5 +50,8 @@ require('./theaterPromptBudgetPatch');
 // Final provider-boundary guard: keep Theater generation inside the intended
 // recent-dialogue window after all other fetch wrappers have had their chance.
 require('./theaterContextWindowPatch');
+// Last provider-boundary guard: prevent the server's generous fallback
+// max_tokens from overriding the Theater reply-length setting.
+require('./theaterReplyLengthGuardPatch');
 
 module.exports = { renderFrontdoorPatch };
