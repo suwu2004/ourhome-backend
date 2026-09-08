@@ -47,5 +47,18 @@ test('live dialogue token budget removes only the oldest turns and keeps the cur
   assert.ok(trimmed.length < messages.length);
   assert.equal(trimmed.at(-1).content, messages.at(-1).content);
   assert.ok(total <= MAX_LIVE_MESSAGE_TOKENS);
-  assert.match(trimmed[0].content, /对话/);
+  assert.equal(trimmed[0].role, 'user');
+});
+
+test('token trimming never leaves an orphan assistant as the first live message', () => {
+  const messages = [
+    { role: 'user', content: '甲'.repeat(700) },
+    { role: 'assistant', content: '乙'.repeat(700) },
+    { role: 'user', content: '丙'.repeat(700) },
+    { role: 'assistant', content: '丁'.repeat(700) },
+    { role: 'user', content: '戊'.repeat(700) },
+  ];
+  const trimmed = trimRecentTheaterMessages(messages, 1500);
+  assert.equal(trimmed[0].role, 'user');
+  assert.equal(trimmed.at(-1).content, '戊'.repeat(700));
 });
