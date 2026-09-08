@@ -28,6 +28,8 @@ test('剧场最近原始对话被拆成真正的 user/assistant 消息', () => {
   const result = buildStructuredMessages(body);
   assert.match(result.system, /【小剧场当前时间·Asia\/Shanghai】/);
   assert.match(result.system, /【小剧场请求上下文】/);
+  assert.doesNotMatch(result.system, /【较早剧情提要】/);
+  assert.doesNotMatch(result.system, /两人昨天已经抵达客栈/);
   assert.equal(result.messages.length, 3);
   assert.deepEqual(result.messages.map(item => item.role), ['user', 'assistant', 'user']);
   assert.equal(result.messages[0].content, '我把药瓶放到桌上。');
