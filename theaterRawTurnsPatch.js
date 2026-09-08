@@ -7,7 +7,7 @@ const MARKER = '【小剧场原始对话层·Raw Turns】';
 const TIME_MARKER = '【小剧场当前时间·Asia/Shanghai】';
 const JUMP_MARKER = '【小剧场时间线·跳时规则】';
 const CONTEXT_MARKER = '【小剧场请求上下文】';
-const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
+const THEATER_RE = /OurHome 的[“\"]小剧场[”\"](?:长文|互动)写作引擎/u;
 const RECENT_MESSAGE_WINDOW = 18;
 const RECENT_RE = /【最近互动记录】\s*([\s\S]*?)(?=\n【[^\n】]+刚刚发来】)/u;
 const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*)$/u;
@@ -33,8 +33,8 @@ function splitHistoryEntries(text) {
   const raw = String(text || '').trim();
   if (!raw || raw === '（还没有正式开始。）') return [];
 
-  // Numbered history is unambiguous. Unnumbered history must be split before
-  // parsing so the first speaker cannot greedily swallow later speaker labels.
+  // Numbered history is unambiguous. Unnumbered history is split at every
+  // speaker label so one turn cannot swallow the following turn.
   if (/^\s*\d+\.\s*/u.test(raw)) {
     return raw.split(/\n(?=\s*\d+\.\s*)/u).map(parseHistoryChunk).filter(Boolean);
   }
@@ -60,8 +60,10 @@ function buildStructuredMessages(body) {
   if (!prompt || prompt.includes(MARKER)) return body;
   const recentMatch = prompt.match(RECENT_RE), currentMatch = prompt.match(CURRENT_RE);
   if (!recentMatch || !currentMatch) return body;
-  const entries = splitHistoryEntries(recentMatch[1]), currentUserName = currentMatch[1].trim(), currentText = currentMatch[2].trim();
-  if (!entries.length || !currentText) return body;
+  const entries = splitHistoryEntries(recentMatch[1]);
+  const currentUserName = currentMatch[1].trim();
+  const currentText = currentMatch[2].trim();
+  if (!currentText) return body;
   const recentStart = prompt.indexOf('【最近互动记录】'), currentStart = currentMatch.index;
   if (recentStart < 0 || currentStart <= recentStart) return body;
 
@@ -71,7 +73,7 @@ function buildStructuredMessages(body) {
   const nameBlock = setup.match(/【本书称呼】\s*\n([^\n：:]+)[：:]叶檀[^\n]*\n([^\n：:]+)[：:]/u);
   const assistantName = nameBlock?.[2]?.trim() || '';
   if (!system.includes(MARKER)) {
-    system = `${system.trimEnd()}\n\n${MARKER}\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n本轮玩家输入：${currentText.slice(0, 6000)}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
+    system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n本轮玩家输入：${currentText.slice(0, 6000)}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
   }
 
   const historyMessages = [];
@@ -82,25 +84,31 @@ function buildStructuredMessages(body) {
     if (previousRole === role) historyMessages[historyMessages.length - 1].content += `\n\n${stamp}${entry.text}`;
     else historyMessages.push({ role, content: `${stamp}${entry.text}` });
   }
+
   if (!historyMessages.length) return body;
 
-  const currentStamp = `【当前剧情时间待判定】\n${currentText}`;
-  const previousLast = historyMessages.at(-1);
-  if (previousLast?.role === 'user') {
-    const normalizedA = previousLast.content.replace(TIME_PREFIX_RE, '').replace(/\s+/gu, ' ').trim();
-    const normalizedB = currentText.replace(/\s+/gu, ' ').trim();
-    if (!normalizedA.includes(normalizedB)) previousLast.content = `${previousLast.content}\n\n${currentStamp}`;
-  } else {
-    historyMessages.push({ role: 'user', content: currentStamp });
-  }
+  // Every request is a new user turn. Keep it as a distinct message instead
+  // of merging it into the previous user turn. This preserves the exact
+  // user -> assistant -> user boundary that the provider uses for continuity.
+  historyMessages.push({ role: 'user', content: `【当前剧情时间待判定】\n${currentText}` });
 
-  // The final provider boundary is supposed to receive only the intended
-  // recent-message window. The outer context-window wrapper cannot enforce
-  // this after Raw Turns expands the serialized history, so enforce the same
-  // limit here without adding another continuity summary or anchor.
-  const recentMessages = historyMessages.length > RECENT_MESSAGE_WINDOW
+  // Enforce the context window after raw history expansion. Always keep the
+  // current user message and the immediately preceding assistant turn when
+  // one exists; never replace missing history with a summary/anchor.
+  let recentMessages = historyMessages.length > RECENT_MESSAGE_WINDOW
     ? historyMessages.slice(-RECENT_MESSAGE_WINDOW)
     : historyMessages;
+  const currentMessage = recentMessages.at(-1);
+  if (currentMessage?.role !== 'user') {
+    recentMessages = [...recentMessages, historyMessages.at(-1)];
+  }
+  if (recentMessages.length > 1 && recentMessages.at(-2)?.role !== 'assistant') {
+    const previousAssistant = [...historyMessages].reverse().find((message, index) => index > 0 && message.role === 'assistant');
+    if (previousAssistant && !recentMessages.includes(previousAssistant)) {
+      recentMessages = [previousAssistant, ...recentMessages].slice(-RECENT_MESSAGE_WINDOW);
+    }
+  }
+
   return { ...body, system, messages: recentMessages };
 }
 
