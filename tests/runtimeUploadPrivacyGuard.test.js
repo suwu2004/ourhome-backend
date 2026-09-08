@@ -17,11 +17,11 @@ test('main runtime installs the private uploads guard on its Supabase client', (
   assert.ok(guardAt >= 0 && assistantsAt > guardAt, 'privacy guard must install before runtime helpers use the client');
 });
 
-test('production runtime keeps privacy and failover modules wired without browser-facing health markers', () => {
+test('production runtime keeps privacy and failover modules wired without retired browser-facing markers', () => {
   const bootstrap = source('runtimeBootstrap.js');
   for (const marker of [
-    'privateUploads', 'neonFailoverFetchPatch', 'neonFailoverReplay',
-    'photoRetentionPatch', 'photoMemoryVisionPatch', 'supabaseQuotaCircuitPatch',
+    'neonFailoverFetchPatch', 'photoRetentionPatch', 'photoMemoryVisionPatch',
+    'supabaseQuotaCircuitPatch', 'contextLedgerPatch', 'chatCurrentTurnGuardPatch',
   ]) assert.match(bootstrap, new RegExp(`require\\('\\./${marker}'\\)`));
   assert.doesNotMatch(bootstrap, /upload_privacy:/);
   assert.doesNotMatch(bootstrap, /background_recovery:/);
