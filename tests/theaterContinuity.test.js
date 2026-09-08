@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { splitHistoryEntries, buildStructuredMessages } = require('../theaterRawTurnsPatch');
+const { splitHistoryEntries, buildStructuredMessages, MARKER } = require('../theaterRawTurnsPatch');
 const { shouldRefreshMemoryEconomically } = require('../theaterMemoryEconomyPatch');
 
 const SYSTEM = '你是 OurHome 的“小剧场”互动写作引擎。';
@@ -38,7 +38,9 @@ test('buildStructuredMessages restores user and assistant turns instead of one g
   ].join('\n'), '所以呢？');
 
   const structured = buildStructuredMessages(body);
-  assert.ok(structured.system.includes('【小剧场原始对话层·Raw Turns】'));
+  assert.ok(structured.system.includes('【小剧场当前时间·Asia/Shanghai】'));
+  assert.ok(structured.system.includes('【小剧场请求上下文】'));
+  assert.ok(!structured.system.includes(MARKER));
   assert.deepEqual(structured.messages.map(message => message.role), ['user', 'assistant', 'user']);
   assert.match(structured.messages.at(-1).content, /那你现在告诉我答案/);
   assert.match(structured.messages.at(-1).content, /所以呢/);
@@ -54,5 +56,5 @@ test('memory economy does not refresh every turn just because character_memory i
   };
   assert.equal(shouldRefreshMemoryEconomically(memory, '普通一句话', '普通回复'), false);
   assert.equal(shouldRefreshMemoryEconomically({ ...memory, turns_since_refresh: 5 }, '普通一句话', '普通回复'), true);
-  assert.equal(shouldRefreshMemoryEconomically(memory, '我们结婚吧', '他答应了'), true);
+  assert.equal(shouldRefreshMemoryEconomically({ ...memory, turns_since_refresh: 1 }, '我们结婚吧', '他答应了'), true);
 });
