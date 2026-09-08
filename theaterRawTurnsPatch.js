@@ -10,7 +10,10 @@ const CONTEXT_MARKER = '【小剧场请求上下文】';
 const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
 const RECENT_MESSAGE_WINDOW = 18;
 const RECENT_RE = /【最近互动记录】\s*([\s\S]*?)(?=\n【[^\n】]+刚刚发来】)/u;
-const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*)$/u;
+// The live user turn ends before the non-conversational control sections.
+// Keeping those sections out of the user message prevents them from being
+// mistaken for part of what the player actually said.
+const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*?)(?=\n\s*【玩法】|\n\s*【篇幅要求】|$)/u;
 const EARLIER_DIGEST_RE = /(?:^|\n)【较早剧情提要】\s*[\s\S]*?(?=\n【最近互动记录】)/u;
 
 function textOf(value) {
@@ -65,12 +68,8 @@ function appendCurrentUserTurn(historyMessages, currentText) {
   const currentNormalized = normalizeTurnText(currentText);
   const last = historyMessages.at(-1);
 
-  // The frontend may already include the just-sent user message in
-  // 最近互动记录 and then repeat it as 刚刚发来. Never send it twice.
   if (last?.role === 'user' && normalizeTurnText(last.content) === currentNormalized) return;
 
-  // Keep the provider request valid even if persistence temporarily contains
-  // two adjacent player records: fold the live input into that same user turn.
   if (last?.role === 'user') {
     last.content = `${last.content}\n\n【当前剧情时间待判定】\n${currentText}`;
     return;
@@ -102,10 +101,6 @@ function buildStructuredMessages(body) {
   const currentStart = currentMatch.index;
   if (recentStart < 0 || currentStart <= recentStart) return body;
 
-  // The server-side Theater history builder also creates a “较早剧情提要”
-  // containing up to 42 older messages. It is discarded at the provider
-  // boundary; sparse Theater memory remains available through its dedicated
-  // memory layer.
   const setup = prompt.slice(0, recentStart).trim();
   let system = textOf(body.system);
   const bookTitle = setup.match(/【剧本名】\s*\n([^\n]+)/u)?.[1]?.trim() || '';
@@ -113,7 +108,7 @@ function buildStructuredMessages(body) {
   const assistantName = nameBlock?.[2]?.trim() || '';
 
   if (!system.includes(MARKER)) {
-    system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
+    system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n\n最近互动记录中的 user/assistant 消息是本轮最直接的剧情上下文，必须按时间顺序读取并自然承接；它们不是摘要，也不是锚点。不要把当前用户消息孤立理解。\n${setup}`;
   }
 
   const historyMessages = [];
