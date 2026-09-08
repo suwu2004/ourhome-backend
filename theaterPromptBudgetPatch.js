@@ -57,7 +57,7 @@ function removeGeneratedMemory(system) {
   // This section is an AI-generated digest. It is intentionally absent from
   // the live provider context so a summary can never outrank a literal turn.
   return String(system || '')
-    .replace(/(?:^|\n)【角色与剧情记忆】\s*[\s\S]*?(?=\n【较早剧情提要】|\n【最近互动记录】|$)/u, '')
+    .replace(/(?:^|\n)【角色与剧情记忆】\s*[\s\S]*?(?=\n【[^\n】]+】|$)/u, '')
     .trim();
 }
 
@@ -78,12 +78,7 @@ function trimRecentTheaterMessages(messages, maxTokens = MAX_LIVE_MESSAGE_TOKENS
     index += 1;
   }
   const trimmed = list.slice(index).filter(Boolean);
-  // Token trimming can remove the first user turn while leaving its assistant
-  // reply at the front. That orphan reply is not a valid conversational start
-  // and can make a provider down-weight or discard the earlier context.
-  if (trimmed.length > MIN_LIVE_MESSAGES && trimmed[0]?.role === 'assistant') {
-    return trimmed.slice(1);
-  }
+  if (trimmed.length > MIN_LIVE_MESSAGES && trimmed[0]?.role === 'assistant') return trimmed.slice(1);
   return trimmed;
 }
 
