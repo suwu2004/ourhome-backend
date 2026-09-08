@@ -1,13 +1,12 @@
 'use strict';
 
-// Theater continuity has two separate budgets: a small static-context budget
-// and a larger live-dialogue budget. Static lore/memory must never be allowed
-// to consume the provider context that the actual user/assistant exchange needs.
-// This is a context-budget guard, not a continuity/prompt-anchor workaround.
+// Theater continuity must come from the literal recent user/assistant turns.
+// The persistent memory layer is still stored for durable facts, but its
+// generated summary must not compete with the live transcript at the provider.
 const previousFetch = globalThis.fetch;
-const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
+const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
 const INTERACTIVE_CONTEXT_RE = /【小剧场请求上下文】/u;
-const MAX_LIVE_MESSAGE_TOKENS = 8500;
+const MAX_LIVE_MESSAGE_TOKENS = 9500;
 const MIN_LIVE_MESSAGES = 2;
 
 const BLOCK_LIMITS = new Map([
@@ -16,9 +15,6 @@ const BLOCK_LIMITS = new Map([
   ['【世界观/剧情设定】', 500],
   ['【角色卡/关系】', 600],
   ['【禁区/写作规则】', 400],
-  // Memory is durable reference material, not live conversation. Keep it
-  // deliberately small so the literal preceding dialogue wins provider attention.
-  ['【角色与剧情记忆】', 1800],
 ]);
 
 function textOf(value) {
@@ -57,8 +53,16 @@ function capSection(text, marker, maxChars) {
   return `${text.slice(0, after)}${capped}${text.slice(end)}`;
 }
 
+function removeGeneratedMemory(system) {
+  // This section is an AI-generated digest. It is intentionally absent from
+  // the live provider context so a summary can never outrank a literal turn.
+  return String(system || '')
+    .replace(/(?:^|\n)【角色与剧情记忆】\s*[\s\S]*?(?=\n【较早剧情提要】|\n【最近互动记录】|$)/u, '')
+    .trim();
+}
+
 function trimTheaterStaticContext(system) {
-  let text = String(system || '');
+  let text = removeGeneratedMemory(system);
   for (const [marker, limit] of BLOCK_LIMITS) text = capSection(text, marker, limit);
   return text;
 }
@@ -114,6 +118,7 @@ module.exports = {
   estimateMessageTokens,
   capText,
   capSection,
+  removeGeneratedMemory,
   trimTheaterStaticContext,
   trimRecentTheaterMessages,
   isInteractiveTheaterBody,
