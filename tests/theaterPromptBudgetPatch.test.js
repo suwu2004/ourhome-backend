@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { trimTheaterStaticContext, patchBody } = require('../theaterPromptBudgetPatch');
+const { MAX_LIVE_MESSAGE_TOKENS, trimTheaterStaticContext, trimRecentTheaterMessages, patchBody } = require('../theaterPromptBudgetPatch');
 
-test('Theater static worldbook/rules blocks are bounded without changing recent messages', () => {
+test('Theater static worldbook/rules/memory blocks are tightly bounded without changing recent messages', () => {
   const huge = '甲'.repeat(20000);
   const system = [
     '你是 OurHome 的“小剧场”互动写作引擎。',
@@ -13,15 +13,17 @@ test('Theater static worldbook/rules blocks are bounded without changing recent 
     '【世界观/剧情设定】', huge,
     '【角色卡/关系】', huge,
     '【禁区/写作规则】', huge,
+    '【角色与剧情记忆】', huge,
     '【本书称呼】', '叶檀：叶檀。', '陆泽：陆泽。',
   ].join('\n');
   const trimmed = trimTheaterStaticContext(system);
   assert.ok(trimmed.length < system.length);
   assert.match(trimmed, /最近真实对话不受此限制/);
   assert.match(trimmed, /【本书称呼】/);
+  assert.ok(trimmed.length < 7000);
 });
 
-test('budget guard never trims or rewrites structured recent user/assistant turns', () => {
+test('budget guard never trims or rewrites a small structured recent exchange', () => {
   const body = {
     system: 'OurHome 的“小剧场”互动写作引擎\n【小剧场请求上下文】\n【完整世界书】' + '甲'.repeat(20000),
     messages: [
@@ -33,4 +35,17 @@ test('budget guard never trims or rewrites structured recent user/assistant turn
   const patched = patchBody(body);
   assert.deepEqual(patched.messages, body.messages);
   assert.equal(patched.messages.at(-1).content, '这一轮用户刚刚说的话。');
+});
+
+test('live dialogue token budget removes only the oldest turns and keeps the current exchange', () => {
+  const messages = Array.from({ length: 18 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `${index === 0 ? '最早的对话' : '对话'}${'甲'.repeat(700)}`,
+  }));
+  const trimmed = trimRecentTheaterMessages(messages);
+  const total = trimmed.reduce((sum, message) => sum + 16 + message.content.length, 0);
+  assert.ok(trimmed.length < messages.length);
+  assert.equal(trimmed.at(-1).content, messages.at(-1).content);
+  assert.ok(total <= MAX_LIVE_MESSAGE_TOKENS);
+  assert.match(trimmed[0].content, /对话/);
 });
