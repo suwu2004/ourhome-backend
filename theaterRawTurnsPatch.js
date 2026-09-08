@@ -8,6 +8,7 @@ const TIME_MARKER = '【小剧场当前时间·Asia/Shanghai】';
 const JUMP_MARKER = '【小剧场时间线·跳时规则】';
 const CONTEXT_MARKER = '【小剧场请求上下文】';
 const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
+const RECENT_MESSAGE_WINDOW = 18;
 const RECENT_RE = /【最近互动记录】\s*([\s\S]*?)(?=\n【[^\n】]+刚刚发来】)/u;
 const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*)$/u;
 const TIME_PREFIX_RE = /^【历史剧情时间：[^】]+】\n/u;
@@ -70,7 +71,7 @@ function buildStructuredMessages(body) {
   const nameBlock = setup.match(/【本书称呼】\s*\n([^\n：:]+)[：:]叶檀[^\n]*\n([^\n：:]+)[：:]/u);
   const assistantName = nameBlock?.[2]?.trim() || '';
   if (!system.includes(MARKER)) {
-    system = `${system.trimEnd()}\n\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n本轮玩家输入：${currentText.slice(0, 6000)}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
+    system = `${system.trimEnd()}\n\n${MARKER}\n${buildTimelineInstruction()}\n\n${CONTEXT_MARKER}\n剧本名：${bookTitle}\n玩家：${currentUserName}\n本书角色：${assistantName || '剧场'}\n本轮玩家输入：${currentText.slice(0, 6000)}\n\n以下原始对话会作为真实历史消息直接提供给模型；不要把它改写成摘要，也不要制造第二套连续性锚点。\n${setup}`;
   }
 
   const historyMessages = [];
@@ -92,7 +93,15 @@ function buildStructuredMessages(body) {
   } else {
     historyMessages.push({ role: 'user', content: currentStamp });
   }
-  return { ...body, system, messages: historyMessages };
+
+  // The final provider boundary is supposed to receive only the intended
+  // recent-message window. The outer context-window wrapper cannot enforce
+  // this after Raw Turns expands the serialized history, so enforce the same
+  // limit here without adding another continuity summary or anchor.
+  const recentMessages = historyMessages.length > RECENT_MESSAGE_WINDOW
+    ? historyMessages.slice(-RECENT_MESSAGE_WINDOW)
+    : historyMessages;
+  return { ...body, system, messages: recentMessages };
 }
 
 if (typeof previousFetch === 'function') {
@@ -110,4 +119,4 @@ if (typeof previousFetch === 'function') {
   };
 }
 
-module.exports = { MARKER, TIME_MARKER, JUMP_MARKER, CONTEXT_MARKER, isTheaterBody, splitHistoryEntries, buildStructuredMessages, currentShanghaiTime, buildTimelineInstruction };
+module.exports = { MARKER, TIME_MARKER, JUMP_MARKER, CONTEXT_MARKER, RECENT_MESSAGE_WINDOW, isTheaterBody, splitHistoryEntries, buildStructuredMessages, currentShanghaiTime, buildTimelineInstruction };
