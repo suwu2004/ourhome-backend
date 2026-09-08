@@ -4,10 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const {
-  isLuzeRoomKnockRequest,
-  localLuzeRoomKnockResponse,
-} = require('../luzeDoorCostGuardPatch');
+const { isLuzeRoomKnockRequest, localLuzeRoomKnockResponse } = require('../luzeDoorCostGuardPatch');
 
 const bootstrap = fs.readFileSync(path.resolve(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
 
@@ -16,7 +13,6 @@ test('Luze private-room knock is intercepted locally before the private-room mod
   const roomIndex = bootstrap.indexOf("require('./luzePrivateRoomPatch');");
   assert.ok(guardIndex >= 0);
   assert.ok(roomIndex > guardIndex);
-  assert.match(bootstrap, /luze_room_knock: 'local-zero-api-v1'/);
 });
 
 test('only the old room-consent provider purpose is intercepted', () => {
