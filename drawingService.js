@@ -46,13 +46,15 @@ function imageExtension(contentType) {
   return 'png';
 }
 
-function decodeBase64Image(value) {
+function decodeBase64Image(value, contentType = 'image/png') {
   const text = String(value || '').trim();
   if (!text) return null;
+  const normalized = text.replace(/\s+/g, '');
+  if (!normalized || normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return null;
   try {
-    const buffer = Buffer.from(text, 'base64');
+    const buffer = Buffer.from(normalized, 'base64');
     if (!buffer.length) return null;
-    return { buffer, contentType: 'image/png' };
+    return { buffer, contentType: String(contentType || 'image/png').split(';')[0] || 'image/png' };
   } catch {
     return null;
   }
@@ -63,17 +65,11 @@ function parseDataUrl(value) {
   if (!/^data:image\//i.test(text)) return null;
   const match = text.match(/^data:([^;,]+);base64,(.+)$/i);
   if (!match) return null;
-  try {
-    const buffer = Buffer.from(match[2], 'base64');
-    if (!buffer.length) return null;
-    return { buffer, contentType: match[1] };
-  } catch {
-    return null;
-  }
+  return decodeBase64Image(match[2], match[1]);
 }
 
 function looksLikeBase64(value) {
-  const text = String(value || '').trim();
+  const text = String(value || '').trim().replace(/\s+/g, '');
   return text.length >= 128 && text.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(text);
 }
 
@@ -83,22 +79,19 @@ function parseImagePayload(payload = {}) {
 
   function visit(value, key = '', depth = 0) {
     if (value == null || depth > maxDepth) return null;
-
     if (typeof value === 'string') {
       const text = value.trim();
       if (!text) return null;
       const dataUrl = parseDataUrl(text);
       if (dataUrl) return dataUrl;
       if (/^https?:\/\//i.test(text) && /(url|image|src|href|result|output|content|data)/i.test(key)) return { url: text };
-      if (/(b64|base64|image_data|imageData)/i.test(key) && looksLikeBase64(text)) return decodeBase64Image(text);
+      if (/(b64|base64|image_data|imageData)/i.test(key)) return decodeBase64Image(text);
       if (/(result|output|image|content|data)/i.test(key) && looksLikeBase64(text)) return decodeBase64Image(text);
       return null;
     }
-
     if (typeof value !== 'object') return null;
     if (seen.has(value)) return null;
     seen.add(value);
-
     if (Array.isArray(value)) {
       for (const item of value) {
         const result = visit(item, key, depth + 1);
@@ -106,17 +99,12 @@ function parseImagePayload(payload = {}) {
       }
       return null;
     }
-
-    const preferredKeys = [
-      'b64_json', 'b64Json', 'base64', 'base64_data', 'image_data', 'imageData',
-      'data_url', 'dataUrl', 'url', 'image_url', 'imageUrl', 'image', 'result', 'output',
-    ];
+    const preferredKeys = ['b64_json', 'b64Json', 'base64', 'base64_data', 'image_data', 'imageData', 'data_url', 'dataUrl', 'url', 'image_url', 'imageUrl', 'image', 'result', 'output'];
     for (const childKey of preferredKeys) {
       if (!(childKey in value)) continue;
       const result = visit(value[childKey], childKey, depth + 1);
       if (result) return result;
     }
-
     for (const [childKey, childValue] of Object.entries(value)) {
       if (preferredKeys.includes(childKey)) continue;
       const result = visit(childValue, childKey, depth + 1);
@@ -124,18 +112,12 @@ function parseImagePayload(payload = {}) {
     }
     return null;
   }
-
   return visit(payload);
 }
 
 async function imageConnection({ includeSecret = false } = {}) {
   const supabase = getSupabase();
-  const { data, error } = await supabase.from('service_connections')
-    .select('*')
-    .eq('kind', CONNECTION_KIND)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data, error } = await supabase.from('service_connections').select('*').eq('kind', CONNECTION_KIND).order('updated_at', { ascending: false }).limit(1).maybeSingle();
   if (error) throw error;
   if (!data) return null;
   let secret = null;
@@ -149,14 +131,7 @@ async function imageConnection({ includeSecret = false } = {}) {
 
 async function getDrawingConfig() {
   const connection = await imageConnection();
-  return {
-    id: connection?.id || null,
-    name: connection?.name || CONNECTION_NAME,
-    base_url: connection?.url || DEFAULT_BASE_URL,
-    model: compactLine(connection?.config?.model || DEFAULT_MODEL, 240),
-    enabled: connection ? connection.enabled !== false : true,
-    has_api_key: Boolean(connection?.secret_id),
-  };
+  return { id: connection?.id || null, name: connection?.name || CONNECTION_NAME, base_url: connection?.url || DEFAULT_BASE_URL, model: compactLine(connection?.config?.model || DEFAULT_MODEL, 240), enabled: connection ? connection.enabled !== false : true, has_api_key: Boolean(connection?.secret_id) };
 }
 
 async function saveDrawingConfig(input = {}) {
@@ -166,15 +141,7 @@ async function saveDrawingConfig(input = {}) {
   const apiKey = typeof input.api_key === 'string' ? input.api_key.trim() : '';
   if (!baseUrl) throw new Error('请填写画画 API 网址');
   if (!model) throw new Error('请填写画画模型');
-  const { data, error } = await getSupabase().rpc('ourhome_save_service_connection', {
-    p_id: existing?.id || null,
-    p_kind: CONNECTION_KIND,
-    p_name: CONNECTION_NAME,
-    p_url: baseUrl,
-    p_secret: apiKey || null,
-    p_enabled: input.enabled !== false,
-    p_config: { ...(existing?.config || {}), model },
-  });
+  const { data, error } = await getSupabase().rpc('ourhome_save_service_connection', { p_id: existing?.id || null, p_kind: CONNECTION_KIND, p_name: CONNECTION_NAME, p_url: baseUrl, p_secret: apiKey || null, p_enabled: input.enabled !== false, p_config: { ...(existing?.config || {}), model } });
   if (error) throw error;
   return getDrawingConfig();
 }
@@ -201,13 +168,7 @@ async function fetchGeneratedBytes(parsed) {
 }
 
 async function callImageProvider(runtime, prompt) {
-  const response = await fetch(imagesEndpoint(runtime.baseUrl), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.apiKey}`, 'X-OurHome-Call-Purpose': 'drawing-room' },
-    body: JSON.stringify({ model: runtime.model, prompt, n: 1 }),
-    signal: AbortSignal.timeout(120_000),
-  });
-
+  const response = await fetch(imagesEndpoint(runtime.baseUrl), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.apiKey}`, 'X-OurHome-Call-Purpose': 'drawing-room' }, body: JSON.stringify({ model: runtime.model, prompt, n: 1 }), signal: AbortSignal.timeout(120_000) });
   const contentType = response.headers.get('content-type') || '';
   if (!response.ok) {
     const rawError = await response.text();
@@ -216,19 +177,14 @@ async function callImageProvider(runtime, prompt) {
     const message = payload?.error?.message || payload?.message || rawError.slice(0, 500);
     throw new Error(`画画 API 暂时没有回应 (${response.status})${message ? `：${message}` : ''}`);
   }
-
-  // Some OpenAI-compatible gateways return the image bytes directly instead of JSON.
   if (/^image\//i.test(contentType)) {
     const arrayBuffer = await response.arrayBuffer();
     if (!arrayBuffer.byteLength || arrayBuffer.byteLength > MAX_IMAGE_BYTES) throw new Error('生成图片大小异常');
     return { buffer: Buffer.from(arrayBuffer), contentType: contentType.split(';')[0] || 'image/png' };
   }
-
   const raw = await response.text();
   let payload = null;
   try { payload = JSON.parse(raw.replace(/^\uFEFF/, '').trim()); } catch { payload = null; }
-
-  // A gateway may return a bare URL/data URL/base64 string instead of a JSON object.
   const parsed = parseImagePayload(payload ?? { output: raw });
   if (!parsed) {
     const detail = compactLine(raw, 260);
