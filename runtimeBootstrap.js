@@ -51,11 +51,14 @@ require('./theaterPromptBudgetPatch');
 // Final provider-boundary guard: keep Theater generation inside the same
 // 50-round / 100-message ceiling used by formal Chat.
 require('./theaterContextWindowPatch');
-// Last provider-boundary guard: prevent the server's generous fallback
-// max_tokens from overriding the Theater reply-length setting.
+// Provider token guard: keep the provider budget close to the configured
+// Theater reply-length setting instead of relying on a large fallback.
 require('./theaterReplyLengthGuardPatch');
 // Finally, carry formal Chat's provider-native thinking transport into Theater.
 // This never creates a second completion just to manufacture a thinking panel.
 require('./theaterThinkingPatch');
+// Persisted-output guard: trim the actual Theater assistant text before the
+// Supabase insert, so the UI setting is also respected at the storage boundary.
+require('./theaterReplyHardCapPatch');
 
 module.exports = { renderFrontdoorPatch };
