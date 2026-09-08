@@ -9,7 +9,9 @@ const TIME_MARKER = '【小剧场当前时间·Asia/Shanghai】';
 const JUMP_MARKER = '【小剧场时间线·跳时规则】';
 const CONTEXT_MARKER = '【小剧场请求上下文】';
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
-const RECENT_MESSAGE_WINDOW = 30;
+// Keep the same 50-round / 100-message ceiling as formal Chat. The separate
+// token budget remains the final limiter when messages are long.
+const RECENT_MESSAGE_WINDOW = 100;
 const RECENT_RE = /【最近互动记录】\s*([\s\S]*?)(?=\n【[^\n】]+刚刚发来】)/u;
 const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*?)(?=\n\s*【玩法】|\n\s*【篇幅要求】|$)/u;
 const EARLIER_DIGEST_RE = /(?:^|\n)【较早剧情提要】\s*[\s\S]*?(?=\n【最近互动记录】)/u;
