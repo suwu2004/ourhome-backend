@@ -1,12 +1,12 @@
 'use strict';
 
 // Theater continuity must come from the literal recent user/assistant turns.
-// The persistent memory layer is still stored for durable facts, but its
-// generated summary must not compete with the live transcript at the provider.
+// Keep static lore bounded, but give live dialogue the same 15k-token context
+// budget as formal Chat so the two rooms obey the same context economy.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
 const INTERACTIVE_CONTEXT_RE = /【小剧场请求上下文】/u;
-const MAX_LIVE_MESSAGE_TOKENS = 9500;
+const MAX_LIVE_MESSAGE_TOKENS = 15000;
 const MIN_LIVE_MESSAGES = 2;
 const BLOCK_LIMITS = new Map([
   ['【小剧场通用规则】', 700],
