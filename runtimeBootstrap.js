@@ -14,15 +14,9 @@ require('./thinkingTransportPatch');
 require('./apiUsageAuditPatch');
 require('./nonChatBudgetPatch');
 require('./backgroundAiCostGuardPatch');
-// Merge accidental concurrent byte-identical provider calls into one upstream
-// request. Streaming and sequential calls remain untouched.
 require('./modelCallSingleflightPatch');
-// Theater memory is a sparse checkpoint, not a second reply engine.
-// The economy patch only decides when a checkpoint is worthwhile.
 require('./theaterMemoryEconomyPatch');
 require('./theaterMemoryPatch');
-// The single authoritative Theater continuity layer: real user/assistant turns
-// plus one compact timeline instruction at the final provider boundary.
 require('./theaterRawTurnsPatch');
 require('./theaterPromptAutonomyPatch');
 const { guardRenderFrontend } = require('./renderFrontendIntegrityGuard');
@@ -50,6 +44,9 @@ require('./drawingRoutePatch');
 require('./luzePrivateRoomPatch');
 require('./luzeAutonomySettingsPatch');
 require('./intimacyFlowPatch');
+// Reserve provider context for actual recent Theater dialogue after all static
+// lore/memory layers have been assembled. This never trims user/assistant turns.
+require('./theaterPromptBudgetPatch');
 // Final provider-boundary guard: keep Theater generation inside the intended
 // recent-dialogue window after all other fetch wrappers have had their chance.
 require('./theaterContextWindowPatch');
