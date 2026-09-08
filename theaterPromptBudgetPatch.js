@@ -1,23 +1,24 @@
 'use strict';
 
-// Keep static Theater setup and generated memory from crowding out the actual
-// conversational turns. This is a context-budget guard, not a continuity/
-// prompt-anchor workaround: recent user/assistant messages remain untouched.
+// Theater continuity has two separate budgets: a small static-context budget
+// and a larger live-dialogue budget. Static lore/memory must never be allowed
+// to consume the provider context that the actual user/assistant exchange needs.
+// This is a context-budget guard, not a continuity/prompt-anchor workaround.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引擎/u;
 const INTERACTIVE_CONTEXT_RE = /【小剧场请求上下文】/u;
+const MAX_LIVE_MESSAGE_TOKENS = 8500;
+const MIN_LIVE_MESSAGES = 2;
 
 const BLOCK_LIMITS = new Map([
-  ['【小剧场通用规则】', 5000],
-  ['【完整世界书】', 9000],
-  ['【世界观/剧情设定】', 4500],
-  ['【角色卡/关系】', 4500],
-  ['【禁区/写作规则】', 3500],
-  // Memory is useful for durable facts, but it is not a substitute for the
-  // live transcript. The previous uncapped memory block could grow to tens
-  // of thousands of characters and make the model attend to summaries instead
-  // of the actual preceding dialogue.
-  ['【角色与剧情记忆】', 6500],
+  ['【小剧场通用规则】', 700],
+  ['【完整世界书】', 1200],
+  ['【世界观/剧情设定】', 500],
+  ['【角色卡/关系】', 600],
+  ['【禁区/写作规则】', 400],
+  // Memory is durable reference material, not live conversation. Keep it
+  // deliberately small so the literal preceding dialogue wins provider attention.
+  ['【角色与剧情记忆】', 1800],
 ]);
 
 function textOf(value) {
@@ -26,11 +27,22 @@ function textOf(value) {
   return value.map(item => typeof item === 'string' ? item : item?.text || item?.content || '').filter(Boolean).join('\n');
 }
 
+function estimateTextTokens(value) {
+  const text = String(value || '');
+  if (!text) return 0;
+  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+  return cjk + Math.ceil((text.length - cjk) / 4);
+}
+
+function estimateMessageTokens(message = {}) {
+  return 16 + estimateTextTokens(textOf(message.content));
+}
+
 function capText(value, maxChars) {
   const text = String(value || '');
   if (text.length <= maxChars) return text;
-  const head = Math.max(800, Math.floor(maxChars * 0.35));
-  const tail = Math.max(800, maxChars - head);
+  const head = Math.max(240, Math.floor(maxChars * 0.35));
+  const tail = Math.max(240, maxChars - head);
   return `${text.slice(0, head)}\n\n……（该静态设定过长，中间内容省略；最近真实对话不受此限制）……\n\n${text.slice(-tail)}`;
 }
 
@@ -51,6 +63,19 @@ function trimTheaterStaticContext(system) {
   return text;
 }
 
+function trimRecentTheaterMessages(messages, maxTokens = MAX_LIVE_MESSAGE_TOKENS) {
+  const list = Array.isArray(messages) ? messages.slice() : [];
+  if (list.length <= MIN_LIVE_MESSAGES) return list;
+  let total = list.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+  let index = 0;
+  while (total > maxTokens && list.length - index > MIN_LIVE_MESSAGES) {
+    total -= estimateMessageTokens(list[index]);
+    list[index] = null;
+    index += 1;
+  }
+  return list.slice(index).filter(Boolean);
+}
+
 function isInteractiveTheaterBody(body) {
   return Array.isArray(body?.messages)
     && body.messages.length > 0
@@ -60,8 +85,11 @@ function isInteractiveTheaterBody(body) {
 
 function patchBody(body) {
   if (!isInteractiveTheaterBody(body)) return body;
-  const system = trimTheaterStaticContext(textOf(body.system));
-  return system === textOf(body.system) ? body : { ...body, system };
+  const originalSystem = textOf(body.system);
+  const system = trimTheaterStaticContext(originalSystem);
+  const messages = trimRecentTheaterMessages(body.messages);
+  if (system === originalSystem && messages.length === body.messages.length) return body;
+  return { ...body, system, messages };
 }
 
 if (typeof previousFetch === 'function') {
@@ -78,4 +106,16 @@ if (typeof previousFetch === 'function') {
   };
 }
 
-module.exports = { BLOCK_LIMITS, capText, capSection, trimTheaterStaticContext, isInteractiveTheaterBody, patchBody };
+module.exports = {
+  BLOCK_LIMITS,
+  MAX_LIVE_MESSAGE_TOKENS,
+  MIN_LIVE_MESSAGES,
+  estimateTextTokens,
+  estimateMessageTokens,
+  capText,
+  capSection,
+  trimTheaterStaticContext,
+  trimRecentTheaterMessages,
+  isInteractiveTheaterBody,
+  patchBody,
+};
