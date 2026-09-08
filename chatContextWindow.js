@@ -2,9 +2,6 @@
 
 const CJK_RE = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g;
 const HISTORY_TIMELINE_MARKER_RE = /(?:^|\n)\s*\[历史时间[：:]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g;
-// Only protect concrete recent-life statements. Future-only phrases such as
-// “明天/后天” are deliberately excluded: they describe plans, not facts that
-// should be smuggled into the working-memory window.
 const RECENT_LIFE_FACT_RE = /(?:我|今天|昨天|前天|刚才|刚刚|早上|上午|中午|下午|晚上|昨晚|今早|今晚|早餐|早饭|午饭|午餐|晚饭|晚餐|吃了|喝了|睡了|起床|回家|出门|上班|下班|上课|下课|买了|去了|回来|到家|在家|路上)/u;
 const RECENT_LIFE_PLAN_RE = /(?:明天|后天|以后|下周|周末|准备|打算|想要|计划|可能会|应该会)/u;
 const RECENT_LIFE_CONTEXT_HOURS = 72;
@@ -90,13 +87,11 @@ function selectRecentLifeHistory(history = [], options = {}) {
 
 function selectRecentHistory(history = [], options = {}) {
   const list = Array.isArray(history) ? history : [];
-  const maxRounds = normalizePositiveInteger(options.maxRounds, 48, 500);
+  const maxRounds = normalizePositiveInteger(options.maxRounds, 50, 500);
   const maxMessages = Math.max(2, maxRounds * 2);
   const maxTokens = normalizePositiveInteger(options.maxTokens, 0, 1_000_000);
   const minMessages = Math.max(1, Math.min(list.length, normalizePositiveInteger(options.minMessages, 2, 8)));
 
-  // First keep the normal chronological window. Recent-life messages are protected only
-  // after this selection, so they never steal budget from the core recent conversation.
   let selected = list.slice(-maxMessages);
   const now = Date.now();
   const recentFacts = list
@@ -119,9 +114,6 @@ function selectRecentHistory(history = [], options = {}) {
   const extraIds = new Set(lifeExtras.map(message => message?.id).filter(Boolean));
   let total = selected.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
 
-  // Trim oldest ordinary history first. Never delete a protected recent-life fact while
-  // there is ordinary history left to trim. This avoids the previous double-budget logic
-  // where normal history was reduced up front and then life facts were trimmed again.
   for (let index = 0; index < selected.length && total > maxTokens; index += 1) {
     const message = selected[index];
     if (extraIds.has(message?.id)) continue;
@@ -132,7 +124,6 @@ function selectRecentHistory(history = [], options = {}) {
   }
   selected = selected.filter(Boolean);
 
-  // If the budget is still exceeded, only then trim the oldest protected facts.
   for (let index = 0; index < selected.length && total > maxTokens; index += 1) {
     if (!extraIds.has(selected[index]?.id)) continue;
     total -= estimateMessageTokens(selected[index]);
