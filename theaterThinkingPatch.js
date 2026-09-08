@@ -61,6 +61,26 @@ function cacheLettersPayload(payload) {
     if (row?.author === '泽' && row?.reasoning_content) remember(row.content, row.reasoning_content);
   });
 }
+function cacheProviderPayload(payload) {
+  const thinking = extractThinkingText(payload);
+  if (!thinking) return;
+  const texts = [];
+  const collect = value => {
+    if (value == null) return;
+    if (typeof value === 'string') { texts.push(value); return; }
+    if (Array.isArray(value)) { value.forEach(collect); return; }
+    if (typeof value === 'object') {
+      if (typeof value.text === 'string') texts.push(value.text);
+      collect(value.content);
+      collect(value.message?.content);
+      collect(value.choices);
+      collect(value.output);
+    }
+  };
+  collect(payload);
+  const answer = texts.find(text => text.trim() && text.trim() !== thinking.trim()) || '';
+  if (answer) remember(answer, thinking);
+}
 
 if (typeof previousFetch === 'function') {
   globalThis.fetch = async function theaterThinkingFetch(input, init = {}) {
@@ -81,26 +101,12 @@ if (typeof previousFetch === 'function') {
       const prepared = isTheaterProviderBody(body) ? maybeEnableThinking(body) : body;
       const response = await previousFetch(input, prepared === body ? init : { ...init, body: JSON.stringify(prepared) });
       if (isTheaterProviderBody(prepared)) {
-        response.clone().json().then(payload => {
-          const thinking = extractThinkingText(payload);
-          if (!thinking) return;
-          const texts = [];
-          const collect = value => {
-            if (value == null) return;
-            if (typeof value === 'string') { texts.push(value); return; }
-            if (Array.isArray(value)) { value.forEach(collect); return; }
-            if (typeof value === 'object') {
-              if (typeof value.text === 'string') texts.push(value.text);
-              collect(value.content);
-              collect(value.message?.content);
-              collect(value.choices);
-              collect(value.output);
-            }
-          };
-          collect(payload);
-          const answer = texts.find(text => text.trim() && text.trim() !== thinking.trim()) || '';
-          if (answer) remember(answer, thinking);
-        }).catch(() => {});
+        try {
+          const payload = await response.clone().json();
+          cacheProviderPayload(payload);
+        } catch {
+          // Some relays return non-JSON errors; the original response still flows through unchanged.
+        }
       }
       return response;
     } catch (error) {
@@ -119,4 +125,4 @@ try {
   console.warn('[theater:thinking] response hook unavailable:', error.message);
 }
 
-module.exports = { THEATER_RE, modelSupportsNativeThinking, maybeEnableThinking, remember, lookup, enrichResponseBody, cacheLettersPayload };
+module.exports = { THEATER_RE, modelSupportsNativeThinking, maybeEnableThinking, remember, lookup, enrichResponseBody, cacheLettersPayload, cacheProviderPayload };
