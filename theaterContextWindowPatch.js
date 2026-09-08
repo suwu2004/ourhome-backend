@@ -18,9 +18,12 @@ function isTheaterBody(body) {
 }
 
 function trimToRecentTheaterWindow(body) {
-  if (!isTheaterBody(body)) return body;
-  if (body.messages.length <= RECENT_MESSAGE_WINDOW) return body;
-  return { ...body, messages: body.messages.slice(-RECENT_MESSAGE_WINDOW) };
+  if (!isTheaterBody(body) || body.messages.length <= RECENT_MESSAGE_WINDOW) return body;
+  let messages = body.messages.slice(-RECENT_MESSAGE_WINDOW);
+  // Never start the final provider context with a dangling assistant reply.
+  // If the hard window cuts through a turn pair, drop that orphan reply too.
+  if (messages[0]?.role === 'assistant') messages = messages.slice(1);
+  return { ...body, messages };
 }
 
 if (typeof previousFetch === 'function') {
