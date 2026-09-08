@@ -5,7 +5,7 @@
 // server and prevent a generous fallback max_tokens from silently overriding it.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
-const LENGTH_RE = /(?:完整回复至少|最低长度约为)\s*(\d+)\s*字(?:左右|的最低篇幅)?/u;
+const LENGTH_RE = /(?:完整回复至少|最低长度约为|当前设置的最低长度约为)\s*(\d+)\s*(?:个中文字符|字)(?:左右|的最低篇幅)?/u;
 const MAX_MULTIPLIER = 1.25;
 const SAFETY_TOKENS = 40;
 const MIN_PROVIDER_TOKENS = 128;
