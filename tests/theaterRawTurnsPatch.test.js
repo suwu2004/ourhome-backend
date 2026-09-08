@@ -36,10 +36,11 @@ test('剧场最近原始对话被拆成真正的 user/assistant 消息', () => {
   assert.match(result.system, /【小剧场请求上下文】/);
   assert.doesNotMatch(result.system, /【较早剧情提要】/);
   assert.doesNotMatch(result.system, /两人昨天已经抵达客栈/);
-  assert.equal(result.messages.length, 2);
-  assert.deepEqual(result.messages.map(item => item.role), ['user', 'assistant']);
+  assert.equal(result.messages.length, 3);
+  assert.deepEqual(result.messages.map(item => item.role), ['user', 'assistant', 'user']);
   assert.equal(result.messages[0].content, '我把药瓶放到桌上。');
-  assert.equal(result.messages[1].content, '我接过药瓶，低头看了一眼。\n\n你刚才说会陪我回去。\n\n【当前剧情时间待判定】\n那你现在还算数吗？');
+  assert.equal(result.messages[1].content, '我接过药瓶，低头看了一眼。');
+  assert.equal(result.messages[2].content, '你刚才说会陪我回去。\n\n【当前剧情时间待判定】\n那你现在还算数吗？');
 });
 
 test('同角色连续原始记录会合并，避免破坏 Anthropic 消息交替', () => {
@@ -85,8 +86,6 @@ test('最近互动超过窗口时保留最后18条真实消息，而不是只留
     system: '你是 OurHome 的“小剧场”互动写作引擎。',
     messages: [{ role: 'user', content: `【剧本名】测试\n\n【最近互动记录】\n${history}\n\n【叶檀刚刚发来】当前输入\n\n【玩法】\n互动。` }],
   });
-  // The 18-message raw window can start on an assistant turn; we deliberately
-  // remove that orphan, leaving 17 valid turns plus the live input boundary.
   assert.equal(result.messages.length, 17);
   assert.match(result.messages[0].content, /用户历史6/);
   assert.match(result.messages.at(-2).content, /角色回应23/);
