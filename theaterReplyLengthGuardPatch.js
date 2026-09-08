@@ -9,65 +9,23 @@ const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎
 const LENGTH_RE = /最低长度约为\s*(\d+)\s*个中文字符/u;
 const MAX_MULTIPLIER = 1.25;
 const SAFETY_TOKENS = 40;
-const MIN_PROVIDER_TOKENS = 256;
+const MIN_PROVIDER_TOKENS = 128;
 const MAX_PROVIDER_TOKENS = 5200;
-
-function textOf(value) {
-  if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return '';
-  return value.map(item => typeof item === 'string' ? item : item?.text || item?.content || '').filter(Boolean).join('\n');
-}
-
-function isTheaterBody(body) {
-  return Array.isArray(body?.messages)
-    && body.messages.length > 0
-    && THEATER_RE.test(textOf(body.system));
-}
-
-function requestedReplyChars(body) {
-  const text = `${textOf(body.system)}\n${textOf(body.messages?.at(-1)?.content)}`;
-  const match = text.match(LENGTH_RE);
-  return match ? Number(match[1]) : 0;
-}
-
+function textOf(value) { if (typeof value === 'string') return value; if (!Array.isArray(value)) return ''; return value.map(item => typeof item === 'string' ? item : item?.text || item?.content || '').filter(Boolean).join('\n'); }
+function isTheaterBody(body) { return Array.isArray(body?.messages) && body.messages.length > 0 && THEATER_RE.test(textOf(body.system)); }
+function requestedReplyChars(body) { const text = `${textOf(body.system)}\n${textOf(body.messages?.at(-1)?.content)}`; const match = text.match(LENGTH_RE); return match ? Number(match[1]) : 0; }
 function capProviderTokens(body) {
   if (!isTheaterBody(body)) return body;
   const requestedChars = requestedReplyChars(body);
   if (!Number.isFinite(requestedChars) || requestedChars <= 0) return body;
-
   const configured = Number(body.max_tokens ?? body.maxTokens);
   if (!Number.isFinite(configured) || configured <= 0) return body;
-
-  const budget = Math.min(
-    MAX_PROVIDER_TOKENS,
-    Math.max(MIN_PROVIDER_TOKENS, Math.ceil(requestedChars * MAX_MULTIPLIER + SAFETY_TOKENS)),
-  );
+  const budget = Math.min(MAX_PROVIDER_TOKENS, Math.max(MIN_PROVIDER_TOKENS, Math.ceil(requestedChars * MAX_MULTIPLIER + SAFETY_TOKENS)));
   if (configured <= budget) return body;
-
   const next = { ...body };
   if ('max_tokens' in next) next.max_tokens = budget;
   if ('maxTokens' in next) next.maxTokens = budget;
   return next;
 }
-
-if (typeof previousFetch === 'function') {
-  globalThis.fetch = async function theaterReplyLengthGuardFetch(input, init = {}) {
-    if (typeof init?.body !== 'string') return previousFetch(input, init);
-    try {
-      const body = JSON.parse(init.body);
-      const capped = capProviderTokens(body);
-      return previousFetch(input, capped === body ? init : { ...init, body: JSON.stringify(capped) });
-    } catch (error) {
-      console.warn('[theater:reply-length-guard] skipped:', error.message);
-      return previousFetch(input, init);
-    }
-  };
-}
-
-module.exports = {
-  MAX_MULTIPLIER,
-  SAFETY_TOKENS,
-  requestedReplyChars,
-  capProviderTokens,
-  isTheaterBody,
-};
+if (typeof previousFetch === 'function') { globalThis.fetch = async function theaterReplyLengthGuardFetch(input, init = {}) { if (typeof init?.body !== 'string') return previousFetch(input, init); try { const body = JSON.parse(init.body); const capped = capProviderTokens(body); return previousFetch(input, capped === body ? init : { ...init, body: JSON.stringify(capped) }); } catch (error) { console.warn('[theater:reply-length-guard] skipped:', error.message); return previousFetch(input, init); } }; }
+module.exports = { MAX_MULTIPLIER, SAFETY_TOKENS, requestedReplyChars, capProviderTokens, isTheaterBody };
