@@ -1,6 +1,7 @@
 'use strict';
 
-const sharp = require('sharp');
+let sharp = null;
+try { sharp = require('sharp'); } catch { sharp = null; }
 
 const DEFAULT_MIN_BYTES = 768 * 1024;
 const DEFAULT_MAX_EDGE = 2048;
@@ -13,9 +14,7 @@ function normalizeImageType(value) {
   return type === 'image/jpg' ? 'image/jpeg' : type;
 }
 
-function isCompressibleImageType(value) {
-  return STATIC_IMAGE_TYPES.has(normalizeImageType(value));
-}
+function isCompressibleImageType(value) { return STATIC_IMAGE_TYPES.has(normalizeImageType(value)); }
 
 function outputOptions(type, quality, effort = 4) {
   if (type === 'image/jpeg') return { format: 'jpeg', options: { quality, mozjpeg: true } };
@@ -25,70 +24,40 @@ function outputOptions(type, quality, effort = 4) {
 }
 
 async function encodeImage(input, type, { maxEdge, quality }) {
+  if (!sharp) throw new Error('sharp-unavailable');
   const { format, options } = outputOptions(type, quality);
   return sharp(input, { failOn: 'none', limitInputPixels: 100_000_000 })
-    .rotate()
-    .resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
-    .toFormat(format, options)
-    .toBuffer();
+    .rotate().resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
+    .toFormat(format, options).toBuffer();
 }
 
-async function compressImageBuffer(input, contentType, {
-  minBytes = DEFAULT_MIN_BYTES,
-  maxEdge = DEFAULT_MAX_EDGE,
-  targetBytes = DEFAULT_TARGET_BYTES,
-  minSavingsRatio = DEFAULT_MIN_SAVINGS_RATIO,
-} = {}) {
+async function compressImageBuffer(input, contentType, { minBytes = DEFAULT_MIN_BYTES, maxEdge = DEFAULT_MAX_EDGE, targetBytes = DEFAULT_TARGET_BYTES, minSavingsRatio = DEFAULT_MIN_SAVINGS_RATIO } = {}) {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input || []);
   const type = normalizeImageType(contentType);
   if (!isCompressibleImageType(type)) return { buffer, contentType: type || contentType, compressed: false, reason: 'unsupported' };
   if (buffer.length < Math.max(1, minBytes)) return { buffer, contentType: type, compressed: false, reason: 'small' };
+  if (!sharp) return { buffer, contentType: type, compressed: false, reason: 'dependency-unavailable' };
 
   let metadata;
-  try {
-    metadata = await sharp(buffer, { failOn: 'none', limitInputPixels: 100_000_000 }).metadata();
-  } catch {
-    return { buffer, contentType: type, compressed: false, reason: 'decode-failed' };
-  }
+  try { metadata = await sharp(buffer, { failOn: 'none', limitInputPixels: 100_000_000 }).metadata(); }
+  catch { return { buffer, contentType: type, compressed: false, reason: 'decode-failed' }; }
   if (Number(metadata.pages || 1) > 1) return { buffer, contentType: type, compressed: false, reason: 'animated' };
 
   const attempts = type === 'image/png'
     ? [{ maxEdge, quality: 100 }, { maxEdge: Math.min(maxEdge, 1600), quality: 100 }]
-    : [
-      { maxEdge, quality: 82 },
-      { maxEdge: Math.min(maxEdge, 1728), quality: 78 },
-      { maxEdge: Math.min(maxEdge, 1440), quality: 74 },
-    ];
+    : [{ maxEdge, quality: 82 }, { maxEdge: Math.min(maxEdge, 1728), quality: 78 }, { maxEdge: Math.min(maxEdge, 1440), quality: 74 }];
   let smallest = buffer;
   for (const attempt of attempts) {
     try {
       const candidate = await encodeImage(buffer, type, attempt);
       if (candidate.length < smallest.length) smallest = candidate;
       if (candidate.length <= targetBytes) break;
-    } catch {
-      return { buffer, contentType: type, compressed: false, reason: 'encode-failed' };
-    }
+    } catch { return { buffer, contentType: type, compressed: false, reason: 'encode-failed' }; }
   }
 
   const savedBytes = buffer.length - smallest.length;
-  if (savedBytes <= 0 || savedBytes / buffer.length < minSavingsRatio) {
-    return { buffer, contentType: type, compressed: false, reason: 'low-savings' };
-  }
-  return {
-    buffer: smallest,
-    contentType: type,
-    compressed: true,
-    originalBytes: buffer.length,
-    outputBytes: smallest.length,
-    savedBytes,
-  };
+  if (savedBytes <= 0 || savedBytes / buffer.length < minSavingsRatio) return { buffer, contentType: type, compressed: false, reason: 'low-savings' };
+  return { buffer: smallest, contentType: type, compressed: true, originalBytes: buffer.length, outputBytes: smallest.length, savedBytes };
 }
 
-module.exports = {
-  DEFAULT_MIN_BYTES,
-  DEFAULT_MAX_EDGE,
-  DEFAULT_TARGET_BYTES,
-  normalizeImageType,
-  isCompressibleImageType,
-  compressImageBuffer,
-};
+module.exports = { DEFAULT_MIN_BYTES, DEFAULT_MAX_EDGE, DEFAULT_TARGET_BYTES, normalizeImageType, isCompressibleImageType, compressImageBuffer };
