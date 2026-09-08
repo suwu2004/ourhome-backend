@@ -77,8 +77,8 @@ test('上一条历史也是用户消息时，新输入并入同一用户边界�
   assert.match(result.messages[0].content, /下一句。/);
 });
 
-test('最近互动超过30条窗口时保留最近真实消息，而不是只留下当前输入', () => {
-  const history = Array.from({ length: 34 }, (_, index) => index % 2 === 0
+test('最近互动超过50轮窗口时保留最近真实消息，而不是只留下当前输入', () => {
+  const history = Array.from({ length: 110 }, (_, index) => index % 2 === 0
     ? `叶檀：用户历史${index}`
     : `陆泽：角色回应${index}`
   ).join('\n\n');
@@ -86,8 +86,8 @@ test('最近互动超过30条窗口时保留最近真实消息，而不是只留
     system: '你是 OurHome 的“小剧场”互动写作引擎。',
     messages: [{ role: 'user', content: `【剧本名】测试\n\n【最近互动记录】\n${history}\n\n【叶檀刚刚发来】当前输入\n\n【玩法】\n互动。` }],
   });
-  assert.equal(result.messages.length, 29);
-  assert.match(result.messages[0].content, /用户历史6/);
-  assert.match(result.messages.at(-2).content, /角色回应33/);
+  assert.equal(result.messages.length, 99);
+  assert.match(result.messages[0].content, /用户历史12/);
+  assert.match(result.messages.at(-2).content, /角色回应109/);
   assert.match(result.messages.at(-1).content, /当前输入/);
 });
