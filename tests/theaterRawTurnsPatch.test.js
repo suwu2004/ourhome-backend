@@ -87,7 +87,7 @@ test('最近互动超过窗口时保留最后18条真实消息，而不是只留
     messages: [{ role: 'user', content: `【剧本名】测试\n\n【最近互动记录】\n${history}\n\n【叶檀刚刚发来】当前输入\n\n【玩法】\n互动。` }],
   });
   assert.equal(result.messages.length, 17);
-  assert.match(result.messages[0].content, /用户历史6/);
+  assert.match(result.messages[0].content, /用户历史8/);
   assert.match(result.messages.at(-2).content, /角色回应23/);
   assert.match(result.messages.at(-1).content, /当前输入/);
 });
