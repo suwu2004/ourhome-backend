@@ -11,7 +11,7 @@ const THEATER_RE = /OurHome 的[“"]小剧场[”"](?:长文|互动)写作引�
 const RECENT_MESSAGE_WINDOW = 18;
 const RECENT_RE = /【最近互动记录】\s*([\s\S]*?)(?=\n【[^\n】]+刚刚发来】)/u;
 const CURRENT_RE = /【([^\n】]+)刚刚发来】\s*([\s\S]*)$/u;
-const EARLIER_DIGEST_RE = /【较早剧情提要】\s*[\s\S]*?(?=\n【最近互动记录】)/u;
+const EARLIER_DIGEST_RE = /(?:^|\n)【较早剧情提要】\s*[\s\S]*?(?=\n【最近互动记录】)/u;
 
 function textOf(value) {
   if (typeof value === 'string') return value;
@@ -81,9 +81,14 @@ function appendCurrentUserTurn(historyMessages, currentText) {
 
 function buildStructuredMessages(body) {
   const last = body.messages[body.messages.length - 1];
-  const prompt = textOf(last?.content);
-  if (!prompt || prompt.includes(MARKER)) return body;
+  const originalPrompt = textOf(last?.content);
+  if (!originalPrompt || originalPrompt.includes(MARKER)) return body;
 
+  // Remove the old sampled digest BEFORE taking the setup prefix. Doing it
+  // after prompt.slice(0, recentStart) cannot match the look-ahead for the
+  // following 最近互动记录 block, so the supposedly removed 42-message digest
+  // would silently remain in system and compete with the live dialogue.
+  const prompt = originalPrompt.replace(EARLIER_DIGEST_RE, '').trim();
   const recentMatch = prompt.match(RECENT_RE);
   const currentMatch = prompt.match(CURRENT_RE);
   if (!recentMatch || !currentMatch) return body;
@@ -98,11 +103,10 @@ function buildStructuredMessages(body) {
   if (recentStart < 0 || currentStart <= recentStart) return body;
 
   // The server-side Theater history builder also creates a “较早剧情提要”
-  // containing up to 42 older messages. That block used to survive here and
-  // bypass the recent-N window, allowing an old scene to compete with the live
-  // conversation. It is deliberately discarded at the provider boundary.
-  // Sparse Theater memory remains available through its dedicated memory layer.
-  const setup = prompt.slice(0, recentStart).replace(EARLIER_DIGEST_RE, '').trim();
+  // containing up to 42 older messages. It is discarded at the provider
+  // boundary; sparse Theater memory remains available through its dedicated
+  // memory layer.
+  const setup = prompt.slice(0, recentStart).trim();
   let system = textOf(body.system);
   const bookTitle = setup.match(/【剧本名】\s*\n([^\n]+)/u)?.[1]?.trim() || '';
   const nameBlock = setup.match(/【本书称呼】\s*\n([^\n：:]+)[：:]叶檀[^\n]*\n([^\n：:]+)[：:]/u);
