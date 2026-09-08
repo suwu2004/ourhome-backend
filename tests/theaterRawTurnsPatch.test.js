@@ -58,3 +58,13 @@ test('当前输入已经存在于最近记录时不重复发送', () => {
   assert.equal(result.messages.length, 3);
   assert.equal(result.messages.at(-1).content, '最后一句。');
 });
+
+test('上一条历史也是用户消息时，新输入并入同一用户边界而不制造 user-user', () => {
+  const result = buildStructuredMessages({
+    system: '你是 OurHome 的“小剧场”互动写作引擎。',
+    messages: [{ role: 'user', content: `【剧本名】测试\n\n【最近互动记录】\n叶檀：上一句。\n\n【叶檀刚刚发来】\n下一句。` }],
+  });
+  assert.deepEqual(result.messages.map(item => item.role), ['user']);
+  assert.match(result.messages[0].content, /上一句。/);
+  assert.match(result.messages[0].content, /下一句。/);
+});
