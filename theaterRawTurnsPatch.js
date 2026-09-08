@@ -31,10 +31,17 @@ function parseHistoryChunk(item) {
 function splitHistoryEntries(text) {
   const raw = String(text || '').trim();
   if (!raw || raw === '（还没有正式开始。）') return [];
-  const numberedChunks = raw.split(/\n(?=\s*\d+\.\s*)/u).map(item => item.trim()).filter(Boolean);
-  const numberedEntries = numberedChunks.map(parseHistoryChunk).filter(Boolean);
-  if (numberedEntries.length === numberedChunks.length && numberedEntries.length > 0) return numberedEntries;
-  return raw.split(/\n\n(?=(?:\d+\.\s*)?(?:【[^】]+】)?[^\n]{1,80}：)/u).map(item => parseHistoryChunk(item)).filter(Boolean);
+
+  // Numbered history is unambiguous. Unnumbered history must be split before
+  // parsing so the first speaker cannot greedily swallow later speaker labels.
+  if (/^\s*\d+\.\s*/u.test(raw)) {
+    return raw.split(/\n(?=\s*\d+\.\s*)/u).map(parseHistoryChunk).filter(Boolean);
+  }
+
+  return raw
+    .split(/\n\s*(?=(?:【[^】]+】)?[^：\n]{1,80}：)/u)
+    .map(parseHistoryChunk)
+    .filter(Boolean);
 }
 
 function currentShanghaiTime() {
@@ -81,7 +88,7 @@ function buildStructuredMessages(body) {
   if (previousLast?.role === 'user') {
     const normalizedA = previousLast.content.replace(TIME_PREFIX_RE, '').replace(/\s+/gu, ' ').trim();
     const normalizedB = currentText.replace(/\s+/gu, ' ').trim();
-    if (!normalizedA.endsWith(normalizedB)) previousLast.content = `${previousLast.content}\n\n${currentStamp}`;
+    if (!normalizedA.includes(normalizedB)) previousLast.content = `${previousLast.content}\n\n${currentStamp}`;
   } else {
     historyMessages.push({ role: 'user', content: currentStamp });
   }
