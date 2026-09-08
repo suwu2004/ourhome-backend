@@ -5,6 +5,7 @@
 // the actual assistant content before it is persisted, so a provider cannot
 // silently return a much longer Theater reply.
 const previousFetch = globalThis.fetch;
+const { lookup: lookupThinking } = require('./theaterThinkingPatch');
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
 const SUPABASE_LETTERS_RE = /\/rest\/v1\/letters(?:\?|$)/i;
 const THEATER_MESSAGE_CATEGORY = '小剧场';
@@ -65,7 +66,11 @@ function capAssistantInsert(body) {
   if (!body || body.category !== THEATER_MESSAGE_CATEGORY || body.author !== '泽' || typeof body.content !== 'string') return body;
   const limit = lookup(body.content);
   if (!limit || body.content.length <= limit) return body;
-  return { ...body, content: trimAtNaturalBoundary(body.content, limit) };
+  const trimmed = trimAtNaturalBoundary(body.content, limit);
+  const thinking = lookupThinking(body.content);
+  return thinking
+    ? { ...body, content: trimmed, reasoning_content: thinking }
+    : { ...body, content: trimmed };
 }
 
 if (typeof previousFetch === 'function') {
