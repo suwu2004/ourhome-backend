@@ -4,7 +4,7 @@
 // The persistent memory layer is still stored for durable facts, but its
 // generated summary must not compete with the live transcript at the provider.
 const previousFetch = globalThis.fetch;
-const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
+const THEATER_RE = /OurHome 的[“\"]小剧场[”](?:长文|互动)写作引擎/u;
 const INTERACTIVE_CONTEXT_RE = /【小剧场请求上下文】/u;
 const MAX_LIVE_MESSAGE_TOKENS = 9500;
 const MIN_LIVE_MESSAGES = 2;
@@ -26,7 +26,7 @@ function textOf(value) {
 function estimateTextTokens(value) {
   const text = String(value || '');
   if (!text) return 0;
-  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\uac00-\ud7af]/g) || []).length;
   return cjk + Math.ceil((text.length - cjk) / 4);
 }
 
@@ -77,7 +77,14 @@ function trimRecentTheaterMessages(messages, maxTokens = MAX_LIVE_MESSAGE_TOKENS
     list[index] = null;
     index += 1;
   }
-  return list.slice(index).filter(Boolean);
+  const trimmed = list.slice(index).filter(Boolean);
+  // Token trimming can remove the first user turn while leaving its assistant
+  // reply at the front. That orphan reply is not a valid conversational start
+  // and can make a provider down-weight or discard the earlier context.
+  if (trimmed.length > MIN_LIVE_MESSAGES && trimmed[0]?.role === 'assistant') {
+    return trimmed.slice(1);
+  }
+  return trimmed;
 }
 
 function isInteractiveTheaterBody(body) {
