@@ -62,6 +62,18 @@ function raiseRoomOutputLimit(body = {}, purpose = '') {
     };
   }
 
+  // Theater has its own character-based output budget and must be handled by
+  // theaterReplyLengthGuardPatch. Returning it unchanged here prevents this
+  // global model-cap layer from overwriting the Theater-specific budget.
+  if (scene === 'theater') {
+    return {
+      body,
+      scene,
+      requested: Number(body.max_tokens) || 0,
+      raisedTo: Number(body.max_tokens) || 0,
+    };
+  }
+
   const requested = Number(body.max_tokens) || 0;
   const raisedTo = outputTokenCapForModel(body.model);
   return {
