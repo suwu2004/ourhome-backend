@@ -27,18 +27,22 @@ test('幸福日记请求会识别并抬到 PX/CX 64K 上限', () => {
   assert.equal(raiseRoomOutputLimit(body).body.max_tokens, 64000);
 });
 
-test('小剧场生成与续写会按模型能力抬高上限', () => {
+test('小剧场生成与续写保留自己的 provider token 预算', () => {
   const standard = {
     model: '[C1]claude-opus-4-6-thinking',
-    max_tokens: 4200,
-    system: '你正在小剧场的小世界里续写角色剧情与正文。',
+    max_tokens: 176,
+    system: 'OurHome 的“小剧场”互动写作引擎\n【篇幅要求】\n本次小剧场回复当前设置的最低长度约为 120 个中文字符。',
     messages: [{ role: 'user', content: '继续写这一章的场景和对白。' }],
   };
   assert.equal(detectRoomScene(standard), 'theater');
-  assert.equal(raiseRoomOutputLimit(standard).body.max_tokens, 32000);
+  const preserved = raiseRoomOutputLimit(standard);
+  assert.equal(preserved.body.max_tokens, 176);
+  assert.equal(preserved.scene, 'theater');
+  assert.equal(preserved.requested, 176);
+  assert.equal(preserved.raisedTo, 176);
 
-  const extended = { ...standard, model: '[CX]claude-opus-4-6' };
-  assert.equal(raiseRoomOutputLimit(extended).body.max_tokens, 64000);
+  const extended = { ...standard, model: '[CX]claude-opus-4-6', max_tokens: 1832 };
+  assert.equal(raiseRoomOutputLimit(extended).body.max_tokens, 1832);
 });
 
 test('正式 Chat 通过明确用途抬到模型输出上限', () => {
