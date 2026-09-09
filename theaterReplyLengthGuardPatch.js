@@ -32,7 +32,7 @@ function appendLengthInstruction(system, requestedChars) {
   const source = textOf(system).trim();
   const instruction = `【小剧场回复长度】本次回复目标约为 ${requestedChars} 个中文字符。请在一次回复中自然完成完整场景、动作、对白与剧情推进，尽量写到目标篇幅附近；不要因为达到一个短段落就提前结束，也不要用重复、注水或无意义的句子凑字数。除非剧情确实需要，不要主动大幅超过目标篇幅。`;
   if (source.includes('【小剧场回复长度】')) {
-    return source.replace(/【小剧场回复长度】[\\s\\S]*$/u, instruction);
+    return source.replace(/【小剧场回复长度】[\s\S]*$/u, instruction);
   }
   return `${source}\n\n${instruction}`.trim();
 }
