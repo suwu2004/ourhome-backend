@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { maybeEnableThinking, modelSupportsNativeThinking, enrichResponseBody } = require('../theaterThinkingPatch');
 
-test('Theater enables native thinking only for thinking-capable model names', () => {
+test('Theater keeps native thinking disabled even for thinking-capable model names', () => {
   const body = {
     model: 'claude-opus-4-6',
     system: 'OurHome 的“小剧场”互动写作引擎',
@@ -12,7 +12,8 @@ test('Theater enables native thinking only for thinking-capable model names', ()
     max_tokens: 1000,
   };
   assert.equal(modelSupportsNativeThinking(body.model), true);
-  assert.deepEqual(maybeEnableThinking(body).thinking, { type: 'enabled', budget_tokens: 3000 });
+  assert.equal(maybeEnableThinking(body).thinking, undefined);
+  assert.equal(maybeEnableThinking(body), body);
 });
 
 test('Theater does not force thinking onto ordinary models', () => {
