@@ -1,7 +1,9 @@
 'use strict';
 
-// Bring formal Chat's native-thinking transport into Theater without changing
-// the Theater visual shell or inventing a second paid "thinking" completion.
+// Theater no longer exposes a thinking panel. Keep the metadata/cache helpers
+// for compatibility with persisted rows, but do not enable native thinking on
+// Theater requests because its hidden budget can consume the reply's output
+// allowance and make ordinary prose stop mid-sentence.
 const previousFetch = globalThis.fetch;
 const express = require('express');
 const { extractThinkingText } = require('./thinkingSupport');
@@ -33,8 +35,9 @@ function remember(content, thinking) {
 }
 function lookup(content) { return reasoningByContent.get(String(content || '').trim()) || ''; }
 function maybeEnableThinking(body) {
-  if (!isTheaterProviderBody(body) || body.thinking || !modelSupportsNativeThinking(body.model)) return body;
-  return { ...body, thinking: { type: 'enabled', budget_tokens: 3000 } };
+  // Deliberately disabled for Theater. The UI feature was removed and no
+  // hidden native-thinking budget should compete with the visible reply.
+  return body;
 }
 function isTheaterAssistantInsert(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
@@ -98,6 +101,7 @@ if (typeof previousFetch === 'function') {
         const thinking = lookup(body.content);
         if (thinking) body.reasoning_content = thinking;
       }
+      // Keep this hook in place for backward compatibility, but it is a no-op.
       const prepared = isTheaterProviderBody(body) ? maybeEnableThinking(body) : body;
       const response = await previousFetch(input, prepared === body ? init : { ...init, body: JSON.stringify(prepared) });
       if (isTheaterProviderBody(prepared)) {
