@@ -1,15 +1,13 @@
 'use strict';
 
 // A character setting cannot be made reliable by max_tokens alone: a model can
-// legally stop early. For Theater, if a reply is materially below the configured
-// minimum, make one continuation pass and merge it before the response reaches
-// the frontend. This keeps the existing provider choice, prompt and context.
+// legally stop early. For Theater, if a reply is below the configured minimum,
+// make one continuation pass and merge it before the response reaches the UI.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
 const LENGTH_RE = /(?:完整回复至少|最低长度约为|当前设置的最低长度约为|目标长度约为)\s*(\d+)\s*(?:个中文字符|字)/u;
-const MIN_RATIO = 0.82;
-const MAX_FINAL_RATIO = 1.15;
-const MAX_CONTINUATIONS = 1;
+const MIN_RATIO = 0.95;
+const MAX_FINAL_RATIO = 1.10;
 
 function textOf(value) {
   if (typeof value === 'string') return value;
@@ -141,8 +139,7 @@ async function enforceMinimum(input, init) {
   const finalLimit = Math.ceil(minimum * MAX_FINAL_RATIO);
   const finalText = merged.length > finalLimit ? merged.slice(0, finalLimit).trimEnd() : merged;
   const finalPayload = replaceText(firstPayload, finalText);
-  const withUsage = addUsage(finalPayload, secondPayload);
-  return makeResponse(firstResponse, withUsage);
+  return makeResponse(firstResponse, addUsage(finalPayload, secondPayload));
 }
 
 if (typeof previousFetch === 'function') {
