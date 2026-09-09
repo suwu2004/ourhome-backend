@@ -1,16 +1,15 @@
 'use strict';
 
 // One-call Theater reply-length guard. The UI setting is a character target,
-// not a request for a second completion. We make the target explicit in the
-// provider system prompt and reserve enough output tokens for the model to
-// finish naturally in one call.
+// not a request for a second completion. Reserve enough provider output space
+// for the model to finish naturally in one call.
 const previousFetch = globalThis.fetch;
 const THEATER_RE = /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u;
 const LENGTH_RE = /(?:完整回复至少|最低长度约为|当前设置的最低长度约为|目标长度约为)\s*(\d+)\s*(?:个中文字符|字)(?:左右|的最低篇幅)?/u;
-const MAX_MULTIPLIER = 1.6;
-const SAFETY_TOKENS = 64;
+const MAX_MULTIPLIER = 1.2;
+const SAFETY_TOKENS = 32;
 const MIN_PROVIDER_TOKENS = 128;
-const MAX_PROVIDER_TOKENS = 5200;
+const MAX_PROVIDER_TOKENS = 6000;
 
 function textOf(value) {
   if (typeof value === 'string') return value;
@@ -42,21 +41,22 @@ function capProviderTokens(body) {
   const requestedChars = requestedReplyChars(body);
   if (!Number.isFinite(requestedChars) || requestedChars <= 0) return body;
 
-  const configuredKeys = ['max_tokens', 'maxTokens', 'max_completion_tokens', 'maxCompletionTokens'];
-  const configured = configuredKeys.map(key => Number(body[key])).find(value => Number.isFinite(value) && value > 0) || 0;
-  const budget = Math.min(MAX_PROVIDER_TOKENS, Math.max(MIN_PROVIDER_TOKENS, Math.ceil(requestedChars * MAX_MULTIPLIER + SAFETY_TOKENS)));
+  const budget = Math.min(
+    MAX_PROVIDER_TOKENS,
+    Math.max(MIN_PROVIDER_TOKENS, Math.ceil(requestedChars * MAX_MULTIPLIER + SAFETY_TOKENS)),
+  );
   const next = { ...body };
   next.system = appendLengthInstruction(body.system, requestedChars);
 
-  // Never let an existing provider limit be too small for the configured
-  // character target. Keep a reasonable ceiling so a setting cannot explode
-  // provider cost, while the final hard-cap guard handles overlong output.
-  if (configured <= 0 || configured > budget) {
-    const providerKey = configuredKeys.find(key => key in next) || 'max_tokens';
-    next[providerKey] = budget;
-    for (const key of configuredKeys) {
-      if (key !== providerKey && key in next) delete next[key];
-    }
+  // The Theater setting owns this request's output budget. Replace any stale
+  // provider/default max so an upstream 128/256/2600-token value cannot cut a
+  // scene off halfway through a sentence. There is still a model hard ceiling
+  // via modelTokenLimitPatch; this value is only the Theater-specific budget.
+  const configuredKeys = ['max_tokens', 'maxTokens', 'max_completion_tokens', 'maxCompletionTokens'];
+  const providerKey = configuredKeys.find(key => key in next) || 'max_tokens';
+  next[providerKey] = budget;
+  for (const key of configuredKeys) {
+    if (key !== providerKey && key in next) delete next[key];
   }
 
   return next;
