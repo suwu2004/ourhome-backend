@@ -58,7 +58,7 @@ function trimAtNaturalBoundary(text, maxChars) {
     cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'),
     cut.lastIndexOf('；'), cut.lastIndexOf('…'), cut.lastIndexOf('\n'), cut.lastIndexOf('!'), cut.lastIndexOf('?'), cut.lastIndexOf(';'),
   );
-  if (boundary >= Math.max(20, Math.floor(maxChars * 0.72))) return cut.slice(0, boundary + 1).trimEnd();
+  if (boundary >= Math.max(1, Math.floor(maxChars * 0.72))) return cut.slice(0, boundary + 1).trimEnd();
   return cut.trimEnd();
 }
 
