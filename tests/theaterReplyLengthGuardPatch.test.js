@@ -20,22 +20,22 @@ test('能从最终 provider 请求识别小剧场字数设置', () => {
 
 test('小剧场不会再被 2600 token 的固定下限放大', () => {
   const body = capProviderTokens(theaterBody(2600, 120));
-  assert.equal(body.max_tokens, 176);
+  assert.equal(body.max_tokens, 556);
 });
 
 test('上游过小的 provider token 上限会被提升到小剧场所需预算', () => {
   const body = capProviderTokens(theaterBody(256, 120));
-  assert.equal(body.max_tokens, 176);
+  assert.equal(body.max_tokens, 556);
 });
 
-test('已经合理的 provider token 上限不会被二次压低', () => {
-  const body = capProviderTokens(theaterBody(176, 120));
-  assert.equal(body.max_tokens, 176);
+test('已经合理的 provider token 上限也统一到当前小剧场预算', () => {
+  const body = capProviderTokens(theaterBody(556, 120));
+  assert.equal(body.max_tokens, 556);
 });
 
-test('大字数设置仍保留合理的生成空间', () => {
+test('大字数设置仍保留充足的生成空间', () => {
   const body = capProviderTokens(theaterBody(5200, 1500));
-  assert.equal(body.max_tokens, 1832);
+  assert.equal(body.max_tokens, 4006);
 });
 
 test('非小剧场请求不受影响', () => {
