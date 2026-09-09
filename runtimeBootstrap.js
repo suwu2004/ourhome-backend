@@ -60,5 +60,8 @@ require('./theaterThinkingPatch');
 // Persisted-output guard: trim the actual Theater assistant text before the
 // Supabase insert, so the UI setting is also respected at the storage boundary.
 require('./theaterReplyHardCapPatch');
+// If a provider chooses to stop materially below the configured minimum,
+// perform one natural continuation pass before returning the answer to Theater.
+require('./theaterMinimumReplyPatch');
 
 module.exports = { renderFrontdoorPatch };
