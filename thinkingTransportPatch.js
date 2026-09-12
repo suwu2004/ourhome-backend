@@ -1,10 +1,8 @@
 'use strict';
 
-// Preserve both supported paths:
-// 1) official Anthropic native extended thinking;
-// 2) relay fallback, where server.js asks the model to emit <thinking>...</thinking>.
-// This transport layer must not delete the relay fallback instruction before the
-// request reaches the provider.
+// Preserve provider-native thinking for official Anthropic and compatible relay
+// endpoints. A model name containing "thinking" is not sufficient by itself,
+// but the selected OurHome thinking models use the Anthropic Messages shape.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -50,20 +48,17 @@ function isOfficialAnthropicUrl(url) {
 }
 
 function prepareMainChatRequest(url, body, headersInit) {
-  // Important: leave body.system untouched. For relay requests, server.js may
-  // have appended the visible-thinking fallback instruction. The old version
-  // stripped that instruction here, so thinking models became ordinary replies.
   const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
 
-  // Anthropic's native thinking body shape is valid only on the official
-  // Anthropic endpoint. Never inject it into relay/OpenAI/Gemini endpoints just
-  // because the model name contains "thinking".
-  if (isOfficialAnthropicUrl(url) && !nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
-    nextBody.thinking = { type: 'enabled', budget_tokens: 2048 };
+  // The previous patch only enabled native thinking on api.anthropic.com.
+  // OurHome uses an Anthropic-compatible relay, so that condition silently
+  // removed the only chance for the relay to return thinking blocks. Pass the
+  // same Messages API thinking object through to compatible /messages relays.
+  if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
+    nextBody.thinking = { type: 'enabled', budget_tokens: 4096 };
   }
 
-  // Preserve an explicitly supplied native thinking request. Do not delete it.
   if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
   return { body: nextBody, headers };
 }
@@ -90,7 +85,7 @@ try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function thinkingHealthJson(body) {
-    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-fallback-v9' };
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v10' };
     return originalJson.call(this, body);
   };
 } catch (error) {
