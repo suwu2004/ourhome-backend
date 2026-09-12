@@ -2,7 +2,9 @@ const {
   buildAdaptiveReplyInstruction,
 } = require('./promptRules');
 
-const DEFAULT_CHAT_MIN_REPLY_CHARS = 80;
+// Formal Chat should not default to a one- or two-sentence answer. This is a
+// soft minimum used to guide the model, not a hard truncation requirement.
+const DEFAULT_CHAT_MIN_REPLY_CHARS = 140;
 const DEFAULT_THEATER_MIN_REPLY_CHARS = 120;
 const MAX_CHAT_MIN_REPLY_CHARS = 1200;
 const MAX_THEATER_MIN_REPLY_CHARS = 4000;
