@@ -111,9 +111,14 @@ function uniqueThinking(candidates) {
 
 function extractThinkingText(result = {}) {
   const nativeCandidates = [];
+  const taggedCandidates = [];
   const addNative = value => {
     const text = normalizeThinkingText(value);
     if (text) nativeCandidates.push(text);
+  };
+  const addTagged = value => {
+    const tagged = extractTaggedThinking(value);
+    if (tagged.length) taggedCandidates.push(...tagged);
   };
   const addNativeFields = value => {
     if (!value || typeof value !== 'object') return;
@@ -124,6 +129,8 @@ function extractThinkingText(result = {}) {
       if (!block || typeof block !== 'object') continue;
       const type = String(block.type || '').toLowerCase();
       if (NATIVE_THINKING_BLOCK_TYPES.has(type) || block.thought === true) addNative(block);
+      // Relay compatibility mode puts the visible thinking protocol inside an ordinary text block.
+      if (type === 'text') addTagged(block.text);
       if (Array.isArray(block.content)) scanBlocks(block.content);
       if (Array.isArray(block.parts)) scanBlocks(block.parts);
       if (Array.isArray(block.summary) && NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block.summary);
@@ -132,6 +139,8 @@ function extractThinkingText(result = {}) {
 
   addNativeFields(result);
   addNativeFields(result.message);
+  addTagged(result.content);
+  addTagged(result.message?.content);
   scanBlocks(result.content);
   scanBlocks(result.message?.content);
   scanBlocks(result.output);
@@ -140,19 +149,23 @@ function extractThinkingText(result = {}) {
     const message = choice?.message || choice?.delta || {};
     addNativeFields(choice);
     addNativeFields(message);
+    addTagged(choice?.text);
+    addTagged(message.content);
     scanBlocks(message.content);
   }
 
   for (const candidate of Array.isArray(result.candidates) ? result.candidates : []) {
     addNativeFields(candidate);
     addNativeFields(candidate?.content);
+    addTagged(candidate?.text);
+    addTagged(candidate?.content);
     scanBlocks(candidate?.content?.parts);
   }
 
-  // Native-only rule: ordinary answer text, <thinking> tags and bracketed
-  // “visible thought” prose are never promoted into the thinking panel.
-  // If the provider does not return explicit reasoning/thinking metadata, this is empty.
-  return uniqueThinking(nativeCandidates);
+  // Prefer provider-native reasoning metadata. When it is absent, fall back to the
+  // controlled <thinking> compatibility protocol used by relay mode. Ordinary answer
+  // prose still does not become thinking unless it is explicitly wrapped in that tag.
+  return uniqueThinking(nativeCandidates) || uniqueThinking(taggedCandidates);
 }
 
 module.exports = {
