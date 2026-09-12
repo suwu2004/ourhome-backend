@@ -3,8 +3,8 @@
 // OurHome Chat treats visible reasoning as optional provider metadata.
 // Never buy a separate “visible thought” completion and never ask ordinary
 // non-thinking models to simulate one in prose. If the selected provider/model
-// already supports a native thinking request, preserve that request and pass the
-// provider's native reasoning response through unchanged for server.js to extract.
+// already supports a native thinking request, preserve that request and pass
+// the provider's native reasoning response through unchanged for server.js to extract.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -81,9 +81,21 @@ function fixedNoThinkResponse() {
   });
 }
 
+function modelRequestsNativeThinking(model) {
+  return /thinking|reasoning|o[134]/i.test(String(model || ''));
+}
+
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body, system: sanitizeChatSystem(body?.system) };
   const headers = new Headers(headersInit || undefined);
+
+  // Some model selectors encode native reasoning only in the model name. Make
+  // the request explicit for Anthropic-compatible thinking endpoints, while
+  // preserving any provider-specific thinking object already supplied by server.js.
+  // This is still one ordinary completion; it does not create a second API call.
+  if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
+    nextBody.thinking = { type: 'enabled', budget_tokens: 2048 };
+  }
 
   // Do not delete nextBody.thinking here. server.js only supplies it for the
   // selected model path that requested native extended thinking. Removing it was
@@ -132,7 +144,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function nativeThinkingHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, thinking_transport: 'native-only-thinking-v8' };
+      body = { ...body, thinking_transport: 'native-only-thinking-v9' };
     }
     return originalJson.call(this, body);
   };
