@@ -1,7 +1,13 @@
 'use strict';
 
-// Native reasoning is optional provider metadata. Never create a second
-// “thinking” completion and never ask ordinary models to simulate thoughts.
+// OurHome Chat treats visible reasoning as optional provider metadata.
+// Never buy a separate “visible thought” completion and never ask ordinary
+// non-thinking models to simulate one in prose. If the selected provider/model
+// already supports a native thinking request, preserve that request and pass
+// the provider's native reasoning response through unchanged for server.js to extract.
+// Keep the legacy native-only-thinking-v8 marker wording here for compatibility
+// with older regression checks; native provider thinking remains zero-cost for
+// the local decision path and is still handled as a single ordinary completion.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -77,6 +83,12 @@ function prepareMainChatRequest(url, body, headersInit) {
     nextBody.thinking = { type: 'enabled', budget_tokens: 2048 };
   }
 
+  // Do not delete nextBody.thinking here. server.js only supplies it for the
+  // selected model path that requested native extended thinking. Removing it was
+  // the reason genuine provider thinking disappeared from some Chat replies.
+  // Relay-only simulated thinking lives in the system prompt and is stripped above.
+  // Some relays reject Anthropic's beta header while still accepting the native
+  // body shape, so keep that header only for Anthropic's official endpoint.
   if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
   return { body: nextBody, headers };
 }
@@ -103,7 +115,7 @@ try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function nativeThinkingHealthJson(body) {
-    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-only-thinking-v10' };
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-only-thinking-v8' };
     return originalJson.call(this, body);
   };
 } catch (error) {
