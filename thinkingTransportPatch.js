@@ -1,13 +1,10 @@
 'use strict';
 
-// OurHome Chat treats visible reasoning as optional provider metadata.
-// Never buy a separate “visible thought” completion and never ask ordinary
-// non-thinking models to simulate one in prose. If the selected provider/model
-// already supports a native thinking request, preserve that request and pass
-// the provider's native reasoning response through unchanged for server.js to extract.
-// Keep the legacy native-only-thinking-v8 marker wording here for compatibility
-// with older regression checks; native provider thinking remains zero-cost for
-// the local decision path and is still handled as a single ordinary completion.
+// Preserve both supported paths:
+// 1) official Anthropic native extended thinking;
+// 2) relay fallback, where server.js asks the model to emit <thinking>...</thinking>.
+// This transport layer must not delete the relay fallback instruction before the
+// request reaches the provider.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -22,26 +19,6 @@ function messageText(messages) {
     if (!Array.isArray(message?.content)) return '';
     return message.content.map(block => typeof block === 'string' ? block : block?.text || '').filter(Boolean).join('\n');
   }).join('\n');
-}
-
-function stripLegacyThinkingInstruction(value) {
-  return String(value || '')
-    .replace(/\n*【可见的内心独白】[\s\S]*$/u, '')
-    .replace(/\n*【每轮可见思考】[\s\S]*$/u, '')
-    .replace(/\n*【可见思考协议】[\s\S]*$/u, '')
-    .trimEnd();
-}
-
-function sanitizeChatSystem(system) {
-  if (typeof system === 'string') return stripLegacyThinkingInstruction(system);
-  if (!Array.isArray(system)) return system;
-  return system.map(block => {
-    if (typeof block === 'string') return stripLegacyThinkingInstruction(block);
-    if (!block || typeof block !== 'object') return block;
-    if (typeof block.text === 'string') return { ...block, text: stripLegacyThinkingInstruction(block.text) };
-    if (typeof block.content === 'string') return { ...block, content: stripLegacyThinkingInstruction(block.content) };
-    return block;
-  });
 }
 
 function isMainChatRequest(url, body) {
@@ -73,28 +50,26 @@ function isOfficialAnthropicUrl(url) {
 }
 
 function prepareMainChatRequest(url, body, headersInit) {
-  const nextBody = { ...body, system: sanitizeChatSystem(body?.system) };
+  // Important: leave body.system untouched. For relay requests, server.js may
+  // have appended the visible-thinking fallback instruction. The old version
+  // stripped that instruction here, so thinking models became ordinary replies.
+  const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
 
-  // The Anthropic `thinking` body shape is valid only on the official
-  // Anthropic endpoint. Never inject it into OpenAI-, Gemini-, or relay-style
-  // endpoints merely because a model name contains “thinking”.
+  // Anthropic's native thinking body shape is valid only on the official
+  // Anthropic endpoint. Never inject it into relay/OpenAI/Gemini endpoints just
+  // because the model name contains "thinking".
   if (isOfficialAnthropicUrl(url) && !nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
     nextBody.thinking = { type: 'enabled', budget_tokens: 2048 };
   }
 
-  // Do not delete nextBody.thinking here. server.js only supplies it for the
-  // selected model path that requested native extended thinking. Removing it was
-  // the reason genuine provider thinking disappeared from some Chat replies.
-  // Relay-only simulated thinking lives in the system prompt and is stripped above.
-  // Some relays reject Anthropic's beta header while still accepting the native
-  // body shape, so keep that header only for Anthropic's official endpoint.
+  // Preserve an explicitly supplied native thinking request. Do not delete it.
   if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
   return { body: nextBody, headers };
 }
 
 if (typeof originalFetch === 'function') {
-  globalThis.fetch = async function nativeThinkingOnlyFetch(input, init = {}) {
+  globalThis.fetch = async function thinkingTransportFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
     if (typeof init?.body !== 'string') return originalFetch(input, init);
     try {
@@ -105,7 +80,7 @@ if (typeof originalFetch === 'function') {
         return originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
       }
     } catch (error) {
-      console.warn('[thinking:native-only] request patch skipped:', error.message);
+      console.warn('[thinking:transport] request patch skipped:', error.message);
     }
     return originalFetch(input, init);
   };
@@ -114,12 +89,12 @@ if (typeof originalFetch === 'function') {
 try {
   const express = require('express');
   const originalJson = express.response.json;
-  express.response.json = function nativeThinkingHealthJson(body) {
-    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-only-thinking-v8' };
+  express.response.json = function thinkingHealthJson(body) {
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-fallback-v9' };
     return originalJson.call(this, body);
   };
 } catch (error) {
-  console.warn('[thinking:native-only] health marker unavailable:', error.message);
+  console.warn('[thinking:transport] health marker unavailable:', error.message);
 }
 
-module.exports = { isMainChatRequest, isThinkingDecisionRequest, sanitizeChatSystem, prepareMainChatRequest };
+module.exports = { isMainChatRequest, isThinkingDecisionRequest, prepareMainChatRequest };
