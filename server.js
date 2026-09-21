@@ -2175,12 +2175,12 @@ async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuilt
   const shouldThink = thinkingBuiltIn || hasThinkingName;
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
-  if (isOfficialAnthropicApi(settings)) {
-    // 官方API，走原生thinking参数
-    return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
-  }
-  // 中转站：不发原生thinking参数（会被中转站吃掉），改用提示词方式
-  return { shouldThink: true, thinkingParam: undefined, promptAddition: buildThinkingInstruction() };
+  // Thinking transport is centralized in the fetch patch so model-specific
+  // adaptive/enabled settings are applied in one place. Do not add a textual
+  // <thinking> prompt on relay routes: that is a fake fallback and can leak
+  // into the visible answer. If the relay strips native thinking, the UI simply
+  // receives no native thinking block instead of fabricating one.
+  return { shouldThink: true, thinkingParam: undefined, promptAddition: '' };
 }
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
