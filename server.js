@@ -2099,19 +2099,6 @@ function extractThinking(result) {
 }
 
 // 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
-async function decideShouldThink(settings, message, modelName) {
-  try {
-    const model = modelName || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
-    const prompt = `这是叶檀刚刚发的话：\n"${(message || '').slice(0, 500)}"\n\n你是陆泽。面对这句话，你觉得需要先认真停下来想一想再回应，还是可以很自然地直接回？\n只回答一个词，不要有任何多余文字：\n想 或者 不想`;
-    const result = await callClaude({ settings, model, maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
-    const text = extractText(result).trim();
-    return text.startsWith('想') && !text.startsWith('不想');
-  } catch (err) {
-    console.error('判断是否思考失败:', err.message);
-    return false;
-  }
-}
-
 // 判断请求是不是直接打官方Anthropic API（而不是中转站）
 function isOfficialAnthropicApi(settings) {
   return !settings?.api_base_url || settings.api_base_url.includes('api.anthropic.com');
@@ -2182,7 +2169,10 @@ async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuilt
   if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
-  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage, modelName);
+  // Do not spend a second model request deciding whether this turn should think.
+  // A model explicitly selected as a thinking/reasoning model already expresses that
+  // intent. The old classifier added an unnecessary paid request before every reply.
+  const shouldThink = thinkingBuiltIn || hasThinkingName;
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   if (isOfficialAnthropicApi(settings)) {
