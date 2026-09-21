@@ -57,7 +57,12 @@ function modelRequestsNativeThinking(model) {
 }
 
 function modelUsesAdaptiveThinking(model) {
-  return /(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-6(?:[-_:]|$)/i.test(String(model || ''));
+  // OurHome model aliases can carry provider prefixes such as [E] or [即享].
+  // Strip those wrappers before checking the canonical Claude 4.6 family so
+  // claude-opus-4-6-thinking still receives adaptive thinking instead of
+  // accidentally falling back to legacy manual thinking.
+  const normalized = String(model || '').replace(/^\[[^\]]*\]/, '');
+  return /(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-6(?:[-_:]|$)/i.test(normalized);
 }
 
 function isOfficialAnthropicUrl(url) {
