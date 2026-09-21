@@ -53,7 +53,11 @@ function fixedNoThinkResponse() {
 }
 
 function modelRequestsNativeThinking(model) {
-  return /(?:^|[-_:])(thinking|reasoning)(?:[-_:]|$)|(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-6(?:[-_:]|$)|^o[134](?:[-_:]|$)/i.test(String(model || ''));
+  return /(?:^|[-_:])(thinking|reasoning)(?:[-_:]|$)|(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-[56](?:[-_:]|$)|^o[134](?:[-_:]|$)/i.test(String(model || ''));
+}
+
+function modelUsesAdaptiveThinking(model) {
+  return /(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-6(?:[-_:]|$)/i.test(String(model || ''));
 }
 
 function isOfficialAnthropicUrl(url) {
@@ -73,20 +77,22 @@ function prepareMainChatRequest(url, body, headersInit) {
 
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
     const budget = thinkingBudgetFor(nextBody);
-    // Claude Opus 4.6 supports legacy manual thinking, but Anthropic now
-    // recommends adaptive thinking for 4.6. In particular, Opus 4.6 only
-    // interleaves tool-use reasoning in adaptive mode. Some Anthropic-compatible
-    // relays accept the old `enabled + budget_tokens` shape but silently drop
-    // the thinking blocks; use the current wire format so the relay has a
-    // standard Claude 4.6 request to forward.
-    nextBody.thinking = { type: 'adaptive', display: 'summarized' };
-    nextBody.output_config = { ...(nextBody.output_config || {}), effort: 'high' };
-    // Thinking requires temperature=1 (or unset). The /chat route can have
-    // already supplied another sampling value before this transport patch runs.
+    // Claude 4.6 supports adaptive thinking; Claude 4.5 is manual-only.
+    // The model suffix in OurHome is an alias, while the relay returns the
+    // canonical model name (for example claude-opus-4.5), so choose the wire
+    // format from the requested model rather than assuming every "*thinking"
+    // alias is adaptive-capable.
+    if (modelUsesAdaptiveThinking(nextBody.model)) {
+      nextBody.thinking = { type: 'adaptive', display: 'summarized' };
+      nextBody.output_config = { ...(nextBody.output_config || {}), effort: 'high' };
+      headers.delete('anthropic-beta');
+    } else {
+      nextBody.thinking = { type: 'enabled', budget_tokens: budget, display: 'summarized' };
+      headers.set('anthropic-beta', 'interleaved-thinking-2025-05-14');
+      delete nextBody.output_config;
+    }
+    // Thinking requires temperature=1 (or unset).
     nextBody.temperature = 1;
-    // Adaptive thinking interleaves automatically; no legacy beta header is
-    // required. Remove a stale manual-thinking header if an earlier layer set it.
-    headers.delete('anthropic-beta');
   }
 
   return { body: nextBody, headers };
