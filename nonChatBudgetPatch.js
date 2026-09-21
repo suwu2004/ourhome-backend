@@ -84,7 +84,8 @@ function hasAgentMailTool(body) {
 }
 
 function isAgentMailChatRequest(body) {
-  if (!isMainChatRequest('', body)) return false;
+  const system = systemText(body?.system);
+  if (!system.includes('【回复长度】') || !system.includes('【OurHome 房间与入口认知（事实规则）】')) return false;
   if (!hasAgentMailTool(body)) return false;
   const text = `${systemText(body?.system)}\\n${messageText(body?.messages)}`;
   return /邮箱|邮件|收件箱|来信|邮件内容|mail|inbox/.test(text);
