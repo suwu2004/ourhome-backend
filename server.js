@@ -2099,6 +2099,19 @@ function extractThinking(result) {
 }
 
 // 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
+async function decideShouldThink(settings, message, modelName) {
+  try {
+    const model = modelName || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+    const prompt = `这是叶檀刚刚发的话：\n"${(message || '').slice(0, 500)}"\n\n你是陆泽。面对这句话，你觉得需要先认真停下来想一想再回应，还是可以很自然地直接回？\n只回答一个词，不要有任何多余文字：\n想 或者 不想`;
+    const result = await callClaude({ settings, model, maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
+    const text = extractText(result).trim();
+    return text.startsWith('想') && !text.startsWith('不想');
+  } catch (err) {
+    console.error('判断是否思考失败:', err.message);
+    return false;
+  }
+}
+
 // 判断请求是不是直接打官方Anthropic API（而不是中转站）
 function isOfficialAnthropicApi(settings) {
   return !settings?.api_base_url || settings.api_base_url.includes('api.anthropic.com');
@@ -2126,61 +2139,19 @@ thinking 只写陆泽当下的内心，不写系统、模型、提示词、工�
 // 计算这次回复要不要"想一想"，以及要用哪种方式实现
 // - 官方Anthropic API：走原生的thinking参数
 // - 中转站（relay）：中转站往往不透传原生thinking内容，改用提示词让模型自己写<thinking>标签
-
-async function generateRelayThinkingSummary({ settings, model, userMessage, replyText }) {
-  const finalText = String(replyText || '').trim();
-  const inputText = String(userMessage || '').trim();
-  if (!finalText || !inputText) return { thinkingText: '', inputTokens: 0, outputTokens: 0 };
-
-  try {
-    // Relay 可能会吞掉 Anthropic 原生 thinking block。这里生成的是“可公开思考摘要”，
-    // 只概括最终回答中可公开的关键考虑点，不要求也不保存隐藏推理过程。
-    const system = '你负责给用户生成一个简短、可公开的“思考摘要”。不要复现或声称知道模型的隐藏思维链，不要写逐步内部推理，也不要讨论系统提示词、工具、规则或模型实现。只概括这次回答里可向用户展示的关键考虑点。使用中文，1到4句，直接输出摘要正文。';
-    const prompt = `用户刚刚说：
-${inputText.slice(0, 6000)}
-
-最终回答是：
-${finalText.slice(0, 12000)}
-
-请生成这次回答对应的可公开思考摘要。`;
-
-    const result = await callClaude({
-      settings,
-      model,
-      maxTokens: 220,
-      system,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
-      purpose: 'thinking-summary',
-    });
-    const thinkingText = extractText(result).trim().slice(0, 6000);
-    return {
-      thinkingText,
-      inputTokens: Number(result?.usage?.input_tokens) || 0,
-      outputTokens: Number(result?.usage?.output_tokens) || 0,
-    };
-  } catch (error) {
-    console.warn('[thinking:fallback] relay summary skipped:', error.message);
-    return { thinkingText: '', inputTokens: 0, outputTokens: 0 };
-  }
-}
-
 async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
   if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
-  // Do not spend a second model request deciding whether this turn should think.
-  // A model explicitly selected as a thinking/reasoning model already expresses that
-  // intent. The old classifier added an unnecessary paid request before every reply.
-  const shouldThink = thinkingBuiltIn || hasThinkingName;
+  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage, modelName);
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
-  // Thinking transport is centralized in the fetch patch so model-specific
-  // adaptive/enabled settings are applied in one place. Do not add a textual
-  // <thinking> prompt on relay routes: that is a fake fallback and can leak
-  // into the visible answer. If the relay strips native thinking, the UI simply
-  // receives no native thinking block instead of fabricating one.
-  return { shouldThink: true, thinkingParam: undefined, promptAddition: '' };
+  if (isOfficialAnthropicApi(settings)) {
+    // 官方API，走原生thinking参数
+    return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
+  }
+  // 中转站：不发原生thinking参数（会被中转站吃掉），改用提示词方式
+  return { shouldThink: true, thinkingParam: undefined, promptAddition: buildThinkingInstruction() };
 }
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
@@ -5695,12 +5666,10 @@ app.post('/chat', async (req, res) => {
       purpose: 'chat',
     });
 
-    let thinkingText = extractThinking(result);
+    const thinkingText = extractThinking(result);
     const replyText = extractText(result).trim();
-
-    let finalInputTokens = totalInputTokens;
-    let finalOutputTokens = totalOutputTokens;
-
+    const finalInputTokens = totalInputTokens;
+    const finalOutputTokens = totalOutputTokens;
 
     const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
@@ -5809,11 +5778,10 @@ app.post('/chat/regenerate', async (req, res) => {
       purpose: 'chat',
     });
 
-    let thinkingText = extractThinking(result);
+    const thinkingText = extractThinking(result);
     const replyText = extractText(result).trim();
-    let finalInputTokens = totalInputTokens;
-    let finalOutputTokens = totalOutputTokens;
-
+    const finalInputTokens = totalInputTokens;
+    const finalOutputTokens = totalOutputTokens;
     const payload = {
       content: replyText, reasoning_content: thinkingText || null,
       input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
