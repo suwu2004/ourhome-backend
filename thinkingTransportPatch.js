@@ -1,10 +1,8 @@
 'use strict';
 
-// Preserve provider-native thinking for formal OurHome Chat requests sent through
-// Anthropic-compatible /messages relays. The old version depended on two exact
-// prompt headings; that was too brittle because prompt cleanup/context layers
-// can legitimately change those headings. We identify formal Chat by the
-// /messages shape + an OurHome system prompt, while explicitly excluding Theater.
+// Preserve provider-native thinking for official Anthropic and compatible relay
+// endpoints. A model name containing "thinking" is not sufficient by itself,
+// but the selected OurHome thinking models use the Anthropic Messages shape.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -17,25 +15,14 @@ function messageText(messages) {
   return (Array.isArray(messages) ? messages : []).map(message => {
     if (typeof message?.content === 'string') return message.content;
     if (!Array.isArray(message?.content)) return '';
-    return message.content.map(block => typeof block === 'string' ? block : block?.text || block?.content || '').filter(Boolean).join('\n');
+    return message.content.map(block => typeof block === 'string' ? block : block?.text || '').filter(Boolean).join('\n');
   }).join('\n');
 }
 
-function isTheaterRequest(body) {
-  const text = systemText(body?.system);
-  return /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u.test(text);
-}
-
-function isMainChatRequest(url, body = {}) {
+function isMainChatRequest(url, body) {
   if (!/\/messages(?:\?|$)/i.test(String(url || ''))) return false;
-  if (!Array.isArray(body?.messages) || body.messages.length === 0) return false;
-  if (isTheaterRequest(body)) return false;
-
-  const system = systemText(body.system);
-  // Formal Chat normally carries one or more OurHome system blocks. Keep the
-  // fallback broad enough to survive prompt refactors, but never touch an
-  // unrelated provider request merely because its endpoint is /messages.
-  return /OurHome|叶檀/u.test(system);
+  const text = systemText(body?.system);
+  return text.includes('【回复长度】') && text.includes('【OurHome 房间与入口认知（事实规则）】');
 }
 
 function isThinkingDecisionRequest(url, body) {
@@ -53,61 +40,26 @@ function fixedNoThinkResponse() {
 }
 
 function modelRequestsNativeThinking(model) {
-  return /(?:^|[-_:])(thinking|reasoning)(?:[-_:]|$)|(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-[56](?:[-_:]|$)|^o[134](?:[-_:]|$)/i.test(String(model || ''));
-}
-
-function modelUsesAdaptiveThinking(model) {
-  // OurHome model aliases can carry provider prefixes such as [E] or [即享].
-  // Strip those wrappers before checking the canonical Claude 4.6 family so
-  // claude-opus-4-6-thinking still receives adaptive thinking instead of
-  // accidentally falling back to legacy manual thinking.
-  const normalized = String(model || '').replace(/^\[[^\]]*\]/, '');
-  return /(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-6(?:[-_:]|$)/i.test(normalized);
+  return /(?:^|[-_:])(thinking|reasoning)(?:[-_:]|$)|^o[134](?:[-_:]|$)/i.test(String(model || ''));
 }
 
 function isOfficialAnthropicUrl(url) {
   return /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(String(url || ''));
 }
 
-function thinkingBudgetFor(body) {
-  const maxTokens = Number(body?.max_tokens || 0);
-  if (maxTokens > 4096) return 4096;
-  if (maxTokens > 2048) return Math.min(2048, maxTokens - 1);
-  return 1024;
-}
-
-function addChineseThinkingInstruction(system) {
-  const instruction = '【思考语言】如果本轮返回可见的 thinking 摘要，请使用简体中文书写，保持自然、简洁、易懂；不要因为思考摘要而切换成英文。正式回复仍严格遵循原有的人设、语气和语言要求。';
-  if (typeof system === 'string') return system ? system + '\\n\\n' + instruction : instruction;
-  if (Array.isArray(system)) return [...system, { type: 'text', text: instruction }];
-  return instruction;
-}
-
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
 
+  // The previous patch only enabled native thinking on api.anthropic.com.
+  // OurHome uses an Anthropic-compatible relay, so that condition silently
+  // removed the only chance for the relay to return thinking blocks. Pass the
+  // same Messages API thinking object through to compatible /messages relays.
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
-    nextBody.system = addChineseThinkingInstruction(nextBody.system);
-    const budget = thinkingBudgetFor(nextBody);
-    // Claude 4.6 supports adaptive thinking; Claude 4.5 is manual-only.
-    // The model suffix in OurHome is an alias, while the relay returns the
-    // canonical model name (for example claude-opus-4.5), so choose the wire
-    // format from the requested model rather than assuming every "*thinking"
-    // alias is adaptive-capable.
-    if (modelUsesAdaptiveThinking(nextBody.model)) {
-      nextBody.thinking = { type: 'adaptive', display: 'summarized' };
-      nextBody.output_config = { ...(nextBody.output_config || {}), effort: 'high' };
-      headers.delete('anthropic-beta');
-    } else {
-      nextBody.thinking = { type: 'enabled', budget_tokens: budget, display: 'summarized' };
-      headers.set('anthropic-beta', 'interleaved-thinking-2025-05-14');
-      delete nextBody.output_config;
-    }
-    // Thinking requires temperature=1 (or unset).
-    nextBody.temperature = 1;
+    nextBody.thinking = { type: 'enabled', budget_tokens: 4096 };
   }
 
+  if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
   return { body: nextBody, headers };
 }
 
@@ -120,46 +72,7 @@ if (typeof originalFetch === 'function') {
       if (isThinkingDecisionRequest(url, body)) return fixedNoThinkResponse();
       if (isMainChatRequest(url, body)) {
         const prepared = prepareMainChatRequest(url, body, init.headers);
-        console.log('[thinking:transport] native thinking enabled', {
-          model: prepared.body.model,
-          budget_tokens: prepared.body.thinking?.budget_tokens,
-          max_tokens: prepared.body.max_tokens,
-        });
-        console.log('[thinking:wire] outbound', {
-          model: prepared.body.model,
-          thinking: prepared.body.thinking,
-          output_config: prepared.body.output_config,
-          temperature: prepared.body.temperature,
-          anthropic_beta: prepared.headers.get('anthropic-beta'),
-          max_tokens: prepared.body.max_tokens,
-        });
-        const response = await originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
-        try {
-          const preview = await response.clone().json();
-          const blocks = Array.isArray(preview?.content) ? preview.content.map(block => block?.type || typeof block) : [];
-          const choiceMessages = Array.isArray(preview?.choices)
-            ? preview.choices.map(choice => choice?.message || choice?.delta || {}).filter(Boolean)
-            : [];
-          const responseShape = {
-            topLevelKeys: Object.keys(preview || {}).slice(0, 30),
-            contentBlockTypes: blocks,
-            choiceMessageKeys: choiceMessages.flatMap(message => Object.keys(message || {})).slice(0, 40),
-            hasReasoningContent: choiceMessages.some(message => Boolean(message?.reasoning_content)),
-            hasReasoning: choiceMessages.some(message => Boolean(message?.reasoning)),
-            hasReasoningDetails: choiceMessages.some(message => Boolean(message?.reasoning_details)),
-            hasThinkingField: Boolean(preview?.thinking || preview?.message?.thinking),
-          };
-          console.log('[thinking:wire] inbound', {
-            status: response.status,
-            blockTypes: blocks,
-            hasThinking: blocks.includes('thinking') || responseShape.hasReasoningContent || responseShape.hasReasoning || responseShape.hasReasoningDetails || responseShape.hasThinkingField,
-            responseModel: preview?.model || null,
-            responseShape,
-          });
-        } catch (error) {
-          console.warn('[thinking:wire] inbound parse skipped:', error.message);
-        }
-        return response;
+        return originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
       }
     } catch (error) {
       console.warn('[thinking:transport] request patch skipped:', error.message);
@@ -172,7 +85,7 @@ try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function thinkingHealthJson(body) {
-    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v11' };
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v10' };
     return originalJson.call(this, body);
   };
 } catch (error) {
