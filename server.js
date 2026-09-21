@@ -5710,17 +5710,7 @@ app.post('/chat', async (req, res) => {
 
     let finalInputTokens = totalInputTokens;
     let finalOutputTokens = totalOutputTokens;
-    if (shouldThink && !thinkingText && !isOfficialAnthropicApi(settings)) {
-      const fallback = await generateRelayThinkingSummary({
-        settings,
-        model: modelName,
-        userMessage: latestUserMessage,
-        replyText,
-      });
-      thinkingText = fallback.thinkingText;
-      finalInputTokens += fallback.inputTokens;
-      finalOutputTokens += fallback.outputTokens;
-    }
+
 
     const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
@@ -5833,17 +5823,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const replyText = extractText(result).trim();
     let finalInputTokens = totalInputTokens;
     let finalOutputTokens = totalOutputTokens;
-    if (shouldThink && !thinkingText && !isOfficialAnthropicApi(settings)) {
-      const fallback = await generateRelayThinkingSummary({
-        settings,
-        model: modelNameRegen,
-        userMessage: lastUserMsg?.content || '',
-        replyText,
-      });
-      thinkingText = fallback.thinkingText;
-      finalInputTokens += fallback.inputTokens;
-      finalOutputTokens += fallback.outputTokens;
-    }
+
     const payload = {
       content: replyText, reasoning_content: thinkingText || null,
       input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
