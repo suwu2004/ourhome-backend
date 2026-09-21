@@ -124,11 +124,24 @@ if (typeof originalFetch === 'function') {
         try {
           const preview = await response.clone().json();
           const blocks = Array.isArray(preview?.content) ? preview.content.map(block => block?.type || typeof block) : [];
+          const choiceMessages = Array.isArray(preview?.choices)
+            ? preview.choices.map(choice => choice?.message || choice?.delta || {}).filter(Boolean)
+            : [];
+          const responseShape = {
+            topLevelKeys: Object.keys(preview || {}).slice(0, 30),
+            contentBlockTypes: blocks,
+            choiceMessageKeys: choiceMessages.flatMap(message => Object.keys(message || {})).slice(0, 40),
+            hasReasoningContent: choiceMessages.some(message => Boolean(message?.reasoning_content)),
+            hasReasoning: choiceMessages.some(message => Boolean(message?.reasoning)),
+            hasReasoningDetails: choiceMessages.some(message => Boolean(message?.reasoning_details)),
+            hasThinkingField: Boolean(preview?.thinking || preview?.message?.thinking),
+          };
           console.log('[thinking:wire] inbound', {
             status: response.status,
             blockTypes: blocks,
-            hasThinking: blocks.includes('thinking'),
+            hasThinking: blocks.includes('thinking') || responseShape.hasReasoningContent || responseShape.hasReasoning || responseShape.hasReasoningDetails || responseShape.hasThinkingField,
             responseModel: preview?.model || null,
+            responseShape,
           });
         } catch (error) {
           console.warn('[thinking:wire] inbound parse skipped:', error.message);
