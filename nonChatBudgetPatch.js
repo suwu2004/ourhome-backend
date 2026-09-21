@@ -89,10 +89,16 @@ function isAgentMailReadRequest(body) {
   const tools = Array.isArray(body?.tools) ? body.tools : [];
   const names = tools.map(tool => String(tool?.name || '').toLowerCase());
   const hasReadTool = names.some(name => /check_agentmail_inbox|read_agentmail_message|read_agentmail_activity/.test(name));
-  const hasWriteTool = names.some(name => /send_agentmail_message|reply_agentmail_message/.test(name));
-  if (!hasReadTool || hasWriteTool) return false;
+  if (!hasReadTool) return false;
   const text = systemText(body?.system) + '\\n' + messageText(body?.messages);
-  return /查看|检查|读取|读邮件|收件箱|来信|邮件内容|mail|inbox/.test(text);
+  // Chat exposes the full AgentMail toolset on both read and write turns, so
+  // the mere presence of send/reply tools cannot identify a write. Decide from
+  // the actual request intent instead: reading/checking stays cheap; composing,
+  // sending, or replying keeps the model selected by the user.
+  if (/写邮件|撰写邮件|写一封|发邮件|发送邮件|寄邮件|回复邮件|回邮件|回信|send\\s+email|write\\s+email|draft\\s+email|reply\\s+to|reply\\s+email/i.test(text)) {
+    return false;
+  }
+  return /查看|检查|读取|读邮件|收件箱|来信|邮件内容|查看邮件|mail|inbox/i.test(text);
 }
 
 function isToyboxRequest(body) {
