@@ -76,11 +76,19 @@ function thinkingBudgetFor(body) {
   return 1024;
 }
 
+function addChineseThinkingInstruction(system) {
+  const instruction = '【思考语言】如果本轮返回可见的 thinking 摘要，请使用简体中文书写，保持自然、简洁、易懂；不要因为思考摘要而切换成英文。正式回复仍严格遵循原有的人设、语气和语言要求。';
+  if (typeof system === 'string') return system ? system + '\\n\\n' + instruction : instruction;
+  if (Array.isArray(system)) return [...system, { type: 'text', text: instruction }];
+  return instruction;
+}
+
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
 
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
+    nextBody.system = addChineseThinkingInstruction(nextBody.system);
     const budget = thinkingBudgetFor(nextBody);
     // Claude 4.6 supports adaptive thinking; Claude 4.5 is manual-only.
     // The model suffix in OurHome is an alias, while the relay returns the
