@@ -106,7 +106,28 @@ if (typeof originalFetch === 'function') {
           budget_tokens: prepared.body.thinking?.budget_tokens,
           max_tokens: prepared.body.max_tokens,
         });
-        return originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
+        console.log('[thinking:wire] outbound', {
+          model: prepared.body.model,
+          thinking: prepared.body.thinking,
+          output_config: prepared.body.output_config,
+          temperature: prepared.body.temperature,
+          anthropic_beta: prepared.headers.get('anthropic-beta'),
+          max_tokens: prepared.body.max_tokens,
+        });
+        const response = await originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
+        try {
+          const preview = await response.clone().json();
+          const blocks = Array.isArray(preview?.content) ? preview.content.map(block => block?.type || typeof block) : [];
+          console.log('[thinking:wire] inbound', {
+            status: response.status,
+            blockTypes: blocks,
+            hasThinking: blocks.includes('thinking'),
+            responseModel: preview?.model || null,
+          });
+        } catch (error) {
+          console.warn('[thinking:wire] inbound parse skipped:', error.message);
+        }
+        return response;
       }
     } catch (error) {
       console.warn('[thinking:transport] request patch skipped:', error.message);
