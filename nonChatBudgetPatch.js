@@ -75,6 +75,21 @@ function isModelRequest(url, body) {
   return /\/(?:messages|chat\/completions|responses)\/?$/i.test(path);
 }
 
+function hasAgentMailTool(body) {
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  return tools.some(tool => {
+    const text = `${tool?.name || ''} ${tool?.description || ''}`.toLowerCase();
+    return /agentmail|邮箱|邮件|inbox|mail/.test(text);
+  });
+}
+
+function isAgentMailChatRequest(body) {
+  if (!isMainChatRequest('', body)) return false;
+  if (!hasAgentMailTool(body)) return false;
+  const text = `${systemText(body?.system)}\\n${messageText(body?.messages)}`;
+  return /邮箱|邮件|收件箱|来信|邮件内容|mail|inbox/.test(text);
+}
+
 function isToyboxRequest(body) {
   const text = `${systemText(body?.system)}\n${messageText(body?.messages)}`;
   return text.includes('【玩具箱】') || text.includes('【玩具熊】');
@@ -259,7 +274,7 @@ if (typeof providerFetch === 'function') {
     // foreground conversation, so it should never inherit Opus/Sonnet pricing.
     // Happiness Diary and final learning-note synthesis deliberately keep the
     // active Chat model; consent, planning and filtering stay behind the guard.
-    if ((!heartbeat && isMainChatRequest(url, body)) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(explicitPurpose)) {
+    if ((!heartbeat && isMainChatRequest(url, body) && !isAgentMailChatRequest(body)) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(explicitPurpose)) {
       return providerFetch(input, init);
     }
 
@@ -312,6 +327,8 @@ module.exports = {
   isTheaterMemoryRequest,
   isTheaterRequest,
   isVisionReaderRequest,
+  hasAgentMailTool,
+  isAgentMailChatRequest,
   inferPurpose,
   isHeartbeatPurpose,
   requestPurpose,
