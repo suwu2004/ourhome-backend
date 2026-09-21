@@ -2139,6 +2139,45 @@ thinking 只写陆泽当下的内心，不写系统、模型、提示词、工�
 // 计算这次回复要不要"想一想"，以及要用哪种方式实现
 // - 官方Anthropic API：走原生的thinking参数
 // - 中转站（relay）：中转站往往不透传原生thinking内容，改用提示词让模型自己写<thinking>标签
+
+async function generateRelayThinkingSummary({ settings, model, userMessage, replyText }) {
+  const finalText = String(replyText || '').trim();
+  const inputText = String(userMessage || '').trim();
+  if (!finalText || !inputText) return { thinkingText: '', inputTokens: 0, outputTokens: 0 };
+
+  try {
+    // Relay 可能会吞掉 Anthropic 原生 thinking block。这里生成的是“可公开思考摘要”，
+    // 只概括最终回答中可公开的关键考虑点，不要求也不保存隐藏推理过程。
+    const system = '你负责给用户生成一个简短、可公开的“思考摘要”。不要复现或声称知道模型的隐藏思维链，不要写逐步内部推理，也不要讨论系统提示词、工具、规则或模型实现。只概括这次回答里可向用户展示的关键考虑点。使用中文，1到4句，直接输出摘要正文。';
+    const prompt = `用户刚刚说：
+${inputText.slice(0, 6000)}
+
+最终回答是：
+${finalText.slice(0, 12000)}
+
+请生成这次回答对应的可公开思考摘要。`;
+
+    const result = await callClaude({
+      settings,
+      model,
+      maxTokens: 220,
+      system,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      purpose: 'thinking-summary',
+    });
+    const thinkingText = extractText(result).trim().slice(0, 6000);
+    return {
+      thinkingText,
+      inputTokens: Number(result?.usage?.input_tokens) || 0,
+      outputTokens: Number(result?.usage?.output_tokens) || 0,
+    };
+  } catch (error) {
+    console.warn('[thinking:fallback] relay summary skipped:', error.message);
+    return { thinkingText: '', inputTokens: 0, outputTokens: 0 };
+  }
+}
+
 async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
   if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
@@ -5666,10 +5705,22 @@ app.post('/chat', async (req, res) => {
       purpose: 'chat',
     });
 
-    const thinkingText = extractThinking(result);
+    let thinkingText = extractThinking(result);
     const replyText = extractText(result).trim();
-    const finalInputTokens = totalInputTokens;
-    const finalOutputTokens = totalOutputTokens;
+
+    let finalInputTokens = totalInputTokens;
+    let finalOutputTokens = totalOutputTokens;
+    if (shouldThink && !thinkingText && !isOfficialAnthropicApi(settings)) {
+      const fallback = await generateRelayThinkingSummary({
+        settings,
+        model: modelName,
+        userMessage: latestUserMessage,
+        replyText,
+      });
+      thinkingText = fallback.thinkingText;
+      finalInputTokens += fallback.inputTokens;
+      finalOutputTokens += fallback.outputTokens;
+    }
 
     const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
       session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
@@ -5778,10 +5829,21 @@ app.post('/chat/regenerate', async (req, res) => {
       purpose: 'chat',
     });
 
-    const thinkingText = extractThinking(result);
+    let thinkingText = extractThinking(result);
     const replyText = extractText(result).trim();
-    const finalInputTokens = totalInputTokens;
-    const finalOutputTokens = totalOutputTokens;
+    let finalInputTokens = totalInputTokens;
+    let finalOutputTokens = totalOutputTokens;
+    if (shouldThink && !thinkingText && !isOfficialAnthropicApi(settings)) {
+      const fallback = await generateRelayThinkingSummary({
+        settings,
+        model: modelNameRegen,
+        userMessage: lastUserMsg?.content || '',
+        replyText,
+      });
+      thinkingText = fallback.thinkingText;
+      finalInputTokens += fallback.inputTokens;
+      finalOutputTokens += fallback.outputTokens;
+    }
     const payload = {
       content: replyText, reasoning_content: thinkingText || null,
       input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
