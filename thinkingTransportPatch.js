@@ -1,8 +1,10 @@
 'use strict';
 
-// Preserve provider-native thinking for official Anthropic and compatible relay
-// endpoints. A model name containing "thinking" is not sufficient by itself,
-// but the selected OurHome thinking models use the Anthropic Messages shape.
+// Preserve provider-native thinking for formal OurHome Chat requests sent through
+// Anthropic-compatible /messages relays. The old version depended on two exact
+// prompt headings; that was too brittle because prompt cleanup/context layers
+// can legitimately change those headings. We identify formal Chat by the
+// /messages shape + an OurHome system prompt, while explicitly excluding Theater.
 const originalFetch = globalThis.fetch;
 
 function systemText(system) {
@@ -15,14 +17,25 @@ function messageText(messages) {
   return (Array.isArray(messages) ? messages : []).map(message => {
     if (typeof message?.content === 'string') return message.content;
     if (!Array.isArray(message?.content)) return '';
-    return message.content.map(block => typeof block === 'string' ? block : block?.text || '').filter(Boolean).join('\n');
+    return message.content.map(block => typeof block === 'string' ? block : block?.text || block?.content || '').filter(Boolean).join('\n');
   }).join('\n');
 }
 
-function isMainChatRequest(url, body) {
-  if (!/\/messages(?:\?|$)/i.test(String(url || ''))) return false;
+function isTheaterRequest(body) {
   const text = systemText(body?.system);
-  return text.includes('【回复长度】') && text.includes('【OurHome 房间与入口认知（事实规则）】');
+  return /OurHome 的[“"]小剧场[”](?:长文|互动)写作引擎/u.test(text);
+}
+
+function isMainChatRequest(url, body = {}) {
+  if (!/\/messages(?:\?|$)/i.test(String(url || ''))) return false;
+  if (!Array.isArray(body?.messages) || body.messages.length === 0) return false;
+  if (isTheaterRequest(body)) return false;
+
+  const system = systemText(body.system);
+  // Formal Chat normally carries one or more OurHome system blocks. Keep the
+  // fallback broad enough to survive prompt refactors, but never touch an
+  // unrelated provider request merely because its endpoint is /messages.
+  return /OurHome|叶檀/u.test(system);
 }
 
 function isThinkingDecisionRequest(url, body) {
@@ -40,23 +53,30 @@ function fixedNoThinkResponse() {
 }
 
 function modelRequestsNativeThinking(model) {
-  return /(?:^|[-_:])(thinking|reasoning)(?:[-_:]|$)|^o[134](?:[-_:]|$)/i.test(String(model || ''));
+  return /(?:^|[-_:])(thinking|reasoning)(?:[-_:]|$)|(?:^|[-_:])(?:claude-)?(?:opus|sonnet|haiku)-4-6(?:[-_:]|$)|^o[134](?:[-_:]|$)/i.test(String(model || ''));
 }
 
 function isOfficialAnthropicUrl(url) {
   return /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(String(url || ''));
 }
 
+function thinkingBudgetFor(body) {
+  const maxTokens = Number(body?.max_tokens || 0);
+  if (maxTokens > 4096) return 4096;
+  if (maxTokens > 2048) return Math.min(2048, maxTokens - 1);
+  return 1024;
+}
+
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
 
-  // The previous patch only enabled native thinking on api.anthropic.com.
-  // OurHome uses an Anthropic-compatible relay, so that condition silently
-  // removed the only chance for the relay to return thinking blocks. Pass the
-  // same Messages API thinking object through to compatible /messages relays.
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
-    nextBody.thinking = { type: 'enabled', budget_tokens: 4096 };
+    const budget = thinkingBudgetFor(nextBody);
+    nextBody.thinking = { type: 'enabled', budget_tokens: budget };
+    // Anthropic requires budget_tokens < max_tokens. If the existing output
+    // ceiling is too small, raise it only enough to leave room for thinking.
+    if (Number(nextBody.max_tokens || 0) <= budget) nextBody.max_tokens = budget + 1024;
   }
 
   if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
@@ -72,6 +92,11 @@ if (typeof originalFetch === 'function') {
       if (isThinkingDecisionRequest(url, body)) return fixedNoThinkResponse();
       if (isMainChatRequest(url, body)) {
         const prepared = prepareMainChatRequest(url, body, init.headers);
+        console.log('[thinking:transport] native thinking enabled', {
+          model: prepared.body.model,
+          budget_tokens: prepared.body.thinking?.budget_tokens,
+          max_tokens: prepared.body.max_tokens,
+        });
         return originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
       }
     } catch (error) {
@@ -85,7 +110,7 @@ try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function thinkingHealthJson(body) {
-    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v10' };
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v11' };
     return originalJson.call(this, body);
   };
 } catch (error) {
