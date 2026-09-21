@@ -73,13 +73,19 @@ function prepareMainChatRequest(url, body, headersInit) {
 
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
     const budget = thinkingBudgetFor(nextBody);
-    nextBody.thinking = { type: 'enabled', budget_tokens: budget };
+    nextBody.thinking = { type: 'enabled', budget_tokens: budget, display: 'summarized' };
+    // Our /chat route normally sets temperature=1 and the interleaved-thinking
+    // beta header when thinking is enabled. Because this compatibility patch
+    // injects thinking after /chat has already built the provider request, we
+    // must preserve those two provider requirements here as well; otherwise
+    // some relays silently discard the thinking request.
+    nextBody.temperature = 1;
+    headers.set('anthropic-beta', 'interleaved-thinking-2025-05-14');
     // Anthropic requires budget_tokens < max_tokens. If the existing output
     // ceiling is too small, raise it only enough to leave room for thinking.
     if (Number(nextBody.max_tokens || 0) <= budget) nextBody.max_tokens = budget + 1024;
   }
 
-  if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
   return { body: nextBody, headers };
 }
 
