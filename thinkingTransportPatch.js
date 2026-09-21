@@ -73,17 +73,20 @@ function prepareMainChatRequest(url, body, headersInit) {
 
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
     const budget = thinkingBudgetFor(nextBody);
-    nextBody.thinking = { type: 'enabled', budget_tokens: budget, display: 'summarized' };
-    // Our /chat route normally sets temperature=1 and the interleaved-thinking
-    // beta header when thinking is enabled. Because this compatibility patch
-    // injects thinking after /chat has already built the provider request, we
-    // must preserve those two provider requirements here as well; otherwise
-    // some relays silently discard the thinking request.
+    // Claude Opus 4.6 supports legacy manual thinking, but Anthropic now
+    // recommends adaptive thinking for 4.6. In particular, Opus 4.6 only
+    // interleaves tool-use reasoning in adaptive mode. Some Anthropic-compatible
+    // relays accept the old `enabled + budget_tokens` shape but silently drop
+    // the thinking blocks; use the current wire format so the relay has a
+    // standard Claude 4.6 request to forward.
+    nextBody.thinking = { type: 'adaptive', display: 'summarized' };
+    nextBody.output_config = { ...(nextBody.output_config || {}), effort: 'high' };
+    // Thinking requires temperature=1 (or unset). The /chat route can have
+    // already supplied another sampling value before this transport patch runs.
     nextBody.temperature = 1;
-    headers.set('anthropic-beta', 'interleaved-thinking-2025-05-14');
-    // Anthropic requires budget_tokens < max_tokens. If the existing output
-    // ceiling is too small, raise it only enough to leave room for thinking.
-    if (Number(nextBody.max_tokens || 0) <= budget) nextBody.max_tokens = budget + 1024;
+    // Adaptive thinking interleaves automatically; no legacy beta header is
+    // required. Remove a stale manual-thinking header if an earlier layer set it.
+    headers.delete('anthropic-beta');
   }
 
   return { body: nextBody, headers };
