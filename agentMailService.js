@@ -2,7 +2,6 @@
 
 const crypto = require('crypto');
 const { Webhook } = require('svix');
-const { detectHardPrivacyRisks } = require('./emailPrivacy');
 const {
   AgentMailError,
   DEFAULT_AGENTMAIL_BASE_URL,
@@ -20,6 +19,20 @@ const ACTIVITY_SELECT = [
   'body_preview', 'reason', 'error', 'metadata', 'external_created_at',
   'created_at', 'updated_at',
 ].join(', ');
+
+function detectHardPrivacyRisks({ subject = '', text = '', contextUsed = '' } = {}) {
+  const haystack = [subject, text, contextUsed].filter(Boolean).join('\n');
+  const risks = [];
+  const rules = [
+    { label: '身份证号码', re: /\\b\\d{17}[0-9Xx]\\b/ },
+    { label: '银行卡号', re: /\\b(?:\\d[ -]?){16,19}\\b/ },
+    { label: '手机号', re: /(?<!\\d)(?:1[3-9]\\d{9})(?!\\d)/ },
+    { label: 'API密钥/访问令牌', re: /\\b(?:sk-[A-Za-z0-9_-]{20,}|(?:api[_-]?key|access[_-]?token|secret)[=:]\\s*[A-Za-z0-9._-]{16,})\\b/i },
+    { label: '密码', re: /(?:password|passwd|密码)\\s*[:=：]\\s*\\S{6,}/i },
+  ];
+  for (const rule of rules) if (rule.re.test(haystack)) risks.push({ label: rule.label });
+  return risks;
+}
 
 function cleanText(value, max = 500, fallback = '') {
   const text = String(value ?? '').trim();
