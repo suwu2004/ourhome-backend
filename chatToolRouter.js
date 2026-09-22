@@ -80,6 +80,15 @@ function selectChatTools(tools, routingContext) {
   const text = normalizeRoutingText(routingContext);
   const selected = new Set();
 
+  // 邮件任务优先走最小工具集，避免历史消息里的“记得/搜索”等关键词
+  // 把无关工具一起暴露给模型，造成连续的工具调用链。
+  if (INTENTS.find(([intent, pattern]) => intent === 'agentmail' && pattern.test(text))) {
+    addNames(selected, GROUPS.agentmail);
+    if (MEMORY_LOOKUP_RE.test(text)) selected.add('search_memories');
+    if (CHAT_HISTORY_RE.test(text)) selected.add('search_chat_history');
+    return tools.filter(tool => selected.has(tool?.name));
+  }
+
   if (CHAT_HISTORY_RE.test(text)) {
     selected.add('search_chat_history');
   } else if (MEMORY_LOOKUP_RE.test(text)) {
