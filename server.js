@@ -310,10 +310,12 @@ const DEFAULT_API_BASE = process.env.ANTHROPIC_API_BASE_URL || 'https://api.dzzi
 
 // 判断模型类型
 function isThinkingModel(model) {
-  // 只有不带中括号前缀的官方thinking模型才认为是"relay内置thinking"
-  // 带前缀的（如[晚卷-kiro-0.04]claude-sonnet-4-6-thinking）需要手动传thinking参数
-  const m = (model || '').toLowerCase();
-  return m.includes('thinking') && !m.startsWith('[');
+  // 站点给模型加的 [A]/[B]/[C1] 等路由前缀不是模型名本身。
+  // 先剥掉所有前缀，再判断真实模型是否属于 thinking/reasoning 系列。
+  const m = String(model || '')
+    .replace(/^\s*(?:\[[^\]]*\]\s*)+/, '')
+    .toLowerCase();
+  return /(?:thinking|reasoning)/i.test(m);
 }
 function isGeminiModel(model) { return (model || '').toLowerCase().includes('gemini'); }
 
