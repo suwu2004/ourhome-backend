@@ -96,6 +96,25 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
       ];
     }
 
+    if (mailActionExecuted) {
+      const lastMail = executed.find(item =>
+        item.name === 'send_agentmail_message' || item.name === 'reply_agentmail_message'
+      );
+      const ok = Boolean(lastMail?.result?.ok);
+      const actionName = lastMail?.name === 'reply_agentmail_message' ? '回复' : '发送';
+      const subject = String(lastMail?.result?.message?.subject || lastMail?.result?.activity?.subject || '').trim();
+      const suffix = subject ? `《${subject}》` : '这封邮件';
+      result = {
+        ...result,
+        content: [{
+          type: 'text',
+          text: ok ? `${actionName}${suffix}成功了。` : `${actionName}${suffix}没有成功：${String(lastMail?.result?.error || '操作未完成')}`,
+        }],
+        stop_reason: 'end_turn',
+      };
+      break;
+    }
+
     result = await callRound();
     totalInputTokens += result.usage?.input_tokens || 0;
     totalOutputTokens += result.usage?.output_tokens || 0;
