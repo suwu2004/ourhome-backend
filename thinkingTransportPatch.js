@@ -47,6 +47,16 @@ function isOfficialAnthropicUrl(url) {
   return /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(String(url || ''));
 }
 
+function thinkingBudgetFor(body) {
+  const maxTokens = Number(body?.max_tokens || 0);
+  // Anthropic requires budget_tokens to be < max_tokens for normal manual
+  // thinking. Our Chat defaults can legitimately set max_tokens to 4000, so a
+  // fixed 4096 budget makes every thinking-model request fail with HTTP 400.
+  if (maxTokens <= 1024) return 0;
+  if (maxTokens > 4096) return 4096;
+  return Math.max(1024, maxTokens - 1);
+}
+
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
@@ -56,7 +66,11 @@ function prepareMainChatRequest(url, body, headersInit) {
   // removed the only chance for the relay to return thinking blocks. Pass the
   // same Messages API thinking object through to compatible /messages relays.
   if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
-    nextBody.thinking = { type: 'enabled', budget_tokens: 4096 };
+    const budget = thinkingBudgetFor(nextBody);
+    if (budget >= 1024) {
+      nextBody.thinking = { type: 'enabled', budget_tokens: budget };
+      nextBody.temperature = 1;
+    }
   }
 
   if (!isOfficialAnthropicUrl(url)) headers.delete('anthropic-beta');
