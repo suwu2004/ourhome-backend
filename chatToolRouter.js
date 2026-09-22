@@ -84,8 +84,15 @@ function selectChatTools(tools, routingContext) {
   // 把无关工具一起暴露给模型，造成连续的工具调用链。
   if (INTENTS.find(([intent, pattern]) => intent === 'agentmail' && pattern.test(text))) {
     addNames(selected, GROUPS.agentmail);
-    if (MEMORY_LOOKUP_RE.test(text)) selected.add('search_memories');
-    if (CHAT_HISTORY_RE.test(text)) selected.add('search_chat_history');
+
+    // 邮件任务只根据“当前这条用户请求”决定是否需要额外检索记忆/聊天原文。
+    // 不再拿最近 4 条消息一起匹配，否则上一轮聊天里出现“以前/记得/聊天记录”
+    // 也会把检索工具带进邮件任务，白白增加工具轮次和上下文。
+    const currentUserText = Array.isArray(routingContext)
+      ? String(routingContext.at(-1)?.content ?? '').trim()
+      : text;
+    if (MEMORY_LOOKUP_RE.test(currentUserText)) selected.add('search_memories');
+    if (CHAT_HISTORY_RE.test(currentUserText)) selected.add('search_chat_history');
     return tools.filter(tool => selected.has(tool?.name));
   }
 
