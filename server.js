@@ -2791,6 +2791,15 @@ async function recordMemoryJournalTurn({
 }
 
 function queueMemoryJournalTurn(payload) {
+  // 邮件收发本身已经写入 AgentMail 知情记录。不要再为同一轮后台跑一次
+  // 记忆日志模型，否则“发一封邮件”会平白增加一轮模型调用和延迟。
+  const actions = Array.isArray(payload?.actionsPerformed) ? payload.actionsPerformed : [];
+  const hasAgentMailAction = actions.some(action => (
+    action?.name === 'send_agentmail_message'
+    || action?.name === 'reply_agentmail_message'
+  ) && action?.result?.ok);
+  if (hasAgentMailAction) return;
+
   setImmediate(() => {
     recordMemoryJournalTurn(payload).catch(error => {
       console.error('记忆日志写入失败:', error.message);
@@ -5690,6 +5699,7 @@ app.post('/chat', async (req, res) => {
       assistantMessageId: assistantMessage.id,
       userText: latestUserMessage,
       assistantText: replyText,
+      actionsPerformed,
     });
 
     res.json({
