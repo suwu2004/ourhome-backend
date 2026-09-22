@@ -89,7 +89,7 @@ function selectChatTools(tools, routingContext) {
     // 不再拿最近 4 条消息一起匹配，否则上一轮聊天里出现“以前/记得/聊天记录”
     // 也会把检索工具带进邮件任务，白白增加工具轮次和上下文。
     const currentUserText = Array.isArray(routingContext)
-      ? String(routingContext.at(-1)?.content ?? '').trim()
+      ? String(routingContext[routingContext.length - 1]?.content ?? '').trim()
       : text;
     if (MEMORY_LOOKUP_RE.test(currentUserText)) selected.add('search_memories');
     if (CHAT_HISTORY_RE.test(currentUserText)) selected.add('search_chat_history');
