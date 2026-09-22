@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { Webhook } = require('svix');
+const { detectHardPrivacyRisks } = require('./emailPrivacy');
 const {
   AgentMailError,
   DEFAULT_AGENTMAIL_BASE_URL,
@@ -411,23 +412,25 @@ function createAgentMailService({
       metadata: { context_used: cleanText(contextUsed, 1200) || null },
     });
     try {
-      const privacy = await runPrivacyReview({
-        action: 'send',
-        to: recipients,
+      // 主动寄信只做确定性的高敏风险扫描，不再额外调用模型做重复审查。
+      // 这样一次“写邮件 → 发送”只需要模型完成工具调用和工具结果后的最终回复两轮。
+      const hardRisks = detectHardPrivacyRisks({
         subject: safeSubject,
         text: safeBody,
         contextUsed: cleanText(contextUsed, 1200),
       });
-      if (!privacy?.allowed) {
+      if (hardRisks.length) {
+        const reasonText = `检测到${hardRisks.map(item => item.label).join('、')}，按隐私规则不发送`;
         await auditStore.update(activity.id, {
           event_key: `agentmail:privacy-blocked:${activity.id}`,
           status: 'skipped',
-          error: cleanText(privacy?.reason, 1200, '邮件包含不适合外发的私人内容'),
+          error: reasonText,
           metadata: {
             context_used: cleanText(contextUsed, 1200) || null,
             privacy_review: {
               allowed: false,
-              reason: cleanText(privacy?.reason, 1200),
+              mode: 'deterministic',
+              reason: reasonText,
             },
           },
         });
@@ -454,8 +457,9 @@ function createAgentMailService({
           context_used: cleanText(contextUsed, 1200) || null,
           privacy_review: {
             allowed: true,
-            reason: cleanText(privacy?.reason, 1200),
-            safe_summary: cleanText(privacy?.safe_summary, 1200),
+            mode: 'deterministic',
+            reason: '未命中服务端高敏隐私边界',
+            safe_summary: '',
           },
           provider_response: { message_id: message.message_id, thread_id: message.thread_id },
         },
