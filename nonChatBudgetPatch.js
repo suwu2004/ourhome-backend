@@ -83,6 +83,17 @@ function hasAgentMailTool(body) {
   });
 }
 
+function isAgentMailDecisionRequest(body, url = '') {
+  const path = safeUrl(url)?.pathname || '';
+  if (!/\/agentmail\/webhook\/?$/i.test(path)) return false;
+  if (!hasAgentMailTool(body)) return false;
+  const text = systemText(body?.system) + '\n' + messageText(body?.messages);
+  // Webhook first pass is only the “要不要回复/如何处理”判断；真正生成邮件
+  // 正文仍保留 Chat 选定模型。这样自主收信不会用昂贵模型做路由判断。
+  if (/(写邮件|撰写邮件|写一封|发邮件|发送邮件|寄邮件|回复邮件|回邮件|回信|生成回复|写回复|reply\s+to|reply\s+email|draft\s+email)/i.test(text)) return false;
+  return /(判断|决定|是否回复|要不要回复|需不需要回复|处理这封来信|自主回复|来信)/i.test(text);
+}
+
 function isAgentMailReadRequest(body) {
   const system = systemText(body?.system);
   if (!system.includes('【回复长度】') || !system.includes('【OurHome 房间与入口认知（事实规则）】')) return false;
@@ -285,6 +296,17 @@ if (typeof providerFetch === 'function') {
     // foreground conversation, so it should never inherit Opus/Sonnet pricing.
     // Happiness Diary and final learning-note synthesis deliberately keep the
     // active Chat model; consent, planning and filtering stay behind the guard.
+    if (isAgentMailDecisionRequest(body, url)) {
+      const model = await cheapestModel({ vision: false });
+      if (!model) return localBudgetError('当前 API 站点暂时没有可用的省钱模型，已停止这次邮箱判断，避免误用 Chat 模型。');
+      const headers = new Headers(init.headers || undefined);
+      headers.set('X-OurHome-Call-Purpose', 'agentmail-decision');
+      const originalModel = String(body.model || '');
+      const nextBody = { ...body, model };
+      if (originalModel !== model) console.log(`[budget-model] agentmail-decision ${originalModel} -> ${model}`);
+      return providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+    }
+
     if ((!heartbeat && isMainChatRequest(url, body) && !isAgentMailReadRequest(body)) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(explicitPurpose)) {
       return providerFetch(input, init);
     }
@@ -340,6 +362,7 @@ module.exports = {
   isVisionReaderRequest,
   hasAgentMailTool,
   isAgentMailReadRequest,
+  isAgentMailDecisionRequest,
   inferPurpose,
   isHeartbeatPurpose,
   requestPurpose,
