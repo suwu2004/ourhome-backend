@@ -154,7 +154,21 @@ function createAgentMailAuditStore(supabase) {
     return data || [];
   }
 
-  return Object.freeze({ insert, update, list });
+  async function findLatestByMessageId(messageId) {
+    const normalizedId = cleanText(messageId, 500);
+    if (!normalizedId) return null;
+    const { data, error } = await supabase.from('agentmail_activity')
+      .select(ACTIVITY_SELECT)
+      .eq('message_id', normalizedId)
+      .in('action', ['read', 'received', 'sent', 'replied'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  return Object.freeze({ findLatestByMessageId, insert, update, list });
 }
 
 function publicActivity(activity) {
@@ -483,25 +497,44 @@ function createAgentMailService({
     if (!targetId) throw new AgentMailError('缺少要回复的邮件编号', { status: 400, code: 'invalid_message' });
     const safeBody = cleanText(text, MAX_BODY_CHARS);
     if (!safeBody) throw new AgentMailError('回复正文不能为空', { status: 400, code: 'invalid_body' });
-    const originalRaw = await runtime.client.getMessage(targetId);
-    const original = normalizeAgentMailMessage(originalRaw, runtime.inboxId);
-    await auditStore.insert({
-      connection_id: runtime.connection.id,
-      action: 'read',
-      direction: original.direction,
-      actor,
-      status: 'succeeded',
-      message_id: original.message_id || targetId,
-      thread_id: original.thread_id,
-      subject: original.subject,
-      sender: original.from,
-      recipients: original.to,
-      body_text: original.text,
-      body_preview: original.preview,
-      reason: '陆泽在回复前读了这封邮件',
-      metadata: { attachments: original.attachments },
-      external_created_at: original.timestamp,
-    });
+    // 当前流程如果已经读过这封邮件，直接复用审计记录里的正文，避免
+    // “读邮件 → 回复邮件”又向 AgentMail 重复拉取同一封邮件。
+    const cached = await auditStore.findLatestByMessageId(targetId).catch(() => null);
+    let original = null;
+    if (cached?.body_text || cached?.subject) {
+      original = normalizeAgentMailMessage({
+        message_id: cached.message_id || targetId,
+        thread_id: cached.thread_id,
+        direction: cached.direction,
+        from: cached.sender,
+        to: cached.recipients,
+        subject: cached.subject,
+        text: cached.body_text,
+        preview: cached.body_preview,
+        timestamp: cached.external_created_at || cached.created_at,
+      }, runtime.inboxId);
+    }
+    if (!original?.message_id || !original?.text) {
+      const originalRaw = await runtime.client.getMessage(targetId);
+      original = normalizeAgentMailMessage(originalRaw, runtime.inboxId);
+      await auditStore.insert({
+        connection_id: runtime.connection.id,
+        action: 'read',
+        direction: original.direction,
+        actor,
+        status: 'succeeded',
+        message_id: original.message_id || targetId,
+        thread_id: original.thread_id,
+        subject: original.subject,
+        sender: original.from,
+        recipients: original.to,
+        body_text: original.text,
+        body_preview: original.preview,
+        reason: '陆泽在回复前读了这封邮件',
+        metadata: { attachments: original.attachments },
+        external_created_at: original.timestamp,
+      });
+    }
     const recipients = original.from ? [original.from] : [];
     const activity = await auditStore.insert({
       connection_id: runtime.connection.id,
