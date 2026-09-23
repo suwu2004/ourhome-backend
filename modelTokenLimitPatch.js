@@ -34,7 +34,7 @@ if (typeof originalFetch === 'function') {
       try {
         let body = JSON.parse(init.body);
         if (isModelMessageRequest(url, body)) {
-          const roomLimit = raiseRoomOutputLimit(body, requestPurpose(init.headers));
+          const roomLimit = raiseRoomOutputLimit(body, requestPurpose(init.headers), { official: isOfficialAnthropicUrl(url) });
           body = roomLimit.body;
 
           const requested = Number(body.max_tokens) || 0;
