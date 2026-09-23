@@ -2918,26 +2918,31 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
 
   let result = await callRound();
 
-  // 某些 Claude 中转线路会对带有 thinking/摘要协议的首轮请求返回
-  // 200 + end_turn，但 text block 为空。这不是“没有思考”，而是没有可交付的答案。
-  // 只在真正空回时做一次无 thinking 摘要协议的兜底重试，避免用户看到空消息。
-  if (!extractText(result) && !(result.content || []).some(block => block?.type === 'tool_use')) {
-    console.warn('[thinking-recovery] relay returned an empty text response; retrying without visible-thinking prompt');
-    const recoverySystem = String(systemPrompt || '').replace(buildThinkingInstruction(), '').trim();
-    result = await callClaude({
-      settings,
-      model: modelName,
-      maxTokens,
-      system: recoverySystem + '\n\n【空回恢复】\n上一轮模型没有返回可见正文。现在直接完成对叶檀的正式回应，不要输出任何思考标签或元说明，只输出正常回答正文。',
-      messages: currentMessages,
-      thinking: undefined,
-      tools: nativeToolsEnabled ? toolsParam : undefined,
-      purpose: (purpose || 'chat') + '-empty-recovery',
-    });
-  }
-
   let totalInputTokens = result.usage?.input_tokens || 0;
   let totalOutputTokens = result.usage?.output_tokens || 0;
+
+  // 真空回时只做一次“试探性”救场，而且第二次固定走低成本模型。
+  // 不带 thinking、不带工具，避免把一次空回再次放大成工具/思考循环。
+  if (!extractText(result) && !(result.content || []).some(block => block?.type === 'tool_use')) {
+    const recoveryModel = process.env.OURHOME_EMPTY_RECOVERY_MODEL || '[L]claude-haiku-4-5-20251001';
+    const recoveryMaxTokens = Math.max(300, Math.min(Number(maxTokens) || 1200, 1200));
+    console.warn('[empty-recovery] first model returned empty; retrying once with cheap model=' + recoveryModel);
+    const recoverySystem = String(systemPrompt || '').replace(buildThinkingInstruction(), '').trim();
+    const recoveryResult = await callClaude({
+      settings,
+      model: recoveryModel,
+      maxTokens: recoveryMaxTokens,
+      system: recoverySystem + '\n\n【空回恢复】\n上一轮没有返回正文。请直接完成对叶檀的正式回应，只输出正常回答正文，不要输出思考标签、工具调用或任何元说明。',
+      messages: currentMessages,
+      thinking: undefined,
+      tools: undefined,
+      temperature: undefined,
+      purpose: (purpose || 'chat') + '-empty-recovery',
+    });
+    totalInputTokens += recoveryResult.usage?.input_tokens || 0;
+    totalOutputTokens += recoveryResult.usage?.output_tokens || 0;
+    result = recoveryResult;
+  }
   let actionsPerformed = [];
   let rounds = 0;
   const thinkingSegments = [];
