@@ -78,7 +78,12 @@ if (typeof originalFetch === 'function') {
     try {
       const body = JSON.parse(init.body);
       if (isThinkingDecisionRequest(url, body)) return fixedNoThinkResponse();
-      if (isMainChatRequest(url, body)) {
+      // Main chat requests can pass through several wrappers before reaching fetch,
+      // so relying only on the prompt markers is fragile. If the selected model itself
+      // is a native-thinking model, force the native thinking parameter here as the last
+      // transport guard. The small thinking-decision request is handled above and is
+      // never upgraded.
+      if (isMainChatRequest(url, body) || modelRequestsNativeThinking(body?.model)) {
         const prepared = prepareMainChatRequest(url, body, init.headers);
         return originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
       }
