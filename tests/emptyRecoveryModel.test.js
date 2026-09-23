@@ -19,3 +19,9 @@ test('empty final model body is rejected before persistence', () => {
   assert.match(server, /error\.code = 'empty_model_response'/);
   assert.match(server, /模型返回了空正文，请重试/);
 });
+
+test('sendGenerationError exposes empty response code to the client', () => {
+  assert.match(server, /if \(error\?\.code === 'empty_model_response'\)/);
+  assert.match(server, /code: 'empty_model_response'/);
+  assert.match(server, /status\(502\)/);
+});
