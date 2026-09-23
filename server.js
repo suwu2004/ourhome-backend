@@ -2152,8 +2152,9 @@ async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuilt
     // 官方API，走原生thinking参数
     return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
   }
-  // 中转站：不发原生thinking参数（会被中转站吃掉），改用提示词方式
-  return { shouldThink: true, thinkingParam: undefined, promptAddition: buildThinkingInstruction() };
+  // 中转站：不要强行注入可见思考协议。让模型按正常聊天方式回答；
+  // 如果线路原生返回了可展示的 reasoning/thinking 元数据，解析器会自然保留。
+  return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 }
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
