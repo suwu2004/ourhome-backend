@@ -16,7 +16,7 @@ const NATIVE_THINKING_FIELD_NAMES = [
   'summary_text',
 ];
 const MAX_THINKING_CHARS = 24_000;
-const BRACKETED_THINKING_LABEL = '(?:思考链|思考过程|思考记录|可见思考|想了想|thinking|reasoning|analysis)';
+const BRACKETED_THINKING_LABEL = '(?:思考摘要|思考链|思考过程|思考记录|可见思考|想了想|thinking|reasoning|analysis)';
 const BRACKETED_THINKING_PATTERNS = [
   new RegExp(`\\[\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*\\]`, 'gi'),
   new RegExp(`［\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*］`, 'gi'),
@@ -86,6 +86,17 @@ function extractBracketedThinking(value) {
   return results;
 }
 
+function extractVisibleSummaryMarkers(value) {
+  const text = String(value || '');
+  const results = [];
+  const pattern = /【思考摘要开始】([\\s\\S]*?)【思考摘要结束】/g;
+  for (const match of text.matchAll(pattern)) {
+    const candidate = normalizeThinkingText(match[1]);
+    if (candidate) results.push(candidate);
+  }
+  return results;
+}
+
 function stripThinkingMarkup(value) {
   let text = String(value || '')
     .replace(/<(thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
@@ -112,6 +123,7 @@ function uniqueThinking(candidates) {
 function extractThinkingText(result = {}) {
   const nativeCandidates = [];
   const taggedCandidates = [];
+  const visibleSummaryCandidates = [];
   const addNative = value => {
     const text = normalizeThinkingText(value);
     if (text) nativeCandidates.push(text);
@@ -119,6 +131,8 @@ function extractThinkingText(result = {}) {
   const addTagged = value => {
     const tagged = extractTaggedThinking(value);
     if (tagged.length) taggedCandidates.push(...tagged);
+    const visible = extractVisibleSummaryMarkers(value);
+    if (visible.length) visibleSummaryCandidates.push(...visible);
   };
   const addNativeFields = value => {
     if (!value || typeof value !== 'object') return;
@@ -165,7 +179,7 @@ function extractThinkingText(result = {}) {
   // Prefer provider-native reasoning metadata. When it is absent, fall back to the
   // controlled <thinking> compatibility protocol used by relay mode. Ordinary answer
   // prose still does not become thinking unless it is explicitly wrapped in that tag.
-  return uniqueThinking(nativeCandidates) || uniqueThinking(taggedCandidates);
+  return uniqueThinking(nativeCandidates) || uniqueThinking(taggedCandidates) || uniqueThinking(visibleSummaryCandidates);
 }
 
 module.exports = {
@@ -173,6 +187,7 @@ module.exports = {
   normalizeThinkingText,
   extractTaggedThinking,
   extractBracketedThinking,
+  extractVisibleSummaryMarkers,
   stripThinkingMarkup,
   extractThinkingText,
 };
