@@ -2920,6 +2920,12 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   let totalOutputTokens = result.usage?.output_tokens || 0;
   let actionsPerformed = [];
   let rounds = 0;
+  const thinkingSegments = [];
+  const recordThinking = value => {
+    const text = extractThinkingText(value);
+    if (text && !thinkingSegments.includes(text)) thinkingSegments.push(text);
+  };
+  recordThinking(result);
 
   while (rounds < MAX_TOOL_ROUNDS) {
     const nativeToolBlocks = (result.content || []).filter(block => block.type === 'tool_use');
@@ -2976,9 +2982,18 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
     result = await callRound();
     totalInputTokens += result.usage?.input_tokens || 0;
     totalOutputTokens += result.usage?.output_tokens || 0;
+    // 工具调用可能经历多个模型回合，最终回合有时只有答案块；
+    // 保留之前回合已经产生的真实 thinking，避免“有时显示、有时不显示”。
+    recordThinking(result);
   }
 
-  return { result, totalInputTokens, totalOutputTokens, actionsPerformed };
+  return {
+    result,
+    totalInputTokens,
+    totalOutputTokens,
+    actionsPerformed,
+    thinkingText: thinkingSegments.join('\n\n'),
+  };
 }
 
 async function reviewAgentMailOutgoing({ action, to, subject, text, contextUsed }) {
@@ -3219,7 +3234,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
   const visual = await prepareVisualMessages(settings, modelName, messages);
 
-  const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+  const { result, totalInputTokens, totalOutputTokens, actionsPerformed, thinkingText } = await runToolLoop({
     settings, modelName, maxTokens: firstMaxTokens,
     systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
     purpose: 'chat',
@@ -3227,7 +3242,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
 
   return {
     replyText: extractText(result).trim(),
-    thinkingText: extractThinking(result),
+    thinkingText,
     modelName: result?.model || modelName,
     totalInputTokens,
     totalOutputTokens,
@@ -5671,13 +5686,11 @@ app.post('/chat', async (req, res) => {
     const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
     const visual = await prepareVisualMessages(settings, modelName, messages);
 
-    const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+    const { result, totalInputTokens, totalOutputTokens, actionsPerformed, thinkingText } = await runToolLoop({
       settings, modelName, maxTokens: firstMaxTokens,
       systemPrompt: finalSystemPrompt, messages: visual.messages, thinkingParam, toolsParam, toolHandlers: dynamic.handlers, gemini,
       purpose: 'chat',
     });
-
-    const thinkingText = extractThinking(result);
     const replyText = extractText(result).trim();
     const finalInputTokens = totalInputTokens;
     const finalOutputTokens = totalOutputTokens;
@@ -5777,7 +5790,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const dynamic = await integrationManager.buildDynamicTools({ routingContext: recentHistory });
     const toolsParam = selectChatTools([...ACTION_TOOLS, ...dynamic.tools], recentHistory);
     const visual = await prepareVisualMessages(settings, modelNameRegen, messages);
-    const { result, totalInputTokens, totalOutputTokens, actionsPerformed } = await runToolLoop({
+    const { result, totalInputTokens, totalOutputTokens, actionsPerformed, thinkingText: loopThinkingText } = await runToolLoop({
       settings,
       modelName: modelNameRegen,
       maxTokens: shouldThink ? Math.max(maxReplyTokens + 3000, 2000) : Math.max(maxReplyTokens, 500),
@@ -5790,7 +5803,7 @@ app.post('/chat/regenerate', async (req, res) => {
       purpose: 'chat',
     });
 
-    const thinkingText = extractThinking(result);
+    const thinkingText = loopThinkingText || extractThinking(result);
     const replyText = extractText(result).trim();
     const finalInputTokens = totalInputTokens;
     const finalOutputTokens = totalOutputTokens;
