@@ -51,7 +51,7 @@ function detectRoomScene(body = {}, purpose = '') {
   return null;
 }
 
-function raiseRoomOutputLimit(body = {}, purpose = '') {
+function raiseRoomOutputLimit(body = {}, purpose = '', { official = false } = {}) {
   const scene = detectRoomScene(body, purpose);
   if (!scene || !body.model) {
     return {
@@ -75,6 +75,16 @@ function raiseRoomOutputLimit(body = {}, purpose = '') {
   }
 
   const requested = Number(body.max_tokens) || 0;
+  // Relay requests are clamped to their provider-safe ceiling by modelTokenLimitPatch.
+  // Do not inflate them to 32K first; this layer should only raise official Anthropic calls.
+  if (!official) {
+    return {
+      body,
+      scene,
+      requested,
+      raisedTo: requested,
+    };
+  }
   const raisedTo = outputTokenCapForModel(body.model);
   return {
     body: { ...body, max_tokens: raisedTo },
