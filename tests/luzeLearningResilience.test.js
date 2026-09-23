@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { SYNTHESIS_TIMEOUT_MS, isLearningSynthesisRequest, isRetryableStatus, buildFallbackPayload } = require('../luzeLearningResilience');
+const { SYNTHESIS_TIMEOUT_MS, isLearningSynthesisRequest, isRetryableStatus, buildFallbackPayload, hasUsableText } = require('../luzeLearningResilience');
 
 function synthesisInit() {
   const sources = [
@@ -45,4 +45,11 @@ test('runtime loads learning resilience before the private-room module', () => {
   const resilienceAt = runtime.indexOf("require('./luzeLearningResiliencePatch')");
   const roomAt = runtime.indexOf("require('./luzePrivateRoomPatch')");
   assert.ok(resilienceAt >= 0 && roomAt > resilienceAt);
+});
+
+test('HTTP 200 payload with zero text is treated as unusable', () => {
+  assert.equal(hasUsableText({ content: [{ type: 'text', text: '' }] }), false);
+  assert.equal(hasUsableText({ content: [{ type: 'text', text: '好了' }] }), true);
+  assert.equal(hasUsableText({ choices: [{ message: { content: '' } }] }), false);
+  assert.equal(hasUsableText({ choices: [{ message: { content: 'done' } }] }), true);
 });
