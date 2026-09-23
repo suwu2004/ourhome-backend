@@ -57,5 +57,7 @@ require('./theaterReplyLengthGuardPatch');
 // Finally, carry formal Chat's provider-native thinking transport into Theater.
 // This never creates a second completion just to manufacture a thinking panel.
 require('./theaterThinkingPatch');
+// Final relay safety net: cap oversized foreground Chat requests before they reach the provider.
+require('./relayContextBudgetPatch');
 
 module.exports = { renderFrontdoorPatch };
