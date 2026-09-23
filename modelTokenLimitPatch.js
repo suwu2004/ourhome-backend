@@ -7,6 +7,10 @@ const { raiseRoomOutputLimit } = require('./roomOutputLimits');
 
 const originalFetch = globalThis.fetch;
 
+function isOfficialAnthropicUrl(url) {
+  return /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(String(url || ''));
+}
+
 function isModelMessageRequest(url, body) {
   return /\/messages(?:\?|$)/i.test(String(url || ''))
     && body
@@ -34,15 +38,18 @@ if (typeof originalFetch === 'function') {
           body = roomLimit.body;
 
           const requested = Number(body.max_tokens) || 0;
-          const cap = outputTokenCapForModel(body.model);
-          const effective = clampRequestedOutputTokens(body.model, requested);
+          const providerCap = isOfficialAnthropicUrl(url) ? outputTokenCapForModel(body.model) : 8192;
+          const cap = providerCap;
+          const effective = isOfficialAnthropicUrl(url)
+            ? clampRequestedOutputTokens(body.model, requested)
+            : Math.max(1, Math.min(Math.round(requested || 8192), providerCap));
           body.max_tokens = effective;
 
           if (roomLimit.scene && roomLimit.requested !== roomLimit.raisedTo) {
             console.log(`[tokens:room] scene=${roomLimit.scene} model=${body.model} requested=${roomLimit.requested || 'auto'} raised=${roomLimit.raisedTo}`);
           }
           if (requested !== effective) {
-            console.log(`[tokens:output] model=${body.model} requested=${requested || 'auto'} effective=${effective} cap=${cap}`);
+            console.log(`[tokens:output] provider=${isOfficialAnthropicUrl(url) ? 'official' : 'relay'} model=${body.model} requested=${requested || 'auto'} effective=${effective} cap=${cap}`);
           }
 
           init = {
