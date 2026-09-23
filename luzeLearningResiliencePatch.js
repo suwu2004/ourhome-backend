@@ -3,6 +3,7 @@
 const {
   SYNTHESIS_TIMEOUT_MS,
   safeJsonBody,
+  hasUsableText,
   isLearningSynthesisRequest,
   isRetryableStatus,
   localFallbackResponse,
@@ -44,18 +45,10 @@ if (typeof providerFetch === 'function') {
           const raw = await probe.text();
           let payload = null;
           try { payload = raw ? JSON.parse(raw) : null; } catch { /* keep raw probe */ }
-          const hasText = Array.isArray(payload?.content)
-            ? payload.content.some(block => String(block?.text ?? block?.content ?? '').trim())
-            : Boolean(String(payload?.text ?? payload?.output_text ?? '').trim())
-              || (Array.isArray(payload?.choices)
-                && payload.choices.some(choice => String(choice?.message?.content ?? choice?.text ?? '').trim()));
-          if (!hasText) {
+          if (!hasUsableText(payload)) {
             console.warn('[luze:learn] synthesis returned HTTP 200 with no usable text; saving local fallback note');
             return localFallbackResponse(body, 'HTTP 200 空正文');
           }
-        } catch (probeError) {
-          console.warn('[luze:learn] synthesis response probe skipped:', probeError.message);
-        }
         return response;
       }
 
