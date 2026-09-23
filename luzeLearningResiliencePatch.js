@@ -34,7 +34,30 @@ if (typeof providerFetch === 'function') {
     const body = safeJsonBody(init) || {};
     try {
       let response = await fetchWithSynthesisTimeout(input, init);
-      if (response.ok) return response;
+      if (response.ok) {
+        // A relay can return HTTP 200 with a valid-looking payload but zero usable
+        // text (the same failure mode seen in foreground Chat). Do not issue a
+        // second paid completion just to probe it; preserve the learning run
+        // locally instead.
+        try {
+          const probe = response.clone();
+          const raw = await probe.text();
+          let payload = null;
+          try { payload = raw ? JSON.parse(raw) : null; } catch { /* keep raw probe */ }
+          const hasText = Array.isArray(payload?.content)
+            ? payload.content.some(block => String(block?.text ?? block?.content ?? '').trim())
+            : Boolean(String(payload?.text ?? payload?.output_text ?? '').trim())
+              || (Array.isArray(payload?.choices)
+                && payload.choices.some(choice => String(choice?.message?.content ?? choice?.text ?? '').trim()));
+          if (!hasText) {
+            console.warn('[luze:learn] synthesis returned HTTP 200 with no usable text; saving local fallback note');
+            return localFallbackResponse(body, 'HTTP 200 空正文');
+          }
+        } catch (probeError) {
+          console.warn('[luze:learn] synthesis response probe skipped:', probeError.message);
+        }
+        return response;
+      }
 
       if (!isRetryableStatus(response.status)) return response;
 
