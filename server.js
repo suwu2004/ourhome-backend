@@ -2911,6 +2911,25 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   };
 
   let result = await callRound();
+
+  // 某些 Claude 中转线路会对带有 thinking/摘要协议的首轮请求返回
+  // 200 + end_turn，但 text block 为空。这不是“没有思考”，而是没有可交付的答案。
+  // 只在真正空回时做一次无 thinking 摘要协议的兜底重试，避免用户看到空消息。
+  if (!extractText(result) && !(result.content || []).some(block => block?.type === 'tool_use')) {
+    console.warn('[thinking-recovery] relay returned an empty text response; retrying without visible-thinking prompt');
+    const recoverySystem = String(systemPrompt || '').replace(buildThinkingInstruction(), '').trim();
+    result = await callClaude({
+      settings,
+      model: modelName,
+      maxTokens,
+      system: recoverySystem + '\n\n【空回恢复】\n上一轮模型没有返回可见正文。现在直接完成对叶檀的正式回应，不要输出任何思考标签或元说明，只输出正常回答正文。',
+      messages: currentMessages,
+      thinking: undefined,
+      tools: nativeToolsEnabled ? toolsParam : undefined,
+      purpose: (purpose || 'chat') + '-empty-recovery',
+    });
+  }
+
   let totalInputTokens = result.usage?.input_tokens || 0;
   let totalOutputTokens = result.usage?.output_tokens || 0;
   let actionsPerformed = [];
