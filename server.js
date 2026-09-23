@@ -61,6 +61,7 @@ const { selectRecentHistory } = require('./chatContextWindow');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
 const { projectBackgroundPersona } = require('./backgroundPersona');
+const { cheapestModel } = require('./nonChatBudgetPatch');
 const {
   extractThinkingText,
   stripThinkingMarkup,
@@ -2924,7 +2925,7 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   // 真空回时只做一次“试探性”救场，而且第二次固定走低成本模型。
   // 不带 thinking、不带工具，避免把一次空回再次放大成工具/思考循环。
   if (!extractText(result) && !(result.content || []).some(block => block?.type === 'tool_use')) {
-    const recoveryModel = process.env.OURHOME_EMPTY_RECOVERY_MODEL || '[L]claude-haiku-4-5-20251001';
+    const recoveryModel = process.env.OURHOME_EMPTY_RECOVERY_MODEL || process.env.NON_CHAT_MODEL || await cheapestModel() || '[A]gemini-3.1-flash-lite';
     const recoveryMaxTokens = Math.max(300, Math.min(Number(maxTokens) || 1200, 1200));
     console.warn('[empty-recovery] first model returned empty; retrying once with cheap model=' + recoveryModel);
     const recoverySystem = String(systemPrompt || '').replace(buildThinkingInstruction(), '').trim();
