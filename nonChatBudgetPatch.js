@@ -344,4 +344,5 @@ module.exports = {
   isHeartbeatPurpose,
   requestPurpose,
   preservesRequestedModel,
+  cheapestModel,
 };
