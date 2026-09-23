@@ -60,7 +60,7 @@ function thinkingBudgetFor(body) {
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body };
   const headers = new Headers(headersInit || undefined);
-  if (!nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
+  if (isOfficialAnthropicUrl(url) && !nextBody.thinking && modelRequestsNativeThinking(nextBody.model)) {
     const budget = thinkingBudgetFor(nextBody);
     if (budget >= 1024) {
       nextBody.thinking = { type: 'enabled', budget_tokens: budget };
@@ -83,7 +83,7 @@ if (typeof originalFetch === 'function') {
       // is a native-thinking model, force the native thinking parameter here as the last
       // transport guard. The small thinking-decision request is handled above and is
       // never upgraded.
-      if (isMainChatRequest(url, body) || modelRequestsNativeThinking(body?.model)) {
+      if (isMainChatRequest(url, body) || (isOfficialAnthropicUrl(url) && modelRequestsNativeThinking(body?.model))) {
         const prepared = prepareMainChatRequest(url, body, init.headers);
         return originalFetch(input, { ...init, headers: prepared.headers, body: JSON.stringify(prepared.body) });
       }
@@ -98,7 +98,7 @@ try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function thinkingHealthJson(body) {
-    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v10' };
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v11' };
     return originalJson.call(this, body);
   };
 } catch (error) {
