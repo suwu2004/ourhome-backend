@@ -3013,6 +3013,16 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
     recordThinking(result);
   }
 
+  // Never persist or return a successful assistant turn with no usable text.
+  // Tool calls are handled above; reaching here with an empty final body is a provider
+  // anomaly and should surface as an error instead of creating an empty DB row.
+  const finalHasToolUse = (result?.content || []).some(block => block?.type === 'tool_use');
+  if (!extractText(result).trim() && !finalHasToolUse) {
+    const error = new Error('模型返回了空正文，请重试。');
+    error.code = 'empty_model_response';
+    throw error;
+  }
+
   return {
     result,
     totalInputTokens,
