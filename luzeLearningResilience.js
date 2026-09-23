@@ -32,6 +32,14 @@ function messageText(body = {}) {
     .join('\n');
 }
 
+function hasUsableText(payload = {}) {
+  if (typeof payload?.content === 'string' && payload.content.trim()) return true;
+  if (Array.isArray(payload?.content) && payload.content.some(block => String(block?.text ?? block?.content ?? '').trim())) return true;
+  if (String(payload?.text ?? payload?.output_text ?? '').trim()) return true;
+  if (Array.isArray(payload?.choices) && payload.choices.some(choice => String(choice?.message?.content ?? choice?.text ?? '').trim())) return true;
+  return false;
+}
+
 function extractLine(text, label) {
   const index = String(text || '').indexOf(label);
   if (index < 0) return '';
@@ -105,6 +113,7 @@ function isRetryableStatus(status) {
 module.exports = {
   SYNTHESIS_TIMEOUT_MS,
   safeJsonBody,
+  hasUsableText,
   purposeFromHeaders,
   isLearningSynthesisRequest,
   isRetryableStatus,
