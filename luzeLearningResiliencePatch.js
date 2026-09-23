@@ -49,6 +49,9 @@ if (typeof providerFetch === 'function') {
             console.warn('[luze:learn] synthesis returned HTTP 200 with no usable text; saving local fallback note');
             return localFallbackResponse(body, 'HTTP 200 空正文');
           }
+        } catch (probeError) {
+          console.warn('[luze:learn] synthesis response probe skipped:', probeError.message);
+        }
         return response;
       }
 
