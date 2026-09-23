@@ -392,6 +392,14 @@ function sendGenerationError(res, error, { model, userMessage } = {}) {
       ...extra,
     });
   }
+  if (error?.code === 'empty_model_response') {
+    return res.status(502).json({
+      code: 'empty_model_response',
+      model: String(model || '').trim().slice(0, 120) || null,
+      error: '模型这次返回了空正文，请重新生成。',
+      ...extra,
+    });
+  }
   return res.status(500).json({
     error: error?.message || '生成回复时出了点问题，请稍后再试。',
     ...extra,
