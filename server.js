@@ -1509,6 +1509,7 @@ async function finishTheaterTextIfTruncated({ result, rawText, settings, model, 
   };
 }
 
+const { compactTheaterHistory } = require('./theaterHistoryTail');
 const THEATER_BOOK_CATEGORY = '小剧本';
 const THEATER_MESSAGE_CATEGORY = '小剧场';
 const THEATER_GLOBAL_RULES_CATEGORY = '小剧场通用规则';
@@ -1715,16 +1716,18 @@ function buildTheaterHistoryBlocks(messages, theaterUserName, theaterAssistantNa
   const recent = allMessages.slice(-18);
   const older = allMessages.slice(0, Math.max(0, allMessages.length - recent.length)).slice(-42);
   const labelFor = item => (item.role === 'user' ? theaterUserName : theaterAssistantName);
-  const earlierDigest = compactBlock(
-    older
-      .map((item, index) => `${index + 1}. ${labelFor(item)}：${theaterSnippet(item.content, item.role === 'user' ? 360 : 560)}`)
-      .join('\n'),
+  const earlierDigest = compactTheaterHistory(
+    older,
+    (item, index) => `${index + 1}. ${labelFor(item)}：${theaterSnippet(item.content, item.role === 'user' ? 360 : 560)}`,
     10000,
   );
-  const recentMessages = compactBlock(
-    recent
-      .map(item => `${labelFor(item)}：${item.content}`)
-      .join('\n\n'),
+  // IMPORTANT: keep the tail. compactBlock() keeps the head, which could silently
+  // discard the newest turns when a few long roleplay messages exceed the cap.
+  // The raw-turn bridge depends on these newest turns to rebuild real
+  // user/assistant messages at the provider boundary.
+  const recentMessages = compactTheaterHistory(
+    recent,
+    item => `${labelFor(item)}：${item.content}`,
     18000,
   );
   return { earlierDigest, recentMessages };
