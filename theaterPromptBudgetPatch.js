@@ -24,13 +24,29 @@ function removeGeneratedMemory(system) { return String(system || '').replace(/(?
 function trimTheaterStaticContext(system) { let text = removeGeneratedMemory(system); for (const [marker, limit] of BLOCK_LIMITS) text = capSection(text, marker, limit); return text; }
 function trimRecentTheaterMessages(messages, maxTokens = MAX_LIVE_MESSAGE_TOKENS) {
   const list = Array.isArray(messages) ? messages.slice() : [];
-  if (list.length <= MIN_LIVE_MESSAGES) return list[0]?.role === 'assistant' && list.length > 1 ? list.slice(1) : list;
+  if (!list.length) return [];
+  // Continuity invariant: never spend the last available context budget by
+  // deleting the current user turn or the immediately preceding assistant turn.
+  // When older turns must go, remove complete pairs from the front first.
+  const newestUserIndex = [...list].map((message, index) => ({ message, index })).reverse()
+    .find(item => item.message?.role === 'user')?.index ?? (list.length - 1);
+  const protectedStart = Math.max(0, newestUserIndex - 1);
+  let kept = list.slice(protectedStart);
+  let older = list.slice(0, protectedStart);
   let total = list.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
-  let index = 0;
-  while (total > maxTokens && list.length - index > MIN_LIVE_MESSAGES) { total -= estimateMessageTokens(list[index]); list[index] = null; index += 1; }
-  let trimmed = list.slice(index).filter(Boolean);
-  if (trimmed.length >= MIN_LIVE_MESSAGES && trimmed[0]?.role === 'assistant') trimmed = trimmed.slice(1);
-  return trimmed;
+
+  while (total > maxTokens && older.length) {
+    const removeCount = older.length >= 2 ? 2 : 1;
+    const removed = older.splice(0, removeCount);
+    total -= removed.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+  }
+
+  // If the protected pair itself is larger than the budget, keep both turns
+  // rather than dropping the current scene. The provider can then decide how
+  // to handle the oversized request; continuity is more important than a hard
+  // local truncation here.
+  if (total > maxTokens) return kept;
+  return [...older, ...kept];
 }
 function isInteractiveTheaterBody(body) { return Array.isArray(body?.messages) && body.messages.length > 0 && THEATER_RE.test(textOf(body.system)) && INTERACTIVE_CONTEXT_RE.test(textOf(body.system)); }
 function patchBody(body) { if (!isInteractiveTheaterBody(body)) return body; const originalSystem = textOf(body.system); const system = trimTheaterStaticContext(originalSystem); const messages = trimRecentTheaterMessages(body.messages); if (system === originalSystem && messages.length === body.messages.length) return body; return { ...body, system, messages }; }
