@@ -2933,27 +2933,54 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   let totalInputTokens = result.usage?.input_tokens || 0;
   let totalOutputTokens = result.usage?.output_tokens || 0;
 
-  // 真空回时只做一次“试探性”救场，而且第二次固定走低成本模型。
-  // 不带 thinking、不带工具，避免把一次空回再次放大成工具/思考循环。
+  // 空正文不能一概当成“模型抽风”：部分中转站会把安全拒答/内容过滤包装成
+  // HTTP 200 + 空 content + end_turn。如果这时盲目换模型重试，就会把一次安全拒答
+  // 变成第二次真实模型调用，也会掩盖第一次调用为什么没有正文。
+  const emptyResponseSignals = [
+    result?.finish_reason,
+    result?.stop_reason,
+    result?.refusal,
+    result?.safety_reason,
+    result?.safety,
+    result?.blocked,
+    result?.content_filter,
+    result?.moderation,
+    result?.error?.type,
+    result?.error?.code,
+    result?.choices?.[0]?.finish_reason,
+    result?.choices?.[0]?.message?.refusal,
+  ].filter(Boolean).map(value => String(value).toLowerCase());
+  const safetyEmpty = emptyResponseSignals.some(value =>
+    /(safety|safe|refus|content.?filter|moderat|blocked|policy|harm|violation)/i.test(value)
+  );
   if (!extractText(result) && !(result.content || []).some(block => block?.type === 'tool_use')) {
-    const recoveryModel = process.env.OURHOME_EMPTY_RECOVERY_MODEL || process.env.NON_CHAT_MODEL || await cheapestModel() || '[A]gemini-3.1-flash-lite';
-    const recoveryMaxTokens = Math.max(300, Math.min(Number(maxTokens) || 1200, 1200));
-    console.warn('[empty-recovery] first model returned empty; retrying once with cheap model=' + recoveryModel);
-    const recoverySystem = String(systemPrompt || '').replace(buildThinkingInstruction(), '').trim();
-    const recoveryResult = await callClaude({
-      settings,
-      model: recoveryModel,
-      maxTokens: recoveryMaxTokens,
-      system: recoverySystem + '\n\n【空回恢复】\n上一轮没有返回正文。请直接完成对叶檀的正式回应，只输出正常回答正文，不要输出思考标签、工具调用或任何元说明。',
-      messages: currentMessages,
-      thinking: undefined,
-      tools: undefined,
-      temperature: undefined,
-      purpose: (purpose || 'chat') + '-empty-recovery',
-    });
-    totalInputTokens += recoveryResult.usage?.input_tokens || 0;
-    totalOutputTokens += recoveryResult.usage?.output_tokens || 0;
-    result = recoveryResult;
+    if (safetyEmpty) {
+      console.warn('[empty-response:safety] first model returned no text and exposed a safety/refusal signal; skip recovery retry.', {
+        model: modelName,
+        stop_reason: result?.stop_reason,
+        finish_reason: result?.finish_reason,
+        signals: emptyResponseSignals.slice(0, 8),
+      });
+    } else {
+      const recoveryModel = process.env.OURHOME_EMPTY_RECOVERY_MODEL || process.env.NON_CHAT_MODEL || await cheapestModel() || '[A]gemini-3.1-flash-lite';
+      const recoveryMaxTokens = Math.max(300, Math.min(Number(maxTokens) || 1200, 1200));
+      console.warn('[empty-recovery] first model returned empty; retrying once with cheap model=' + recoveryModel);
+      const recoverySystem = String(systemPrompt || '').replace(buildThinkingInstruction(), '').trim();
+      const recoveryResult = await callClaude({
+        settings,
+        model: recoveryModel,
+        maxTokens: recoveryMaxTokens,
+        system: recoverySystem + '\n\n【空回恢复】\n上一轮没有返回正文。请直接完成对叶檀的正式回应，只输出正常回答正文，不要输出思考标签、工具调用或任何元说明。',
+        messages: currentMessages,
+        thinking: undefined,
+        tools: undefined,
+        temperature: undefined,
+        purpose: (purpose || 'chat') + '-empty-recovery',
+      });
+      totalInputTokens += recoveryResult.usage?.input_tokens || 0;
+      totalOutputTokens += recoveryResult.usage?.output_tokens || 0;
+      result = recoveryResult;
+    }
   }
   let actionsPerformed = [];
   let rounds = 0;
