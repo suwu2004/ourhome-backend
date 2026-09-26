@@ -362,7 +362,15 @@ async function callClaude({ settings, model, maxTokens, system, messages, temper
   }
   const json = await response.json();
   const blockTypes = Array.isArray(json.content) ? json.content.map(block => block?.type || typeof block) : [typeof json.content];
+  const responseKeys = Object.keys(json || {}).sort();
+  const blockKeys = Array.isArray(json.content)
+    ? json.content.map(block => Object.keys(block || {}).sort())
+    : [];
+  const diagnosticEnabled = /^(1|true|yes|on)$/i.test(String(process.env.OURHOME_THINKING_DIAGNOSTICS || ''));
   console.log(`[DEBUG recv] stop_reason=${json.stop_reason} blockTypes=${JSON.stringify(blockTypes)} hasThinking=${Boolean(extractThinkingText(json))}`);
+  if (diagnosticEnabled) {
+    console.log(`[DEBUG thinking-diagnostic] model=${body.model} responseKeys=${JSON.stringify(responseKeys)} blockKeys=${JSON.stringify(blockKeys)} type=${json.type || ''} role=${json.role || ''} modelReturned=${json.model || ''} stopSequence=${json.stop_sequence || ''}`);
+  }
   return json;
 }
 
