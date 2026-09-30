@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "node -r ./runtimeBootstrap server.js",
-    "check": "node --check theaterRawTurnsPatch.js && node --check theaterMemorySupport.js && node --check runtimeBootstrap.js && node --check server.js && node --check modelCallSingleflightPatch.js && node --check relayContextBudgetPatch.js",
+    "check": "node --check theaterRawTurnsPatch.js && node --check theaterMemorySupport.js && node --check runtimeBootstrap.js && node --check server.js && node --check modelCallSingleflightPatch.js && node --check relayContextBudgetPatch.js && node --check chatHistoryContext.js",
     "test": "node --test tests/*.test.js",
     "build:render-frontend": "node scripts/buildRenderFrontend.js",
     "migrate:storage:dry": "node scripts/migrateSupabaseStorageToOss.js",
