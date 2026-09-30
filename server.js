@@ -2120,20 +2120,6 @@ function extractThinking(result) {
   return extractThinkingText(result);
 }
 
-// 让陆泽自己很快判断一下：这句话需要先停下来想一想，还是能很自然地直接回——这是他自己的判断，不是开关
-async function decideShouldThink(settings, message, modelName) {
-  try {
-    const model = modelName || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
-    const prompt = `这是叶檀刚刚发的话：\n"${(message || '').slice(0, 500)}"\n\n你是陆泽。面对这句话，你觉得需要先认真停下来想一想再回应，还是可以很自然地直接回？\n只回答一个词，不要有任何多余文字：\n想 或者 不想`;
-    const result = await callClaude({ settings, model, maxTokens: 10, messages: [{ role: 'user', content: prompt }], temperature: 0.4 });
-    const text = extractText(result).trim();
-    return text.startsWith('想') && !text.startsWith('不想');
-  } catch (err) {
-    console.error('判断是否思考失败:', err.message);
-    return false;
-  }
-}
-
 // 判断请求是不是直接打官方Anthropic API（而不是中转站）
 function isOfficialAnthropicApi(settings) {
   return !settings?.api_base_url || settings.api_base_url.includes('api.anthropic.com');
@@ -2158,12 +2144,14 @@ function buildThinkingInstruction() {
 `;
 }
 
-// 计算这次回复要不要"想一想"，以及要用哪种方式实现
-// - 官方Anthropic API：走原生的thinking参数
-// - 中转站（relay）：中转站往往不透传原生thinking内容，改用提示词让模型自己写<thinking>标签
-async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
-  const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
-  const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage, modelName);
+// 计算这次回复要不要“想一想”
+// - 普通模型：默认不思考，也不额外发起判断请求
+// - thinking/reasoning 模型：走原生 thinking 或 relay 的可见思考摘要
+function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
+  // 普通模型默认不思考：不再额外调用一次模型判断，也不追加思考提示词。
+  // 只有模型自身明确标记为 thinking/reasoning（或由调用方显式识别为 thinkingBuiltIn）
+  // 时，才进入思考传输链。
+  const shouldThink = Boolean(thinkingBuiltIn || /(?:thinking|reasoning)/i.test(String(modelName || '')));
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   if (isOfficialAnthropicApi(settings)) {
