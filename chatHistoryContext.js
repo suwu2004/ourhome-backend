@@ -1,8 +1,8 @@
 'use strict';
 
-const DEFAULT_CONTEXT_RADIUS = 120;
-const MIN_CONTEXT_RADIUS = 40;
-const MAX_CONTEXT_RADIUS = 240;
+const DEFAULT_CONTEXT_RADIUS = 1000;
+const MIN_CONTEXT_RADIUS = 100;
+const MAX_CONTEXT_RADIUS = 1000;
 
 function normalizeRadius(value, fallback = DEFAULT_CONTEXT_RADIUS) {
   const parsed = Number.parseInt(value, 10);
