@@ -122,7 +122,7 @@ try {
   const express = require('express');
   const originalJson = express.response.json;
   express.response.json = function thinkingHealthJson(body) {
-    if (body?.message === '在云端漫游' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v12' };
+    if (body?.message === '在云端漫步' && body?.status === 'ok') body = { ...body, thinking_transport: 'native-and-relay-v12' };
     return originalJson.call(this, body);
   };
 } catch (error) {
