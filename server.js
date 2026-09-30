@@ -50,6 +50,7 @@ const {
 const { registerReadingRoutes } = require('./readingStore');
 const { loadCompiledRules } = require('./theaterRuleStore');
 const { parseChatHistoryPaging, chatHistoryFetchLimit, finalizeChatHistoryPage } = require('./chatHistoryPaging');
+const { loadMessageContext } = require('./chatHistoryContext');
 const {
   normalizeAttachmentSummary,
   previousAttachmentLabel,
@@ -3651,6 +3652,32 @@ app.delete('/sessions/:id', async (req, res) => {
   const { error } = await supabase.from('sessions').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
+});
+
+app.get('/sessions/:id/messages/context', async (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const messageId = req.query.message_id;
+    if (!messageId) return res.status(400).json({ error: '缺少目标消息编号' });
+
+    const context = await loadMessageContext(supabase, {
+      sessionId,
+      messageId,
+      before: req.query.before,
+      after: req.query.after,
+    });
+    res.json({
+      messages: context.messages,
+      targetId: context.targetId,
+      hasOlder: context.hasOlder,
+      hasNewer: context.hasNewer,
+      nextBefore: context.nextBefore,
+      nextAfter: context.nextAfter,
+    });
+  } catch (error) {
+    console.error('聊天目标上下文读取错误:', error.message);
+    res.status(error.status || 500).json({ error: error.message || '目标附近的聊天记录没有回来' });
+  }
 });
 
 app.get('/sessions/:id/messages', async (req, res) => {
