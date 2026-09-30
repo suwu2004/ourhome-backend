@@ -2162,19 +2162,20 @@ function buildThinkingInstruction() {
 // - 官方Anthropic API：走原生的thinking参数
 // - 中转站（relay）：中转站往往不透传原生thinking内容，改用提示词让模型自己写<thinking>标签
 async function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, userMessage, budget = 3000 }) {
-  if (gemini) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
-
   const hasThinkingName = (modelName || '').toLowerCase().includes('thinking');
   const shouldThink = thinkingBuiltIn || hasThinkingName || await decideShouldThink(settings, userMessage, modelName);
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   if (isOfficialAnthropicApi(settings)) {
-    // 官方API，走原生thinking参数
+    // 官方Anthropic API继续走原生thinking；返回的原生 thinking / reasoning
+    // 由统一解析层直接抓取，不要求前端认识任何厂商字段。
     return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
   }
-  // 中转站：不要强行注入可见思考协议。让模型按正常聊天方式回答；
-  // 如果线路原生返回了可展示的 reasoning/thinking 元数据，解析器会自然保留。
-  return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
+
+  // 中转站不保证透传原生 thinking。统一请求一小段“可见思考摘要”，
+  // 不管实际上游是 Gemini、Claude 还是其它 thinking/reasoning 模型，
+  // 最终都交给 extractThinkingText() 归一后放进“想一想”。
+  return { shouldThink: true, thinkingParam: undefined, promptAddition: buildThinkingInstruction() };
 }
 
 // 把图片/文档下载下来转成base64，这样官方API和任何中转站都认得
