@@ -69,6 +69,7 @@ function parseLegacyRulesContent(value) {
 }
 
 function compileTheaterRules(rules = [], scope = 'theater') {
+  const seen = new Set();
   const sections = (Array.isArray(rules) ? rules : [])
     .filter(rule => rule?.enabled !== false && ruleAppliesToScope(rule, scope) && String(rule?.content || '').trim())
     .sort((a, b) => {
@@ -76,9 +77,23 @@ function compileTheaterRules(rules = [], scope = 'theater') {
       if (order) return order;
       return String(a.created_at || '').localeCompare(String(b.created_at || ''));
     })
-    .map(rule => `【${cleanRuleTitle(rule.title)}】\n${cleanRuleText(rule.content, MAX_RULE_CONTENT_CHARS)}`);
+    .map(rule => {
+      const content = cleanRuleText(rule.content, MAX_RULE_CONTENT_CHARS);
+      const fingerprint = content.replace(/\s+/g, ' ').trim();
+      if (!fingerprint || seen.has(fingerprint)) return '';
+      seen.add(fingerprint);
+      return `【${cleanRuleTitle(rule.title)}】\n${content}`;
+    })
+    .filter(Boolean);
 
-  return cleanRuleText(sections.join('\n\n'), MAX_COMPILED_RULE_CHARS);
+  if (!sections.length) return '';
+
+  // Rules are guidance, not a checklist. Apply only what is relevant to the
+  // current request; when two rules overlap, prefer the more specific one.
+  return cleanRuleText(
+    `【相关规则参考】\n以下规则仅在与当前场景相关时参考，不需要逐条执行；规则之间重叠时，以更具体、与当前场景更直接的一条为准。\n\n${sections.join('\n\n')}`,
+    MAX_COMPILED_RULE_CHARS,
+  );
 }
 
 function compileChatRules(rules = []) {
