@@ -59,7 +59,10 @@ function normalizeThinkingText(value) {
       'content',
       'value',
     ]) {
-      const text = normalizeThinkingText(value[key]);
+      const raw = value[key];
+      // `thought: true` / `is_thought: true` is a provider flag, not the actual thought text.
+      if (typeof raw === 'boolean') continue;
+      const text = normalizeThinkingText(raw);
       if (text) return text;
     }
   }
