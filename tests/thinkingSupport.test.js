@@ -78,3 +78,18 @@ test('全角可见思考标记也只清理不展示', () => {
 test('不会把普通 text block 当成 thinking', () => {
   assert.equal(extractThinkingText({ content: [{ type: 'text', text: '只有正式回复，没有标签。' }] }), '');
 });
+
+test('提取中转线路返回的可见思考摘要标记', () => {
+  const text = '【思考摘要开始】我先确认她真正关心的是这一点，再给出简洁回应。\n【思考摘要结束】\n正式回复。';
+  assert.equal(
+    extractThinkingText({ content: [{ type: 'text', text }] }),
+    '我先确认她真正关心的是这一点，再给出简洁回应。',
+  );
+  assert.equal(stripThinkingMarkup(text), '正式回复。');
+});
+
+test('不把普通正文中的 thinking 标签误当成 provider 思考', () => {
+  const text = '<thinking>这只是模型正文里自己写出来的标签。</thinking>\n正式回复。';
+  assert.equal(extractThinkingText({ content: [{ type: 'text', text }] }), '');
+  assert.equal(stripThinkingMarkup(text), '正式回复。');
+});
