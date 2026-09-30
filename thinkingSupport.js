@@ -50,6 +50,10 @@ function normalizeThinkingText(value) {
       'thinking_summary',
       'reasoning_summary',
       'summary_text',
+      'thought',
+      'thoughts',
+      'thought_summary',
+      'thoughts_summary',
       'summary',
       'text',
       'content',
@@ -89,7 +93,7 @@ function extractBracketedThinking(value) {
 function extractVisibleSummaryMarkers(value) {
   const text = String(value || '');
   const results = [];
-  const pattern = /【思考摘要开始】([\\s\\S]*?)【思考摘要结束】/g;
+  const pattern = /【思考摘要开始】([\s\S]*?)【思考摘要结束】/g;
   for (const match of text.matchAll(pattern)) {
     const candidate = normalizeThinkingText(match[1]);
     if (candidate) results.push(candidate);
@@ -105,6 +109,10 @@ function stripThinkingMarkup(value) {
     pattern.lastIndex = 0;
     text = text.replace(pattern, '');
   }
+  text = text
+    .replace(/【思考摘要开始】[\s\S]*?【思考摘要结束】/g, '')
+    .replace(/【思考链开始】[\s\S]*?【思考链结束】/g, '')
+    .replace(/【思考过程开始】[\s\S]*?【思考过程结束】/g, '');
   return text.replace(/^\s+/, '').trim();
 }
 
@@ -142,9 +150,35 @@ function extractThinkingText(result = {}) {
     for (const block of Array.isArray(blocks) ? blocks : []) {
       if (!block || typeof block !== 'object') continue;
       const type = String(block.type || '').toLowerCase();
-      if (NATIVE_THINKING_BLOCK_TYPES.has(type) || block.thought === true) addNative(block);
+      if (
+        NATIVE_THINKING_BLOCK_TYPES.has(type)
+        || block.thought === true
+        || block.is_thought === true
+        || block.isThinking === true
+      ) {
+        addNative(block);
+      }
+
+      // Some providers put the actual thought/summary under a field rather than
+      // marking the container with a dedicated block type.
+      for (const field of [
+        'reasoning_content',
+        'reasoning',
+        'reasoning_details',
+        'thinking',
+        'analysis',
+        'thinking_summary',
+        'reasoning_summary',
+        'thought',
+        'thoughts',
+        'thought_summary',
+        'thoughts_summary',
+      ]) {
+        if (block[field] != null) addNative(block[field]);
+      }
+
       // Relay compatibility mode puts the visible thinking protocol inside an ordinary text block.
-      if (type === 'text') addTagged(block.text);
+      if (type === 'text' || type === 'output_text') addTagged(block.text);
       if (Array.isArray(block.content)) scanBlocks(block.content);
       if (Array.isArray(block.parts)) scanBlocks(block.parts);
       if (Array.isArray(block.summary) && NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block.summary);
