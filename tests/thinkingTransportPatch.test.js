@@ -50,3 +50,15 @@ test('旧的要不要想判断仍由本地拦截条件识别', () => {
     messages: [{ role: 'user', content: '只回答一个词：想 或者 不想' }],
   }), true);
 });
+
+test('Gemini thinking relay 会使用统一的可见思考摘要协议', () => {
+  const prepared = prepareMainChatRequest(
+    'https://relay.example.com/v1/messages',
+    { model: '[热红酒]gemini-3.1-pro-preview-thinking', system: '基础 system' },
+    {},
+  );
+
+  assert.doesNotMatch(prepared.body.system, /<thinking>/);
+  assert.match(prepared.body.system, /【思考摘要开始】/);
+  assert.match(prepared.body.system, /【思考摘要结束】/);
+});
