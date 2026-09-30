@@ -1,9 +1,9 @@
 'use strict';
 
-// A window-summary request used to make one model call per 12k-char chunk,
-// with a hard ceiling of 36 chunks. A long session therefore produced dozens
-// of provider calls before the final summary call. Keep only the first few
-// chunks as real model calls and turn the rest into a zero-cost local digest.
+// A window-summary request used to make one provider call per 12k-char chunk.
+// The first economy patch only inspected `messages`, while the current summary
+// transport can place the chunk prompt in `system`; that made the guard a no-op.
+// Inspect the complete JSON request and synthesize later chunks locally.
 const previousFetch = globalThis.fetch;
 const MAX_MODEL_CHUNKS = 4;
 
@@ -11,8 +11,24 @@ function compact(value, max = 900) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+function extractPrompt(body) {
+  const parts = [];
+  if (typeof body?.system === 'string') parts.push(body.system);
+  if (Array.isArray(body?.messages)) {
+    for (const message of body.messages) {
+      if (typeof message?.content === 'string') parts.push(message.content);
+      else if (Array.isArray(message?.content)) {
+        for (const item of message.content) {
+          if (typeof item?.text === 'string') parts.push(item.text);
+        }
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
 function localChunkDigest(prompt) {
-  const match = String(prompt || '').match(/聊天段落：\n([\s\S]*?)\n\n输出不超过260字/);
+  const match = String(prompt || '').match(/聊天段落：\s*([\s\S]*?)\s*输出不超过260字/);
   const text = match?.[1] || '';
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
   if (!lines.length) return '本段聊天没有可提取的正文。';
@@ -41,14 +57,13 @@ if (typeof previousFetch === 'function') {
     if (typeof init?.body === 'string') {
       try {
         const body = JSON.parse(init.body);
-        const prompt = Array.isArray(body?.messages)
-          ? body.messages.map(message => typeof message?.content === 'string' ? message.content : '').join('\n')
-          : '';
+        const prompt = extractPrompt(body);
         const match = prompt.match(/第\s*(\d+)\/(\d+)\s*段聊天记录/);
         if (match) {
           const chunkIndex = Number(match[1]);
-          if (Number.isFinite(chunkIndex) && chunkIndex >= MAX_MODEL_CHUNKS) {
-            console.log(`[session-summary:economy] local chunk ${chunkIndex + 1}/${match[2]} (provider call skipped)`);
+          const total = Number(match[2]);
+          if (Number.isFinite(chunkIndex) && Number.isFinite(total) && chunkIndex >= MAX_MODEL_CHUNKS) {
+            console.log(`[session-summary:economy] local chunk ${chunkIndex + 1}/${total} (provider call skipped)`);
             return syntheticAnthropicResponse(localChunkDigest(prompt));
           }
         }
