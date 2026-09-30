@@ -1,14 +1,10 @@
 'use strict';
 
-// Keep the transport cleanup deliberately narrow. The database persona, memory,
-// current context, time awareness and regenerate-value rules are all intentional
-// parts of Chat behavior. This layer removes one duplicated style sentence and
-// adds one final conversational boundary without rewriting any stored persona.
+// Keep the final Chat prompt layer small. Persona, memory, worldbook and style
+// are supplied by their own layers; this file only removes one duplicated line
+// and adds one compact conversational preference instead of another long rule.
 const DUPLICATE_STYLE_RULE = '中文表达自然、流畅、有生活感。\n避免客服式、说明书式、模板化表达。';
-const NATURAL_DIALOGUE_RULE = `【自然对话边界】
-正常聊天时，直接回应叶檀这一刻说的话并继续交流，不要把她刚说过的内容换一种说法重新“整理、总结、归纳、梳理、复盘”一遍，也不要默认把自然聊天改写成清单、要点、结论或结构化报告。不要把“我帮你整理一下 / 捋一下 / 总结一下”当作习惯性开场。
-只有叶檀明确要求总结、整理、归纳、梳理、复盘、列清单或列要点时，才进入这种表达方式。平时可以为了承接情绪或回答问题，简短引用她刚说的关键词，但只取真正需要回应的部分，不做大段同义复述。
-后台记忆、上下文和事实仍然可以正常整理；这些内部整理不要变成聊天正文。需要把回复写长时，应增加新的反应、判断、情绪或真正有用的信息，而不是靠重复前情和空洞总结凑长度。`;
+const NATURAL_DIALOGUE_RULE = `【聊天优先】正常聊天直接回应叶檀此刻说的话。不要习惯性复述、总结或结构化；只有她明确要求整理、总结、列点时才这样做。回复需要变长时增加新的反应、判断或有用内容，而不是重复前情。`;
 
 function cleanupText(value) {
   if (typeof value !== 'string' || !value) return value;
@@ -19,7 +15,7 @@ function cleanupText(value) {
 }
 
 function hasNaturalDialogueRule(value) {
-  return typeof value === 'string' && value.includes('【自然对话边界】');
+  return typeof value === 'string' && value.includes('【聊天优先】');
 }
 
 function appendNaturalDialogueRule(system) {
