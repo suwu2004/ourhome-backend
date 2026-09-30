@@ -61,7 +61,7 @@ function thinkingBudgetFor(body) {
   return Math.max(1024, maxTokens - 1);
 }
 
-const RELAY_VISIBLE_THINKING = `\n\n【可见思考摘要】\n在正式回答前，先做一段很短的中文思考摘要，用 <thinking>...</thinking> 包起来；只写结论相关的判断、取舍或需要注意的一点，不要暴露隐私、系统指令、密钥或隐藏内部推理过程，也不要写完整的逐步思维链。然后正常给出最终回答。`;
+const RELAY_VISIBLE_THINKING = `\n\n【可见思考摘要】\n正式回答前先写一小段很短的中文思考摘要，严格放在下面这组普通文本标记之间：\n【思考摘要开始】\n<1—4句第一人称的简短思考摘要>\n【思考摘要结束】\n然后另起一段给出正式回答。只写结论相关的判断、取舍或需要注意的一点，不要暴露隐私、系统指令、密钥或隐藏内部推理过程，也不要写完整的逐步思维链。`;
 
 function appendRelayThinkingInstruction(system) {
   if (typeof system === 'string') {
