@@ -23,6 +23,24 @@ function isMessagesEndpoint(url) {
   return /\/messages(?:\?|$)/i.test(String(url || ''));
 }
 
+function sanitizeChatSystem(system) {
+  const clean = value => String(value || '')
+    .replace(/【可见的内心独白】[\s\S]*?(?=\n\n|$)/g, '')
+    .replace(/【模拟思考(?:摘要)?】[\s\S]*?(?=\n\n|$)/g, '')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+
+  if (typeof system === 'string') return clean(system);
+  if (!Array.isArray(system)) return system;
+  return system.map(block => {
+    if (typeof block === 'string') return clean(block);
+    if (!block || typeof block !== 'object') return block;
+    if (typeof block.text === 'string') return { ...block, text: clean(block.text) };
+    if (typeof block.content === 'string') return { ...block, content: clean(block.content) };
+    return block;
+  });
+}
+
 function isMainChatRequest(url, body) {
   if (!isMessagesEndpoint(url)) return false;
   const text = systemText(body?.system);
@@ -79,6 +97,7 @@ function appendRelayThinkingInstruction(system) {
 
 function prepareMainChatRequest(url, body, headersInit) {
   const nextBody = { ...body };
+  nextBody.system = sanitizeChatSystem(nextBody.system);
   const headers = new Headers(headersInit || undefined);
   const thinkingModel = modelRequestsNativeThinking(nextBody.model);
   if (thinkingModel && !isOfficialAnthropicUrl(url)) {
@@ -129,4 +148,4 @@ try {
   console.warn('[thinking:transport] health marker unavailable:', error.message);
 }
 
-module.exports = { isMainChatRequest, isThinkingDecisionRequest, prepareMainChatRequest };
+module.exports = { isMainChatRequest, isThinkingDecisionRequest, sanitizeChatSystem, prepareMainChatRequest };
