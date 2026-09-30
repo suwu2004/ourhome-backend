@@ -177,8 +177,13 @@ function extractThinkingText(result = {}) {
         if (block[field] != null) addNative(block[field]);
       }
 
-      // Relay compatibility mode puts the visible thinking protocol inside an ordinary text block.
-      if (type === 'text' || type === 'output_text') addTagged(block.text);
+      // Ordinary answer text is not trusted as provider-native thinking. Relay
+      // compatibility currently uses explicit 【思考摘要开始】...【思考摘要结束】
+      // markers, while native providers use dedicated fields/blocks above.
+      if (type === 'text' || type === 'output_text') {
+        const visible = extractVisibleSummaryMarkers(block.text);
+        if (visible.length) visibleSummaryCandidates.push(...visible);
+      }
       if (Array.isArray(block.content)) scanBlocks(block.content);
       if (Array.isArray(block.parts)) scanBlocks(block.parts);
       if (Array.isArray(block.summary) && NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block.summary);
