@@ -30,6 +30,6 @@ test('requested output is raised by settings but never exceeds model capability'
 test('output token guard loads before the thinking transport in the canonical bootstrap', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
-  assert.equal(pkg.scripts.start, 'node server.js');
+  assert.equal(pkg.scripts.start, 'node -r ./runtimeBootstrap server.js');
   assert.match(bootstrap, /modelTokenLimitPatch'\);[\s\S]*thinkingTransportPatch'\);/);
 });
