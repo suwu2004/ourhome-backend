@@ -24,6 +24,6 @@ test('unrelated Supabase reads and non-GET requests are untouched', () => {
 test('single production entry loads history-search resilience through runtime bootstrap', () => {
   const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8'));
   const bootstrap = fs.readFileSync(path.resolve(__dirname, '..', 'runtimeBootstrap.js'), 'utf8');
-  assert.equal(pkg.scripts.start, 'node server.js');
+  assert.equal(pkg.scripts.start, 'node -r ./runtimeBootstrap server.js');
   assert.match(bootstrap, /require\('\.\/chatHistorySearchResiliencePatch'\)/);
 });
