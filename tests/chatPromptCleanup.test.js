@@ -36,18 +36,18 @@ test('Main Chat 最终系统提示只追加一次自然对话边界', () => {
   const input = '【人设】陆泽\n\n【记忆】今天一起吃了火锅。';
   const once = cleanupSystem(input);
   const twice = cleanupSystem(once);
-  assert.match(once, /【自然对话边界】/);
-  assert.match(once, /不要把她刚说过的内容换一种说法重新/);
-  assert.match(once, /只有叶檀明确要求总结、整理、归纳、梳理、复盘、列清单或列要点时/);
-  assert.match(once, /后台记忆、上下文和事实仍然可以正常整理/);
-  assert.equal((twice.match(/【自然对话边界】/g) || []).length, 1);
+  assert.doesNotMatch(once, /【自然对话边界】/);
+  assert.match(once, /【聊天优先】/);
+  assert.match(once, /不要习惯性复述、总结或结构化/);
+  assert.match(once, /只有她明确要求整理、总结、列点时/);
+  assert.equal((twice.match(/【聊天优先】/g) || []).length, 1);
 });
 
 test('自然对话边界允许必要承接，但禁止靠复述和整理凑回复长度', () => {
-  assert.match(NATURAL_DIALOGUE_RULE, /简短引用她刚说的关键词/);
-  assert.match(NATURAL_DIALOGUE_RULE, /不做大段同义复述/);
-  assert.match(NATURAL_DIALOGUE_RULE, /增加新的反应、判断、情绪或真正有用的信息/);
-  assert.match(NATURAL_DIALOGUE_RULE, /不是靠重复前情和空洞总结凑长度/);
+  assert.match(NATURAL_DIALOGUE_RULE, /正常聊天直接回应叶檀此刻说的话/);
+  assert.match(NATURAL_DIALOGUE_RULE, /不要习惯性复述、总结或结构化/);
+  assert.match(NATURAL_DIALOGUE_RULE, /增加新的反应、判断或有用内容/);
+  assert.match(NATURAL_DIALOGUE_RULE, /而不是重复前情/);
 });
 
 test('支持 Anthropic system block 数组且不改时间、记忆正文', () => {
@@ -60,6 +60,6 @@ test('支持 Anthropic system block 数组且不改时间、记忆正文', () =>
   assert.equal(output[0].text.includes(DUPLICATE_STYLE_RULE), false);
   assert.equal(output[1].text, system[1].text);
   assert.match(output[2].text, /^【记忆】今天一起吃了火锅。/);
-  assert.match(output[2].text, /【自然对话边界】/);
-  assert.equal((output.map(block => block.text || '').join('\n').match(/【自然对话边界】/g) || []).length, 1);
+  assert.match(output[2].text, /【聊天优先】/);
+  assert.equal((output.map(block => block.text || '').join('\n').match(/【聊天优先】/g) || []).length, 1);
 });
