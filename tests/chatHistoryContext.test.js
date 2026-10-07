@@ -8,6 +8,7 @@ const {
 
 function makeQueryResolver(target, older, newer) {
   return {
+    select() { return this; },
     eq() { return this; },
     lt() { this.mode = 'older'; return this; },
     gt() { this.mode = 'newer'; return this; },
@@ -22,11 +23,12 @@ function makeQueryResolver(target, older, newer) {
 }
 
 test('normalizeRadius keeps context window bounded', () => {
-  assert.equal(DEFAULT_CONTEXT_RADIUS, 120);
-  assert.equal(normalizeRadius(undefined), 120);
-  assert.equal(normalizeRadius(12), 40);
-  assert.equal(normalizeRadius(999), 240);
-  assert.equal(normalizeRadius('80'), 80);
+  assert.equal(DEFAULT_CONTEXT_RADIUS, 1000);
+  assert.equal(normalizeRadius(undefined), 1000);
+  assert.equal(normalizeRadius(12), 100);
+  assert.equal(normalizeRadius(999), 999);
+  assert.equal(normalizeRadius(5000), 1000);
+  assert.equal(normalizeRadius('800'), 800);
 });
 
 test('loadMessageContext returns only a bounded neighborhood around the target', async () => {
