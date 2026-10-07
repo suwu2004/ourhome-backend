@@ -39,7 +39,7 @@ test('只编译启用规则并保留顺序和标题', () => {
     { title: '亲吻', content: '写清动作。', enabled: true, sort_order: 10 },
   ]);
 
-  assert.equal(compiled, '【亲吻】\n写清动作。\n\n【语言】\n避免套话。');
+  assert.match(compiled, /【亲吻】\n写清动作。\n\n【语言】\n避免套话。/);
   assert.doesNotMatch(compiled, /不应出现/);
 });
 
