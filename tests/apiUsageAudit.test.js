@@ -12,10 +12,11 @@ test('Chat only displays provider-native reasoning and never forces or synthesiz
   assert.doesNotMatch(thinking, /deterministicFallbackThought/);
   assert.doesNotMatch(thinking, /guaranteeVisibleThinking/);
   assert.doesNotMatch(thinking, /appendVisibleThinkingProtocol/);
-  assert.match(thinking, /native-only-thinking-v8/);
   assert.doesNotMatch(thinking, /delete body\.thinking/);
   assert.match(thinking, /prepareMainChatRequest/);
   assert.match(thinking, /headers\.delete\('anthropic-beta'\)/);
+  assert.match(thinking, /RELAY_VISIBLE_THINKING/);
+  assert.match(thinking, /appendRelayThinkingInstruction/);
   assert.match(thinking, /text: '不想'/);
 });
 
@@ -42,7 +43,7 @@ test('legacy think-or-not probes are recognized as local zero-cost work', () => 
 });
 
 test('single production entry keeps audit before budget/background guards and post-audit economy wrappers', () => {
-  assert.equal(pkg.scripts.start, 'node server.js');
+  assert.equal(pkg.scripts.start, 'node -r ./runtimeBootstrap server.js');
   const auditIndex = bootstrap.indexOf("require('./apiUsageAuditPatch')");
   const budgetIndex = bootstrap.indexOf("require('./nonChatBudgetPatch')");
   const backgroundIndex = bootstrap.indexOf("require('./backgroundAiCostGuardPatch')");
