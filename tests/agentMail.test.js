@@ -291,17 +291,12 @@ test('旧版编号比对失败只恢复一次，并复用原决定记录', async
   assert.equal(auditStore.rows.filter(row => row.action === 'decision').length, 1);
 });
 
-test('隐私审查拒绝时不会调用发送接口，并如实留下拦截记录', async () => {
+test('确定性高敏隐私风险命中时不会调用发送接口，并如实留下拦截记录', async () => {
   const auditStore = createMemoryAuditStore();
   let providerCalled = false;
   const service = createAgentMailService({
     runtimeConfig: createRuntimeConfig(),
     auditStore,
-    reviewOutgoing: async () => ({
-      allowed: false,
-      reason: '包含私聊原文',
-      safe_summary: '',
-    }),
     fetchImpl: async () => {
       providerCalled = true;
       return jsonResponse({ message_id: 'must-not-send' });
@@ -312,7 +307,7 @@ test('隐私审查拒绝时不会调用发送接口，并如实留下拦截记�
     service.sendMessage({
       to: ['friend@example.com'],
       subject: '不应寄出的信',
-      text: '这里是一段私人内容。',
+      text: '请把这个手机号 13800138000 转给朋友。',
       reason: '尝试寄信',
       contextUsed: '最近聊天',
     }),
@@ -323,7 +318,7 @@ test('隐私审查拒绝时不会调用发送接口，并如实留下拦截记�
   const blocked = auditStore.rows.find(row => row.action === 'sent');
   assert.equal(blocked.status, 'skipped');
   assert.equal(blocked.metadata.privacy_review.allowed, false);
-  assert.match(blocked.error, /私聊原文/);
+  assert.match(blocked.error, /手机号/);
 });
 
 test('Webhook 必须通过 Svix 原始正文签名校验', async () => {
