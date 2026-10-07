@@ -9,7 +9,7 @@ const runtimeBootstrap = fs.readFileSync(path.join(__dirname, '..', 'runtimeBoot
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 test('Theater history paging loads through the single production startup path', () => {
-  assert.equal(packageJson.scripts.start, 'node server.js');
+  assert.equal(packageJson.scripts.start, 'node -r ./runtimeBootstrap server.js');
   assert.match(runtimeBootstrap, /require\('\.\/theaterMessagePagingPatch'\)/);
   assert.match(runtimeBootstrap, /require\('\.\/theaterRawTurnsPatch'\)/);
   assert.match(runtimeBootstrap, /Final provider-boundary guard/);
