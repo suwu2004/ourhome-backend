@@ -30,7 +30,13 @@ function trimRecentTheaterMessages(messages, maxTokens = MAX_LIVE_MESSAGE_TOKENS
   // When older turns must go, remove complete pairs from the front first.
   const newestUserIndex = [...list].map((message, index) => ({ message, index })).reverse()
     .find(item => item.message?.role === 'user')?.index ?? (list.length - 1);
-  const protectedStart = Math.max(0, newestUserIndex - 1);
+  // Protect the current user turn and the immediately preceding assistant turn.
+  // If that pair would begin the payload with an assistant, also retain the
+  // preceding user turn so the live dialogue always starts on a user message.
+  let protectedStart = Math.max(0, newestUserIndex - 1);
+  if (list[protectedStart]?.role === 'assistant' && protectedStart > 0 && list[protectedStart - 1]?.role === 'user') {
+    protectedStart -= 1;
+  }
   let kept = list.slice(protectedStart);
   let older = list.slice(0, protectedStart);
   let total = list.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
