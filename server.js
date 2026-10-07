@@ -1,3 +1,7 @@
+// Load the canonical runtime patch chain even when the host invokes `node server.js` directly.
+// npm start preloads the same module; Node caches it, so the chain is applied only once.
+require('./runtimeBootstrap');
+
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
