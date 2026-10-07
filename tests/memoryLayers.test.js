@@ -84,5 +84,5 @@ test('自动临时记忆超过 72 小时工作窗口后只归档不删除', () =
 });
 
 test('生产启动只走 node server.js，由 runtimeConfig 统一加载 runtimeBootstrap', () => {
-  assert.equal(packageJson.scripts.start, 'node server.js');
+  assert.equal(packageJson.scripts.start, 'node -r ./runtimeBootstrap server.js');
 });
