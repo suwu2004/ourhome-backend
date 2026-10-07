@@ -23,33 +23,35 @@ test('旧的想不想判断只在本地返回不想，不再向上游发请求',
   assert.match(thinkingTransportPatch, /isThinkingDecisionRequest/);
   assert.match(thinkingTransportPatch, /fixedNoThinkResponse/);
   assert.match(thinkingTransportPatch, /text: '不想'/);
-  assert.match(thinkingTransportPatch, /zero-cost|0 次|never become a paid provider call/i);
+  assert.match(thinkingTransportPatch, /X-OurHome-Local-Response.*thinking-decision|usage: \{ input_tokens: 0, output_tokens: 0 \}/s);
   assert.match(thinkingTransportPatch, /return fixedNoThinkResponse\(\)/);
 });
 
-test('Chat 不再注入可见思考协议，并保留真实原生 thinking 请求', () => {
+test('Chat 清理旧 thinking 指令并保留真实原生/中转 thinking 请求', () => {
   assert.doesNotMatch(thinkingTransportPatch, /VISIBLE_THINKING_PROTOCOL/);
   assert.doesNotMatch(thinkingTransportPatch, /appendVisibleThinkingProtocol/);
-  assert.match(thinkingTransportPatch, /stripLegacyThinkingInstruction/);
+  assert.match(thinkingTransportPatch, /sanitizeChatSystem/);
   assert.doesNotMatch(thinkingTransportPatch, /delete body\.thinking/);
   assert.match(thinkingTransportPatch, /prepareMainChatRequest/);
-  assert.match(thinkingTransportPatch, /Do not delete nextBody\.thinking here/);
+  assert.match(thinkingTransportPatch, /if \(isOfficialAnthropicUrl\(url\) && !nextBody\.thinking && thinkingModel\)/);
   assert.match(thinkingTransportPatch, /headers\.delete\('anthropic-beta'\)/);
 });
 
-test('上游没有 reasoning 时就不显示想一想，不再本地伪造思考', () => {
+test('上游没有 reasoning 时不本地伪造思考，并允许中转兼容摘要协议', () => {
   assert.doesNotMatch(thinkingTransportPatch, /guaranteeVisibleThinking/);
   assert.doesNotMatch(thinkingTransportPatch, /buildFallbackRequestBody/);
   assert.doesNotMatch(thinkingTransportPatch, /fallbackResponse\s*=\s*await\s+originalFetch/);
   assert.doesNotMatch(thinkingTransportPatch, /injectReasoningContent/);
   assert.doesNotMatch(thinkingTransportPatch, /deterministicFallbackThought/);
-  assert.match(thinkingTransportPatch, /native-only-thinking-v8/);
+  assert.match(thinkingTransportPatch, /RELAY_VISIBLE_THINKING/);
+  assert.match(thinkingTransportPatch, /appendRelayThinkingInstruction/);
 });
 
 test('server 兼容官方 Anthropic 原生 thinking，传输层不再误删', () => {
   assert.match(server, /if \(isOfficialAnthropicApi\(settings\)\) \{/);
   assert.doesNotMatch(thinkingTransportPatch, /delete body\.thinking/);
-  assert.match(thinkingTransportPatch, /selected model path that requested native extended thinking/);
+  assert.match(thinkingTransportPatch, /modelRequestsNativeThinking/);
+  assert.match(thinkingTransportPatch, /nextBody\.thinking = \{ type: 'enabled'/);
 });
 
 test('不同中转站的 thinking 返回格式会统一提取', () => {
