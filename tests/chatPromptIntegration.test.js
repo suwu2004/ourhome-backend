@@ -20,8 +20,8 @@ test('每条聊天请求都会带入精简后的统一回复规则', () => {
 });
 
 test('常规发送、历史编辑重发和重新生成都按字数设置计算输出预算', () => {
-  const matches = server.match(/const maxReplyTokens = calculateChatReplyTokenBudget\\(settings\\?\\.min_reply_chars, settings\\?\\.max_reply_tokens\\);/g) || [];
-  assert.equal(matches.length, 3);
+  const matches = server.split("const maxReplyTokens = calculateChatReplyTokenBudget(settings?.min_reply_chars, settings?.max_reply_tokens);").length - 1;
+  assert.equal(matches, 3);
 });
 
 test('旧的想不想判断只在本地返回不想，不再向上游发请求', () => {
