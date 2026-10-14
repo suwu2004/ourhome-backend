@@ -26,9 +26,9 @@ test('聊天只追加指定语言、字数和事实规则', () => {
   assert.match(chat, /中文表达自然、流畅、有生活感。/);
   assert.match(chat, /避免客服式、说明书式、模板化表达。/);
   assert.match(chat, /【回复长度】/);
-  assert.match(chat, /最低长度约为 300 个中文字符/);
-  assert.match(chat, /柔性下限，不是目标字数或固定篇幅/);
-  assert.match(chat, /不要为了满足长度机械扩写/);
+  assert.match(chat, /当前长度偏好约为 300 个中文字符/);
+  assert.match(chat, /不是每轮必须达到的硬性字数/);
+  assert.match(chat, /不意味着机械凑段落、重复表态或无关扩写/);
   assert.match(chat, /【OurHome 房间与入口认知（事实规则）】/);
   assert.doesNotMatch(chat, /【陆泽回复原则】/);
   assert.doesNotMatch(chat, /保持独立思考和真实判断/);
@@ -39,7 +39,7 @@ test('聊天只追加指定语言、字数和事实规则', () => {
 
 test('用户明确要求简短时允许低于下限', () => {
   const chat = buildAdaptiveReplyInstruction(300, 'chat');
-  assert.match(chat, /用户明确要求简短时，可以自然低于该下限/);
+  assert.match(chat, /用户明确要求简短时，以用户要求为准/);
 });
 
 test('共读小屋等事实规则仍然保留', () => {
