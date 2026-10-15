@@ -40,7 +40,7 @@ test('聊天只追加指定语言、字数和事实规则', () => {
 
 test('用户明确要求简短时允许低于下限', () => {
   const chat = buildAdaptiveReplyInstruction(300, 'chat');
-  assert.match(chat, /用户明确要求简短时，以用户要求为准/);
+  assert.match(chat, /用户明确要求简短时，才自然缩短/);
 });
 
 test('共读小屋等事实规则仍然保留', () => {
