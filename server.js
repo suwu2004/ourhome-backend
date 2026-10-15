@@ -49,6 +49,7 @@ const {
   DEFAULT_CHAT_MIN_REPLY_CHARS,
   DEFAULT_THEATER_MIN_REPLY_CHARS,
   normalizeMinReplyChars,
+  calculateChatReplyTokenBudget,
   buildAdaptiveReplyInstruction,
 } = require('./replyLength');
 const { registerReadingRoutes } = require('./readingStore');
@@ -3295,7 +3296,7 @@ async function generateReplyForHistory({ settings, model, historyMessages, lates
   });
   const messages = await buildApiMessages(recentHistory);
 
-  const maxReplyTokens = settings?.max_reply_tokens || 1000;
+  const maxReplyTokens = calculateChatReplyTokenBudget(settings?.min_reply_chars, settings?.max_reply_tokens);
   const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
   const gemini = isGeminiModel(modelName);
   const thinkingBuiltIn = isThinkingModel(modelName);
@@ -5750,7 +5751,7 @@ app.post('/chat', async (req, res) => {
     const settings = await runtimeConfig.loadSettings();
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
-    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxReplyTokens = calculateChatReplyTokenBudget(settings?.min_reply_chars, settings?.max_reply_tokens);
     const maxContextRounds = settings?.max_context_rounds || 20;
     const maxContextTokens = settings?.max_context_tokens || 0;
 
@@ -5851,7 +5852,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const settings = await runtimeConfig.loadSettings();
     const systemPrompt = settings?.system_prompt || '你是陆泽，叶檀的伴侣。';
     const temperature = settings?.temperature || 0.8;
-    const maxReplyTokens = settings?.max_reply_tokens || 1000;
+    const maxReplyTokens = calculateChatReplyTokenBudget(settings?.min_reply_chars, settings?.max_reply_tokens);
     const maxContextRounds = settings?.max_context_rounds || 20;
     const maxContextTokens = settings?.max_context_tokens || 0;
 

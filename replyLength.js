@@ -21,11 +21,32 @@ function normalizeMinReplyChars(value, fallback = DEFAULT_CHAT_MIN_REPLY_CHARS, 
   return Math.round(Math.min(safeMax, Math.max(0, parsed)));
 }
 
+/**
+ * Convert the configured Chinese-character target into enough output tokens.
+ * Providers tokenize Chinese differently, so reserve a conservative margin.
+ * The saved max_reply_tokens remains the baseline, while the character target
+ * can raise it when the two settings would otherwise conflict.
+ */
+function calculateChatReplyTokenBudget(minReplyChars, configuredTokens) {
+  const parsedTokens = Number(configuredTokens);
+  const configured = Number.isFinite(parsedTokens) && parsedTokens > 0
+    ? Math.round(parsedTokens)
+    : 1000;
+  const minimum = normalizeMinReplyChars(
+    minReplyChars,
+    DEFAULT_CHAT_MIN_REPLY_CHARS,
+    MAX_CHAT_MIN_REPLY_CHARS,
+  );
+  const targetBudget = minimum > 0 ? Math.ceil(minimum * 1.8) : 0;
+  return Math.max(500, configured, targetBudget);
+}
+
 module.exports = {
   DEFAULT_CHAT_MIN_REPLY_CHARS,
   DEFAULT_THEATER_MIN_REPLY_CHARS,
   MAX_CHAT_MIN_REPLY_CHARS,
   MAX_THEATER_MIN_REPLY_CHARS,
   normalizeMinReplyChars,
+  calculateChatReplyTokenBudget,
   buildAdaptiveReplyInstruction,
 };
