@@ -7,6 +7,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { createClient } = require('@supabase/supabase-js');
+const { registerPrivateUploadCompatibility } = require('./privateUploads');
 const multer = require('multer');
 // Camera originals are often larger than the stored result. Accept one bounded
 // source image in memory, then compress it before either cloud destination sees it.
@@ -86,6 +87,8 @@ app.post('/agentmail/webhook', express.raw({ type: 'application/json', limit: '1
 app.use(express.json());
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+// Keep uploaded chat images private at rest; translate stable database URLs into expiring signed URLs only in API responses.
+registerPrivateUploadCompatibility(app, { supabase, bucket: UPLOAD_BUCKET });
 const { createNeonFailoverReplay } = require('./neonFailoverReplay');
 const { primaryFetch } = require('./neonFailoverFetchPatch');
 const failoverReplay = createNeonFailoverReplay({ fetchImpl: primaryFetch });
@@ -118,7 +121,7 @@ async function ensureUploadBucket() {
     const missing = existing.error.statusCode === '404' || /not found/i.test(existing.error.message || '');
     if (!missing) throw existing.error;
     const created = await supabase.storage.createBucket(UPLOAD_BUCKET, {
-      public: true,
+      public: false,
       fileSizeLimit: MAX_UPLOAD_BYTES,
     });
     if (created.error) throw created.error;
