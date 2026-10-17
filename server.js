@@ -2707,6 +2707,7 @@ ${openThreads}
     "topic": "这轮主题",
     "emotion": "情绪",
     "summary": "一句内部标记，不超过120字",
+    "should_store": true或false,
     "importance": 1到5,
     "should_continue": true或false,
     "should_remember": true或false,
@@ -2727,6 +2728,8 @@ ${openThreads}
 判断规则：
 - 普通寒暄、单纯撒娇、表情回应不要写 mark。
 - mark 只记录未收尾、之后应该接住的话题；不要把每轮聊天都写成隐藏标记。
+- should_store 表示是否将这条 mark 写入临时记忆。只有它有后续接续价值、且摘要非空时才为 true；普通寒暄、已经结束且没有后续价值的内容为 false。
+- should_store 与 should_continue 分开判断：前者控制是否保存，后者只描述是否仍未收尾。正在推进、之后需要接着处理的项目或问题应保存且 should_continue=true；已经保存但暂时不需追踪的内容可以 should_continue=false。
 - should_continue 表示之后一句“早上那个/继续”需要能接住。
 - long_memory 默认 should_save=false。
 - 只有这些可以进 long_memory：叶檀稳定偏好/不喜欢/界限/称呼/人设；明确说“以后要记得/长期记住/别忘”的内容；OurHome 等长期项目的确定设置或权限决定；生日、纪念日、长期身份资料。
@@ -2756,12 +2759,20 @@ async function recordMemoryJournalTurn({
   const now = new Date();
   const existingContext = await loadTodayMemoryContext(dateKey);
   const analysis = await analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext });
-  if (!analysis || typeof analysis !== 'object') return;
+  if (!analysis || typeof analysis !== 'object') {
+    console.warn('[memory:journal] model returned no valid JSON analysis');
+    return;
+  }
+
+  const persistenceErrors = [];
+  let markStored = false;
+  let dailySummaryStored = false;
+  let longMemoryStored = false;
 
   const mark = analysis.mark || {};
   const normalizedMark = normalizeJournalMark(mark);
   if (normalizedMark.shouldStore) {
-    await supabase.from('memory_marks').insert({
+    const { error: markError } = await supabase.from('memory_marks').insert({
       message_id: userMessageId ? String(userMessageId) : null,
       session_id: sessionId ? String(sessionId) : null,
       role: 'user',
@@ -2775,12 +2786,14 @@ async function recordMemoryJournalTurn({
       should_remember: normalizedMark.shouldRemember,
       metadata: { assistant_message_id: assistantMessageId ? String(assistantMessageId) : null },
     });
+    if (markError) persistenceErrors.push(`临时记忆: ${markError.message}`);
+    else markStored = true;
   }
 
   const daily = analysis.daily_summary || {};
   const summary = compactLine(daily.summary, 1200);
   if (summary) {
-    await supabase.from('daily_summaries').upsert({
+    const { error: summaryError } = await supabase.from('daily_summaries').upsert({
       summary_date: dateKey,
       summary,
       highlights: normalizeTags(daily.highlights, 5).map(item => item.slice(0, 160)),
@@ -2792,17 +2805,26 @@ async function recordMemoryJournalTurn({
       generated_at: now.toISOString(),
       metadata: { source: 'chat_turn' },
     }, { onConflict: 'summary_date' });
+    if (summaryError) persistenceErrors.push(`今日摘要: ${summaryError.message}`);
+    else dailySummaryStored = true;
   }
 
   const longMemory = analysis.long_memory || {};
   const longSummary = compactLine(longMemory.summary, 400);
   if (longMemory.should_save && longSummary) {
-    const { rejected } = await saveMemoryWithEmbedding(
+    const { data: savedMemory, error: memoryError, rejected } = await saveMemoryWithEmbedding(
       longSummary,
       { last_referenced_at: now.toISOString() },
       { guardLongMemory: true },
     );
-    if (rejected) console.info('长期记忆守门拒绝:', rejected.reason, longSummary);
+    if (memoryError) persistenceErrors.push(`长期记忆: ${memoryError.message}`);
+    else if (rejected) console.info('[memory:journal] long-memory candidate rejected:', rejected.reason);
+    else longMemoryStored = Boolean(savedMemory?.id);
+  }
+
+  console.info(`[memory:journal] persistence date=${dateKey} markStored=${markStored} dailySummaryStored=${dailySummaryStored} longMemoryStored=${longMemoryStored}`);
+  if (persistenceErrors.length) {
+    throw new Error(`记忆日志写入部分失败: ${persistenceErrors.join('; ')}`);
   }
 }
 
