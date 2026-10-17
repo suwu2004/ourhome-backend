@@ -22,6 +22,18 @@ test('working memory requires a real summary and an explicit model store decisio
   assert.equal(normalizeJournalMark({ summary: '还要完成部署', should_continue: true, should_store: true }).shouldStore, true);
 });
 
+test('journal model schema includes the explicit store decision consumed by persistence', () => {
+  assert.match(server, /"should_store": true或false/);
+  assert.match(server, /should_store 与 should_continue 分开判断/);
+});
+
+test('journal persistence checks database write results instead of equating provider success with saved memory', () => {
+  assert.match(server, /if \(markError\) persistenceErrors\.push/);
+  assert.match(server, /if \(summaryError\) persistenceErrors\.push/);
+  assert.match(server, /if \(memoryError\) persistenceErrors\.push/);
+  assert.match(server, /记忆日志写入部分失败/);
+});
+
 test('working-memory overview shows stored short-term context without changing Chat continuation injection', () => {
   const overview = 'https://example.supabase.co/rest/v1/memory_marks?select=*&should_continue=eq.true&mark_date=gte.2026-08-01&mark_date=lte.2026-08-15&limit=40';
   const broadened = new URL(broadenWorkingMemoryList(overview));
