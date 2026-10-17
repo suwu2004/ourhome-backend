@@ -10,6 +10,10 @@ const {
 } = require('../privateUploads');
 
 const PUBLIC_URL = 'https://demo.supabase.co/storage/v1/object/public/uploads/folder/%E8%80%81%E5%A9%86.png';
+const fs = require('node:fs');
+const serverFileSource = fs.readFileSync(require.resolve('../server.js'), 'utf8');
+function serverSource() { return serverFileSource; }
+
 const SIGNED_URL = 'https://demo.supabase.co/storage/v1/object/sign/uploads/folder/%E8%80%81%E5%A9%86.png?token=old';
 
 function fakeSupabase() {
@@ -178,4 +182,13 @@ test('旧上传初始化逻辑即使请求 public=true，也会被强制保持�
   await supabase.storage.updateBucket('uploads', { public: true });
   assert.equal(calls[0][2].public, false);
   assert.equal(calls[1][2].public, false);
+});
+
+test('main server installs private upload URL compatibility before route handlers', () => {
+  assert.match(serverSource(), /registerPrivateUploadCompatibility\(app, \{ supabase, bucket: UPLOAD_BUCKET \}\)/);
+  const start = serverSource().indexOf('async function ensureUploadBucket()');
+  const end = serverSource().indexOf('\n}\n', start);
+  const initializer = serverSource().slice(start, end + 3);
+  assert.match(initializer, /public: false/);
+  assert.doesNotMatch(initializer, /public: true/);
 });
