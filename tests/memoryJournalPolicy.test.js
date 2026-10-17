@@ -53,3 +53,9 @@ test('working-memory prompt window stays short while the history remains stored'
   assert.match(server, /gte\('mark_date', startKey\)/);
   assert.match(server, /lte\('mark_date', date\)/);
 });
+
+test('memory journal retries one time only when analysis JSON is empty or invalid', () => {
+  assert.match(server, /for \(let attempt = 1; attempt <= 2; attempt \+= 1\)/);
+  assert.match(server, /empty or invalid JSON analysis; retrying once/);
+  assert.match(server, /格式纠正.*合法的 JSON 对象/);
+});
