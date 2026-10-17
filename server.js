@@ -2735,14 +2735,27 @@ ${openThreads}
 - 只有这些可以进 long_memory：叶檀稳定偏好/不喜欢/界限/称呼/人设；明确说“以后要记得/长期记住/别忘”的内容；OurHome 等长期项目的确定设置或权限决定；生日、纪念日、长期身份资料。
 - 这些绝对不要进 long_memory：今天发生了什么、一次性计划、普通心情、撒娇片段、聊天过程、临时待办、还没确定的想法、只是可爱或有趣的一句话。它们可以留给今日摘要、未完待续或便签。`;
 
-  const result = await callClaude({
-    settings,
-    model: process.env.MEMORY_JOURNAL_MODEL || settings?.memory_journal_model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking',
-    maxTokens: 900,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.2,
-  });
-  return parseJsonObject(extractText(result));
+  const model = process.env.MEMORY_JOURNAL_MODEL || settings?.memory_journal_model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
+  // Some relay routes occasionally return HTTP 200 with an empty body. Retry only
+  // this parse failure once; valid results keep the original single-call cost.
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const retryInstruction = attempt === 1
+      ? ''
+      : '\n\n【格式纠正】上一次没有返回可解析的 JSON。请直接返回一个非空、完整、合法的 JSON 对象，不要 Markdown 代码围栏或任何额外解释。';
+    const result = await callClaude({
+      settings,
+      model,
+      maxTokens: 900,
+      messages: [{ role: 'user', content: `${prompt}${retryInstruction}` }],
+      temperature: 0.2,
+    });
+    const analysis = parseJsonObject(extractText(result));
+    if (analysis && typeof analysis === 'object' && !Array.isArray(analysis)) return analysis;
+    if (attempt === 1) {
+      console.warn('[memory:journal] empty or invalid JSON analysis; retrying once');
+    }
+  }
+  return null;
 }
 
 async function recordMemoryJournalTurn({
