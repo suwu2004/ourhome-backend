@@ -949,7 +949,7 @@ function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
 async function findRecentActionDuplicate(table, filters) {
   try {
     let query = supabase.from(table).select('id,created_at')
-      .gte('created_at', new Date(Date.now() - 2 * 60 * 1000).toISOString());
+      .gte('created_at', new Date(Date.now() - 10 * 60 * 1000).toISOString());
     for (const filter of filters || []) {
       if (!filter || !filter.column) continue;
       query = filter.value === null || filter.value === undefined
@@ -1126,9 +1126,24 @@ async function executeActionTool(name, input) {
         source: 'system',
         category: input.category || '收藏',
       });
+      const duplicateCheck = await findRecentActionDuplicate('memory_favorites', [
+        { column: 'favorite_type', value: payload.favorite_type },
+        { column: 'source', value: payload.source },
+        { column: 'title', value: payload.title },
+        { column: 'content', value: payload.content },
+        { column: 'category', value: payload.category },
+        { column: 'source_message_id', value: payload.source_message_id },
+        { column: 'source_url', value: payload.source_url },
+        { column: 'note', value: payload.note },
+      ]);
+      if (duplicateCheck.error) {
+        console.error('[action-idempotency] favorite duplicate-check failed:', duplicateCheck.error.message);
+        return { ok: false, error: '暂时无法确认这条收藏是否已经保存，请稍后再试。' };
+      }
+      if (duplicateCheck.duplicate) return duplicateWriteResult('favorite_id', duplicateCheck.duplicate);
       const { data, error } = await supabase.from('memory_favorites').insert(payload).select().single();
       if (error) return { ok: false, error: error.message };
-      return { ok: true, favorite_id: data.id, title: data.title };
+      return { ok: true, favorite_id: data.id, title: data.title, duplicate: false };
     } catch (error) {
       return { ok: false, error: error.message };
     }
@@ -1352,17 +1367,34 @@ async function executeActionTool(name, input) {
   }
   if (name === 'manage_home_memo') {
     if (input.action === 'create') {
-      const content = String(input.content || '').trim();
+      const content = String(input.content || '').trim().slice(0, HOME_MEMO_CONTENT_LIMIT);
       if (!content) return { ok: false, error: '便签内容不能为空' };
+      const memoType = input.memo_type === 'tomorrow' ? 'tomorrow' : 'note';
+      const remindOn = input.remind_on || null;
+      const completed = Boolean(input.completed);
+      const duplicateCheck = await findRecentActionDuplicate('home_memos', [
+        { column: 'author', value: '泽' },
+        { column: 'content', value: content },
+        { column: 'memo_type', value: memoType },
+        { column: 'remind_on', value: remindOn },
+        { column: 'completed', value: completed },
+      ]);
+      if (duplicateCheck.error) {
+        console.error('[action-idempotency] memo duplicate-check failed:', duplicateCheck.error.message);
+        return { ok: false, error: '暂时无法确认这张便签是否已经保存，请稍后再试。' };
+      }
+      if (duplicateCheck.duplicate) {
+        return { ok: true, memo_id: duplicateCheck.duplicate.id, duplicate: true, message: '这张便签刚刚已经保存过，没有重复添加。' };
+      }
       const { data, error } = await supabase.from('home_memos').insert({
         author: '泽',
-        content: content.slice(0, HOME_MEMO_CONTENT_LIMIT),
-        memo_type: input.memo_type === 'tomorrow' ? 'tomorrow' : 'note',
-        remind_on: input.remind_on || null,
-        completed: Boolean(input.completed),
+        content,
+        memo_type: memoType,
+        remind_on: remindOn,
+        completed,
       }).select().single();
       if (error) return { ok: false, error: error.message };
-      return { ok: true, memo: data };
+      return { ok: true, memo: data, duplicate: false };
     }
     if (!input.memo_id) return { ok: false, error: '缺少便签编号，请先读取便签' };
     if (input.action === 'delete') {
@@ -1482,13 +1514,26 @@ async function executeActionTool(name, input) {
     }
     if (input.action === 'create') {
       const label = String(input.label || '').trim();
-      if (!label || !/^\d{4}-\d{2}-\d{2}$/.test(String(input.date || ''))) {
+      const date = String(input.date || '').trim();
+      const emoji = String(input.emoji || '✦');
+      if (!label || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return { ok: false, error: '重要时刻需要名称和 YYYY-MM-DD 日期' };
       }
+      const duplicateCheck = await findRecentActionDuplicate('milestones', [
+        { column: 'label', value: label },
+        { column: 'date', value: date },
+      ]);
+      if (duplicateCheck.error) {
+        console.error('[action-idempotency] milestone duplicate-check failed:', duplicateCheck.error.message);
+        return { ok: false, error: '暂时无法确认这个重要时刻是否已经保存，请稍后再试。' };
+      }
+      if (duplicateCheck.duplicate) {
+        return { ok: true, milestone_id: duplicateCheck.duplicate.id, duplicate: true, message: '这个重要时刻刚刚已经保存过，没有重复添加。' };
+      }
       const { data, error } = await supabase.from('milestones')
-        .insert({ label, date: input.date, emoji: String(input.emoji || '✦') }).select().single();
+        .insert({ label, date, emoji }).select().single();
       if (error) return { ok: false, error: error.message };
-      return { ok: true, milestone: data };
+      return { ok: true, milestone: data, duplicate: false };
     }
     if (input.action === 'delete') {
       const { data, error } = await supabase.from('milestones').delete().eq('id', input.milestone_id).select('id').maybeSingle();
