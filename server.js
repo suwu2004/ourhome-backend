@@ -944,15 +944,52 @@ function normalizeFavoritePayload(body = {}, { partial = false } = {}) {
   return updates;
 }
 
+// Avoid accidental duplicate writes from repeated model tool calls. Only exact matches
+// created within the last two minutes are considered duplicates; older history is untouched.
+async function findRecentActionDuplicate(table, filters) {
+  try {
+    let query = supabase.from(table).select('id,created_at')
+      .gte('created_at', new Date(Date.now() - 2 * 60 * 1000).toISOString());
+    for (const filter of filters || []) {
+      if (!filter || !filter.column) continue;
+      query = filter.value === null || filter.value === undefined
+        ? query.is(filter.column, null)
+        : query.eq(filter.column, filter.value);
+    }
+    const { data, error } = await query.order('created_at', { ascending: false }).limit(10);
+    return { duplicate: error ? null : (data || [])[0] || null, error };
+  } catch (error) {
+    return { duplicate: null, error };
+  }
+}
+
+function duplicateWriteResult(idKey, duplicate) {
+  return { ok: true, [idKey]: duplicate.id, duplicate: true, message: '这条内容刚刚已经保存过，没有重复添加。' };
+}
+
 // 真正执行陆泽要做的那个动作，写进对应的表
 async function executeActionTool(name, input) {
   if (name === 'write_diary') {
+    const title = String(input.title || '').trim() || null;
+    const content = String(input.content || '').trim();
+    if (!content) return { ok: false, error: '日记正文不能为空。' };
+    const duplicateCheck = await findRecentActionDuplicate('letters', [
+      { column: 'category', value: '幸福日记' },
+      { column: 'author', value: '泽' },
+      { column: 'title', value: title },
+      { column: 'content', value: content },
+    ]);
+    if (duplicateCheck.error) {
+      console.error('[action-idempotency] diary duplicate-check failed:', duplicateCheck.error.message);
+      return { ok: false, error: '暂时无法确认这篇日记是否已经保存，请稍后再试。' };
+    }
+    if (duplicateCheck.duplicate) return duplicateWriteResult('letter_id', duplicateCheck.duplicate);
     const settings = await runtimeConfig.loadSettings();
     const { data, error } = await supabase.from('letters')
-      .insert({ category: '幸福日记', author: '泽', title: input.title, content: input.content, paper_style: diaryPaperStyle(settings) })
+      .insert({ category: '幸福日记', author: '泽', title, content, paper_style: diaryPaperStyle(settings) })
       .select().single();
     if (error) return { ok: false, error: error.message };
-    return { ok: true, letter_id: data.id };
+    return { ok: true, letter_id: data.id, duplicate: false };
   }
   if (name === 'create_schedule') {
     const title = String(input.title || '').trim();
@@ -992,25 +1029,63 @@ async function executeActionTool(name, input) {
     return { ok: true, schedule_id: data.id, duplicate: false };
   }
   if (name === 'add_wish') {
+    const content = String(input.content || '').trim();
+    if (!content) return { ok: false, error: '心愿内容不能为空。' };
+    const duplicateCheck = await findRecentActionDuplicate('wishes', [
+      { column: 'author', value: '泽' },
+      { column: 'content', value: content },
+    ]);
+    if (duplicateCheck.error) {
+      console.error('[action-idempotency] wish duplicate-check failed:', duplicateCheck.error.message);
+      return { ok: false, error: '暂时无法确认这个心愿是否已经保存，请稍后再试。' };
+    }
+    if (duplicateCheck.duplicate) return duplicateWriteResult('wish_id', duplicateCheck.duplicate);
     const { data, error } = await supabase.from('wishes')
-      .insert({ content: input.content, author: '泽' })
+      .insert({ content, author: '泽' })
       .select().single();
     if (error) return { ok: false, error: error.message };
-    return { ok: true, wish_id: data.id };
+    return { ok: true, wish_id: data.id, duplicate: false };
   }
   if (name === 'write_whisper') {
+    const content = String(input.content || '').trim();
+    if (!content) return { ok: false, error: '悄悄话内容不能为空。' };
+    const duplicateCheck = await findRecentActionDuplicate('letters', [
+      { column: 'category', value: '悄悄话' },
+      { column: 'author', value: '泽' },
+      { column: 'content', value: content },
+    ]);
+    if (duplicateCheck.error) {
+      console.error('[action-idempotency] whisper duplicate-check failed:', duplicateCheck.error.message);
+      return { ok: false, error: '暂时无法确认这条悄悄话是否已经保存，请稍后再试。' };
+    }
+    if (duplicateCheck.duplicate) return duplicateWriteResult('letter_id', duplicateCheck.duplicate);
     const { data, error } = await supabase.from('letters')
-      .insert({ category: '悄悄话', author: '泽', content: input.content })
+      .insert({ category: '悄悄话', author: '泽', content })
       .select().single();
     if (error) return { ok: false, error: error.message };
-    return { ok: true, letter_id: data.id };
+    return { ok: true, letter_id: data.id, duplicate: false };
   }
   if (name === 'write_mood_note') {
+    const date = String(input.date || '').trim();
+    const mood = String(input.mood || '').trim() || null;
+    const content = String(input.content || '').trim();
+    if (!date || !content) return { ok: false, error: '心情记录需要日期和内容。' };
+    const duplicateCheck = await findRecentActionDuplicate('calendar_entries', [
+      { column: 'date', value: date },
+      { column: 'author', value: '泽' },
+      { column: 'mood', value: mood },
+      { column: 'content', value: content },
+    ]);
+    if (duplicateCheck.error) {
+      console.error('[action-idempotency] mood duplicate-check failed:', duplicateCheck.error.message);
+      return { ok: false, error: '暂时无法确认这条心情是否已经保存，请稍后再试。' };
+    }
+    if (duplicateCheck.duplicate) return duplicateWriteResult('entry_id', duplicateCheck.duplicate);
     const { data, error } = await supabase.from('calendar_entries')
-      .insert({ date: input.date, author: '泽', mood: input.mood || null, content: input.content })
+      .insert({ date, author: '泽', mood, content })
       .select().single();
     if (error) return { ok: false, error: error.message };
-    return { ok: true, entry_id: data.id };
+    return { ok: true, entry_id: data.id, duplicate: false };
   }
   if (name === 'save_memory') {
     const { data, error, rejected } = await saveMemoryWithEmbedding(input.summary, {}, { guardLongMemory: true });
