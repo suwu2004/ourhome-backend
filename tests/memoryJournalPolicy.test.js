@@ -59,3 +59,12 @@ test('memory journal retries one time only when analysis JSON is empty or invali
   assert.match(server, /empty or invalid JSON analysis; retrying once/);
   assert.match(server, /格式纠正.*合法的 JSON 对象/);
 });
+
+test('create_schedule rejects invalid dates and deduplicates same title/time', () => {
+  assert.match(server, /if \(!title \|\| !Number\.isFinite\(remindAt\.getTime\(\)\)\)/);
+  assert.match(server, /duplicate-check failed/);
+  assert.match(server, /\.eq\('title', title\)/);
+  assert.match(server, /\.gte\('remind_at', minuteStart\.toISOString\(\)\)/);
+  assert.match(server, /\.lt\('remind_at', minuteEnd\.toISOString\(\)\)/);
+  assert.match(server, /duplicate: true/);
+});
