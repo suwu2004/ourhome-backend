@@ -79,4 +79,10 @@ test('chat-created records ignore repeated exact writes within a short window', 
     assert.ok(server.includes("if (name === '" + action + "')"), action + " is guarded");
   }
   assert.match(server, /duplicate-check failed/);
+  assert.match(server, /duplicateWriteResult\('favorite_id', duplicateCheck\.duplicate\)/);
+  assert.match(server, /memo duplicate-check failed/);
+  assert.match(server, /milestone duplicate-check failed/);
+  for (const action of ["save_favorite", "manage_home_memo", "manage_milestone"]) {
+    assert.ok(server.includes("if (name === '" + action + "')"), action + " is guarded");
+  }
 });
