@@ -64,7 +64,6 @@ const {
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
-const { findRecentActionDuplicate } = require('./actionIdempotency');
 const { selectRecentHistory } = require('./chatContextWindow');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
