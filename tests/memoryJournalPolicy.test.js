@@ -71,7 +71,7 @@ test('create_schedule rejects invalid dates and deduplicates same title/time', (
 
 test('chat-created records ignore repeated exact writes within a short window', () => {
   assert.match(server, /async function findRecentActionDuplicate\(table, filters\)/);
-  assert.match(server, /Date\.now\(\) - 2 \* 60 \* 1000/);
+  assert.match(server, /Date\.now\(\) - 10 \* 60 \* 1000/);
   assert.match(server, /duplicateWriteResult\('letter_id', duplicateCheck\.duplicate\)/);
   assert.match(server, /duplicateWriteResult\('wish_id', duplicateCheck\.duplicate\)/);
   assert.match(server, /duplicateWriteResult\('entry_id', duplicateCheck\.duplicate\)/);
