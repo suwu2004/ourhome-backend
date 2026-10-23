@@ -68,3 +68,15 @@ test('create_schedule rejects invalid dates and deduplicates same title/time', (
   assert.match(server, /\.lt\('remind_at', minuteEnd\.toISOString\(\)\)/);
   assert.match(server, /duplicate: true/);
 });
+
+test('chat-created records ignore repeated exact writes within a short window', () => {
+  assert.match(server, /async function findRecentActionDuplicate\(table, filters\)/);
+  assert.match(server, /Date\.now\(\) - 2 \* 60 \* 1000/);
+  assert.match(server, /duplicateWriteResult\('letter_id', duplicateCheck\.duplicate\)/);
+  assert.match(server, /duplicateWriteResult\('wish_id', duplicateCheck\.duplicate\)/);
+  assert.match(server, /duplicateWriteResult\('entry_id', duplicateCheck\.duplicate\)/);
+  for (const action of ["write_diary", "add_wish", "write_whisper", "write_mood_note"]) {
+    assert.ok(server.includes("if (name === '" + action + "')"), action + " is guarded");
+  }
+  assert.match(server, /duplicate-check failed/);
+});
