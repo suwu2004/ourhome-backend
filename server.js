@@ -955,11 +955,41 @@ async function executeActionTool(name, input) {
     return { ok: true, letter_id: data.id };
   }
   if (name === 'create_schedule') {
+    const title = String(input.title || '').trim();
+    const remindAt = new Date(input.remind_at);
+    if (!title || !Number.isFinite(remindAt.getTime())) {
+      return { ok: false, error: '提醒标题或时间无效，请先核对后再创建。' };
+    }
+
+    // Idempotency guard: model retries/repeated tool calls must not create the
+    // same reminder twice. Match same normalized title and minute-level time.
+    const normalizedTitle = title.toLocaleLowerCase();
+    const minuteStart = new Date(Math.floor(remindAt.getTime() / 60000) * 60000);
+    const minuteEnd = new Date(minuteStart.getTime() + 60000);
+    const { data: existing, error: lookupError } = await supabase.from('schedule_events')
+      .select('id,title,remind_at')
+      .eq('title', title)
+      .gte('remind_at', minuteStart.toISOString())
+      .lt('remind_at', minuteEnd.toISOString())
+      .limit(10);
+    if (lookupError) {
+      console.error('[schedule] duplicate-check failed:', lookupError.message);
+      return { ok: false, error: '暂时无法确认是否已经设置过这个提醒，请稍后再试。' };
+    }
+    const duplicate = (existing || []).find(item =>
+      String(item.title || '').trim().toLocaleLowerCase() === normalizedTitle &&
+      Number.isFinite(Date.parse(item.remind_at)) &&
+      Math.floor(Date.parse(item.remind_at) / 60000) === Math.floor(remindAt.getTime() / 60000)
+    );
+    if (duplicate) {
+      return { ok: true, schedule_id: duplicate.id, duplicate: true, message: '这个提醒已经存在，没有重复创建。' };
+    }
+
     const { data, error } = await supabase.from('schedule_events')
-      .insert({ title: input.title, content: input.content || null, remind_at: input.remind_at, author: '泽' })
+      .insert({ title, content: input.content || null, remind_at: remindAt.toISOString(), author: '泽' })
       .select().single();
     if (error) return { ok: false, error: error.message };
-    return { ok: true, schedule_id: data.id };
+    return { ok: true, schedule_id: data.id, duplicate: false };
   }
   if (name === 'add_wish') {
     const { data, error } = await supabase.from('wishes')
