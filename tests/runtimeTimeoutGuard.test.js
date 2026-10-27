@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   LEARNING_PLAN_TIMEOUT_MS,
+  MEMORY_JOURNAL_TIMEOUT_MS,
   VISION_READER_TIMEOUT_MS,
   DAILY_WRITING_TIMEOUT_MS,
   TOYBOX_TIMEOUT_MS,
@@ -30,6 +31,15 @@ function modelInit({ purpose = '', system = '', message = 'hello' } = {}) {
 test('Luze learning planning gets one 60-second call window', () => {
   assert.equal(LEARNING_PLAN_TIMEOUT_MS, 60_000);
   assert.equal(timeoutForRequest(modelInit({ purpose: 'luze-learning-plan' })), 60_000);
+});
+
+test('background memory-journal analysis gets a bounded 60-second call window', () => {
+  assert.equal(MEMORY_JOURNAL_TIMEOUT_MS, 60_000);
+  assert.equal(
+    timeoutForRequest(modelInit({ message: '请为 OurHome 的记忆日志分析刚刚这一轮聊天。请只输出 JSON。' })),
+    60_000,
+  );
+  assert.equal(timeoutForRequest(modelInit({ purpose: 'memory-journal' })), 60_000);
 });
 
 test('vision reader gets a 150-second ceiling without retrying', () => {

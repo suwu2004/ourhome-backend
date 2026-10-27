@@ -3,6 +3,7 @@
 // Small helper calls should never hold a room hostage when the relay is unhealthy.
 // These are single-call ceilings only: this module never retries a paid request.
 const LEARNING_PLAN_TIMEOUT_MS = 60_000;
+const MEMORY_JOURNAL_TIMEOUT_MS = 60_000;
 const VISION_READER_TIMEOUT_MS = 150_000;
 const DAILY_WRITING_TIMEOUT_MS = 120_000;
 const TOYBOX_TIMEOUT_MS = 75_000;
@@ -58,6 +59,7 @@ function isDailyWritingText(text) {
 function timeoutForRequest(init = {}) {
   const purpose = headerPurpose(init.headers);
   if (purpose === 'luze-learning-plan') return LEARNING_PLAN_TIMEOUT_MS;
+  if (purpose === 'memory-journal') return MEMORY_JOURNAL_TIMEOUT_MS;
   if (purpose === 'vision-reader') return VISION_READER_TIMEOUT_MS;
   if (purpose === 'daily-writing' || purpose === 'happiness-diary' || purpose === 'daily-mood') {
     return DAILY_WRITING_TIMEOUT_MS;
@@ -68,6 +70,10 @@ function timeoutForRequest(init = {}) {
   const system = systemText(body.system);
   const text = `${system}\n${messageText(body.messages)}`;
 
+  // Memory-journal analysis runs asynchronously after Chat. Bound slow relays so
+  // background summarization cannot occupy a request for five minutes per attempt.
+  if (text.includes('请为 OurHome 的记忆日志分析刚刚这一轮聊天')) return MEMORY_JOURNAL_TIMEOUT_MS;
+
   if (isVisionReaderText(system, text)) return VISION_READER_TIMEOUT_MS;
   if (isDailyWritingText(text)) return DAILY_WRITING_TIMEOUT_MS;
   if (text.includes('【玩具箱】') || text.includes('【玩具熊】')) return TOYBOX_TIMEOUT_MS;
@@ -77,6 +83,7 @@ function timeoutForRequest(init = {}) {
 
 module.exports = {
   LEARNING_PLAN_TIMEOUT_MS,
+  MEMORY_JOURNAL_TIMEOUT_MS,
   VISION_READER_TIMEOUT_MS,
   DAILY_WRITING_TIMEOUT_MS,
   TOYBOX_TIMEOUT_MS,
