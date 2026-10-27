@@ -11,4 +11,12 @@ function normalizeExplicitMemorySummary(value) {
   return { ok: true, summary };
 }
 
-module.exports = { normalizeExplicitMemorySummary };
+
+function isExactMemoryDuplicate(existingSummary, candidateSummary) {
+  const existing = String(existingSummary ?? '').trim();
+  const candidate = String(candidateSummary ?? '').trim();
+  return Boolean(existing && candidate && existing === candidate);
+}
+
+module.exports = { normalizeExplicitMemorySummary, isExactMemoryDuplicate };
+
