@@ -1,7 +1,7 @@
 'use strict';
 
 function normalizeExplicitMemorySummary(value) {
-  const summary = String(value ?? '').replace(/\\s+/g, ' ').trim();
+  const summary = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!summary) {
     return { ok: false, error: '记忆内容不能为空，尚未保存。' };
   }
