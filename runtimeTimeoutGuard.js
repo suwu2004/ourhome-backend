@@ -70,6 +70,10 @@ function timeoutForRequest(init = {}) {
   const system = systemText(body.system);
   const text = `${system}\n${messageText(body.messages)}`;
 
+  // Memory-journal analysis runs asynchronously after Chat. Bound slow relays so
+  // background summarization cannot occupy a request for five minutes per attempt.
+  if (text.includes('请为 OurHome 的记忆日志分析刚刚这一轮聊天')) return MEMORY_JOURNAL_TIMEOUT_MS;
+
   if (isVisionReaderText(system, text)) return VISION_READER_TIMEOUT_MS;
   if (isDailyWritingText(text)) return DAILY_WRITING_TIMEOUT_MS;
   if (text.includes('【玩具箱】') || text.includes('【玩具熊】')) return TOYBOX_TIMEOUT_MS;
