@@ -16,8 +16,13 @@ test('explicit chat memory normalizes whitespace before saving', () => {
   assert.equal(result.summary, '叶檀 喜欢雨天和黑咖啡。');
 });
 
-test('explicit chat memory rejects empty, too-short, and oversized summaries', () => {
+test('explicit chat memory allows concise facts after explicit-save intent has selected the tool', () => {
+  const result = normalizeExplicitMemorySummary('猫叫泽叽');
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, '猫叫泽叽');
+});
+
+test('explicit chat memory rejects only empty and oversized summaries', () => {
   assert.equal(normalizeExplicitMemorySummary('   ').ok, false);
-  assert.equal(normalizeExplicitMemorySummary('猫叫泽叽').ok, false);
   assert.equal(normalizeExplicitMemorySummary('记'.repeat(261)).ok, false);
 });
