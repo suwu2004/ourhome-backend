@@ -67,7 +67,7 @@ const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPo
 const { selectRecentHistory } = require('./chatContextWindow');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
-const { normalizeExplicitMemorySummary } = require('./explicitMemorySave');
+const { normalizeExplicitMemorySummary, isExactMemoryDuplicate } = require('./explicitMemorySave');
 const { projectBackgroundPersona } = require('./backgroundPersona');
 const { cheapestModel } = require('./nonChatBudgetPatch');
 const {
@@ -1094,6 +1094,35 @@ async function executeActionTool(name, input) {
     // facts (for example, who a pet is) that do not contain one of the predefined signal words.
     const normalized = normalizeExplicitMemorySummary(input.summary);
     if (!normalized.ok) return { ok: false, error: normalized.error, saved: false };
+
+    // Repeated tool calls can happen when the model retries after an ambiguous turn.
+    // Reuse an already-active exact fact instead of creating another row in long memory.
+    const { data: existingMemory, error: duplicateLookupError } = await supabase.from('memories')
+      .select('id, summary, timestamp, memory_tier')
+      .eq('summary', normalized.summary)
+      .neq('memory_tier', 'archived')
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (duplicateLookupError) {
+      console.error('[memory:explicit-save] duplicate lookup failed:', duplicateLookupError.message);
+      return {
+        ok: false,
+        saved: false,
+        error: '暂时无法确认这条长期记忆是否已经存在，请稍后重试；这次没有新增记录。',
+      };
+    }
+    if (existingMemory?.id && isExactMemoryDuplicate(existingMemory.summary, normalized.summary)) {
+      console.info(`[memory:explicit-save] duplicate reused id=${existingMemory.id}`);
+      return {
+        ok: true,
+        saved: true,
+        duplicate: true,
+        memory_id: existingMemory.id,
+        summary: existingMemory.summary,
+        message: '这条长期记忆已经存在，没有重复新增。',
+      };
+    }
 
     const { data, error } = await saveMemoryWithEmbedding(normalized.summary);
     if (error || !data?.id) {
