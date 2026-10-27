@@ -67,6 +67,7 @@ const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPo
 const { selectRecentHistory } = require('./chatContextWindow');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
+const { normalizeExplicitMemorySummary } = require('./explicitMemorySave');
 const { projectBackgroundPersona } = require('./backgroundPersona');
 const { cheapestModel } = require('./nonChatBudgetPatch');
 const {
@@ -487,7 +488,7 @@ const ACTION_TOOLS = [
   },
   {
     name: 'save_memory',
-    description: '只把“长期档案级”的内容存进长期记忆：稳定偏好、明确界限、重要约定、长期项目设定、核心身份资料。不要保存当天流水账、普通情绪、闲聊片段、一次性事件、临时待办或只是觉得可爱的碎碎念；这些应留给今日摘要/未完待续/便签。',
+    description: '只把长期有复用价值的内容存进长期记忆：稳定偏好、明确界限、重要约定、长期项目设定、核心身份资料。若叶檀明确要求记住一条以后仍有用的事实，即使句子不含预设关键词也应保存；不要保存普通寒暄、纯情绪或无后续价值的流水账。',
     input_schema: {
       type: 'object',
       properties: {
@@ -1088,10 +1089,29 @@ async function executeActionTool(name, input) {
     return { ok: true, entry_id: data.id, duplicate: false };
   }
   if (name === 'save_memory') {
-    const { data, error, rejected } = await saveMemoryWithEmbedding(input.summary, {}, { guardLongMemory: true });
-    if (rejected) return { ok: false, error: rejected.reason };
-    if (error) return { ok: false, error: error.message };
-    return { ok: true, memory_id: data.id };
+    // This tool is exposed only when the recent chat contains an explicit memory-save intent.
+    // Do not apply the automatic journal's keyword heuristic here: it rejects valid named
+    // facts (for example, who a pet is) that do not contain one of the predefined signal words.
+    const normalized = normalizeExplicitMemorySummary(input.summary);
+    if (!normalized.ok) return { ok: false, error: normalized.error, saved: false };
+
+    const { data, error } = await saveMemoryWithEmbedding(normalized.summary);
+    if (error || !data?.id) {
+      console.error('[memory:explicit-save] insert failed:', error?.message || 'database returned no record');
+      return {
+        ok: false,
+        saved: false,
+        error: '长期记忆写入数据库失败。请明确告诉叶檀这次没有保存成功，不要声称已经记住。',
+      };
+    }
+    console.info(`[memory:explicit-save] stored id=${data.id} chars=${normalized.summary.length}`);
+    return {
+      ok: true,
+      saved: true,
+      memory_id: data.id,
+      summary: data.summary || normalized.summary,
+      message: '已成功写入长期记忆。',
+    };
   }
   if (name === 'read_favorites') {
     const limit = Math.max(1, Math.min(Number.parseInt(input.limit, 10) || 20, 80));
