@@ -43,6 +43,10 @@ test('普通记忆确认只开放整理后的记忆搜索', () => {
 test('明确保存或管理记忆才开放写工具', () => {
   assert.deepEqual(selectedNames('把这个记下来，存进长期记忆'), ['save_memory']);
   assert.deepEqual(selectedNames('把那条长期记忆删掉'), ['manage_memory']);
+  const reorganize = selectedNames('把刚才聊到的写法偏好整理进记忆');
+  assert.ok(reorganize.includes('search_memories'));
+  assert.ok(reorganize.includes('save_memory'));
+  assert.ok(reorganize.includes('manage_memory'));
 });
 
 test('共读、玩具熊、画室和私人房间按关键词路由', () => {

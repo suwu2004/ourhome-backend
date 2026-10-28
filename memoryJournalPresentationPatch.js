@@ -1,5 +1,7 @@
 'use strict';
 
+const { assessLongMemoryCandidate, deriveStablePreferenceMemory } = require('./longMemoryCandidate');
+
 // The memory journal may maintain open-thread metadata every turn, but the user-facing
 // Happiness Diary summary must not become an internal transcript such as
 // “本轮：……；本轮：……”. Preserve the already-curated day summary and let the nightly
@@ -36,28 +38,51 @@ function extractExistingSummary(body) {
   return value && value !== '无' ? value.slice(0, 1200) : '';
 }
 
-function patchJournalResult(result, existingSummary) {
+function extractCurrentUserText(body) {
+  const prompt = messageText(body?.messages);
+  const turnStart = prompt.indexOf('【刚刚这一轮】');
+  if (turnStart < 0) return '';
+  const userLabel = '叶檀：';
+  const userStart = prompt.indexOf(userLabel, turnStart);
+  if (userStart < 0) return '';
+  const contentStart = userStart + userLabel.length;
+  const assistantStart = prompt.indexOf('\n陆泽：', contentStart);
+  return (assistantStart < 0 ? prompt.slice(contentStart) : prompt.slice(contentStart, assistantStart)).trim().slice(0, 1200);
+}
+
+function patchJournalResult(result, existingSummary, userText = '') {
   if (!result || typeof result !== 'object') return result;
   const next = JSON.parse(JSON.stringify(result));
   if (!next.daily_summary || typeof next.daily_summary !== 'object') next.daily_summary = {};
   next.daily_summary.summary = existingSummary || '';
+
+  // Make stable, recurring writing-style preferences durable even if the
+  // journal model incorrectly defaults long_memory.should_save to false.
+  const inferredPreference = deriveStablePreferenceMemory(userText);
+  if (inferredPreference && assessLongMemoryCandidate(inferredPreference, userText).ok) {
+    if (!next.long_memory || typeof next.long_memory !== 'object') next.long_memory = {};
+    next.long_memory.should_save = true;
+    // Keep the source-backed summary so the server's conservative keyword gate
+    // cannot reject a valid paraphrase simply because the model changed wording.
+    next.long_memory.summary = inferredPreference;
+  }
   return next;
 }
 
-function patchProviderPayload(payload, existingSummary) {
+function patchProviderPayload(payload, existingSummary, userText = '') {
   if (!payload || typeof payload !== 'object') return payload;
   const next = JSON.parse(JSON.stringify(payload));
   if (Array.isArray(next.content)) {
     for (const block of next.content) {
       if (!block || typeof block.text !== 'string') continue;
       try {
-        block.text = JSON.stringify(patchJournalResult(JSON.parse(block.text), existingSummary));
+        block.text = JSON.stringify(patchJournalResult(JSON.parse(block.text), existingSummary, userText));
         return next;
       } catch {}
     }
   }
   if (typeof next.content === 'string') {
-    try { next.content = JSON.stringify(patchJournalResult(JSON.parse(next.content), existingSummary)); } catch {}
+    try { next.content = JSON.stringify(patchJournalResult(JSON.parse(next.content), existingSummary, userText)); } catch {}
   }
   return next;
 }
@@ -84,7 +109,7 @@ if (typeof previousFetch === 'function') {
     if (!response?.ok) return response;
     try {
       const payload = await response.clone().json();
-      return jsonResponseLike(response, patchProviderPayload(payload, extractExistingSummary(body)));
+      return jsonResponseLike(response, patchProviderPayload(payload, extractExistingSummary(body), extractCurrentUserText(body)));
     } catch (error) {
       console.warn('[memory:journal-display] response patch skipped:', error.message);
       return response;
@@ -108,6 +133,7 @@ try {
 module.exports = {
   isMemoryJournalRequest,
   extractExistingSummary,
+  extractCurrentUserText,
   patchJournalResult,
   patchProviderPayload,
 };
