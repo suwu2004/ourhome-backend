@@ -106,6 +106,39 @@ function localFallbackResponse(body, reason = '') {
   });
 }
 
+function extractLearningResponseText(payload = {}) {
+  if (typeof payload?.content === 'string') return payload.content;
+  if (Array.isArray(payload?.content)) {
+    return payload.content
+      .map(block => String(block?.text ?? block?.content ?? ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (Array.isArray(payload?.choices)) {
+    return payload.choices
+      .map(choice => String(choice?.message?.content ?? choice?.text ?? ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return String(payload?.text ?? payload?.output_text ?? '');
+}
+
+function hasCompleteLearningNote(payload = {}) {
+  const text = extractLearningResponseText(payload)
+    .replace(/```(?:json)?/gi, '')
+    .replace(/```/g, '')
+    .trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return false;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    return typeof parsed?.body === 'string' && parsed.body.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function isRetryableStatus(status) {
   return RETRYABLE_HTTP.has(Number(status));
 }
@@ -114,6 +147,7 @@ module.exports = {
   SYNTHESIS_TIMEOUT_MS,
   safeJsonBody,
   hasUsableText,
+  hasCompleteLearningNote,
   purposeFromHeaders,
   isLearningSynthesisRequest,
   isRetryableStatus,
