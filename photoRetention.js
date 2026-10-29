@@ -79,15 +79,42 @@ function buildCleanupPlan({ messages = [], protectedPaths = new Set(), cutoffMs,
 
 async function listUploadObjectSizes(storage, { pageSize = 1000 } = {}) {
   const sizes = new Map();
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await storage.list('', { limit: pageSize, offset, sortBy: { column: 'name', order: 'asc' } });
-    if (error) throw error;
-    for (const item of data || []) {
-      const size = Number(item?.metadata?.size);
-      if (item?.name && Number.isFinite(size)) sizes.set(item.name, size);
+  const visitedFolders = new Set();
+
+  async function listFolder(folderPath = '') {
+    if (visitedFolders.has(folderPath)) return;
+    visitedFolders.add(folderPath);
+
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await storage.list(folderPath, {
+        limit: pageSize,
+        offset,
+        sortBy: { column: 'name', order: 'asc' },
+      });
+      if (error) throw error;
+
+      const items = Array.isArray(data) ? data : [];
+      for (const item of items) {
+        const name = String(item?.name || '').trim();
+        if (!name || name === '.' || name === '..') continue;
+        const fullPath = folderPath ? `${folderPath}/${name}` : name;
+        const rawSize = item?.metadata?.size;
+        const size = rawSize == null ? NaN : Number(rawSize);
+
+        if (Number.isFinite(size) && size >= 0) {
+          sizes.set(fullPath, size);
+        } else if (item?.id == null && item?.metadata == null) {
+          // Supabase Storage returns folders as entries without object IDs or
+          // file metadata. Recurse so nested chat paths get real byte counts.
+          await listFolder(fullPath);
+        }
+      }
+
+      if (items.length < pageSize) break;
     }
-    if (!data || data.length < pageSize) break;
   }
+
+  await listFolder('');
   return sizes;
 }
 
