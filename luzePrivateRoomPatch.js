@@ -495,10 +495,13 @@ async function askDoorPermission() {
   return { allow: parsed.allow, message: compactBlock(parsed.message, 500) || (parsed.allow ? '进来吧。' : '今天先不给看。') };
 }
 
-async function listRoomEntries(kind, limit) {
-  let query = getSupabase().from('luze_private_entries').select('*').order('created_at', { ascending: false }).limit(limit);
+async function listRoomEntries(kind, limit, offset = 0) {
+  let query = getSupabase().from('luze_private_entries')
+    .select('*')
+    .order('created_at', { ascending: false });
   if (ENTRY_KINDS.has(kind)) query = query.eq('kind', kind);
-  const { data, error } = await query;
+  const start = Math.max(0, Number(offset) || 0);
+  const { data, error } = await query.range(start, start + limit - 1);
   if (error) throw error;
   return data || [];
 }
@@ -526,8 +529,9 @@ function registerLuzePrivateRoomRoutes(app) {
 
   app.get('/luze-room/entries', requireRoomPass, async (req, res) => {
     try {
-      const limit = clampInt(req.query?.limit, 1, 1000, 80);
-      res.json({ entries: await listRoomEntries(String(req.query?.kind || ''), limit) });
+      const limit = clampInt(req.query?.limit, 1, 160, 80);
+      const offset = clampInt(req.query?.offset, 0, 100_000, 0);
+      res.json({ entries: await listRoomEntries(String(req.query?.kind || ''), limit, offset) });
     } catch (error) {
       console.error('[luze:room:entries]', error.message);
       res.status(500).json({ error: '这一叠纸暂时没翻开' });
