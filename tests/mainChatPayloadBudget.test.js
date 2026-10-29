@@ -17,7 +17,7 @@ test('trims oldest complete chat pairs after hidden context has been added', () 
   for (let index = 0; index < 12; index += 1) {
     messages.push({
       role: index % 2 === 0 ? 'user' : 'assistant',
-      content: `历史第${index}轮：${'旧对话内容'.repeat(80)}`,
+      content: `历史第${index}轮：${'旧对话内容'.repeat(120)}`,
     });
   }
   messages.push({ role: 'user', content: 'CURRENT_TURN_KEEP_THIS' });
