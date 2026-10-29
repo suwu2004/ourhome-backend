@@ -2947,7 +2947,8 @@ ${openThreads}
     const result = await callClaude({
       settings,
       model,
-      maxTokens: 900,
+      // Keep the first attempt lean; give a parse-failure retry enough room to finish JSON.
+      maxTokens: attempt === 1 ? 900 : 2000,
       messages: [{ role: 'user', content: `${prompt}${retryInstruction}` }],
       temperature: 0.2,
     });
