@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const { createIntegrationManager } = require('./integrations');
+const { normalizeLearningPlanResult } = require('./luzeLearningPlanFallback');
 
 const express = require('express');
 const originalListen = express.application.listen;
@@ -339,9 +340,16 @@ async function planLearning(runtime, context, { mode = 'curiosity', sharedContex
     }],
   });
   const parsed = parseJsonObject(text) || {};
-  const query = compactLine(parsed.query, 360);
-  if (!query) throw new Error('这次没有想出合适的搜索问题');
-  return { query, reason: compactLine(parsed.reason, 240), keywords: safeList(parsed.keywords, 5, 32), mode };
+  const normalized = normalizeLearningPlanResult(parsed, mode);
+  if (normalized.usedFallback) {
+    console.warn(`[luze:learn] plan returned no usable query; using local fallback mode=${mode}`);
+  }
+  return {
+    query: normalized.query,
+    reason: normalized.reason,
+    keywords: safeList(normalized.keywords, 5, 32),
+    mode,
+  };
 }
 
 async function synthesizeLearning(runtime, plan, search) {
