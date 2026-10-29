@@ -53,3 +53,19 @@ test('HTTP 200 payload with zero text is treated as unusable', () => {
   assert.equal(hasUsableText({ choices: [{ message: { content: '' } }] }), false);
   assert.equal(hasUsableText({ choices: [{ message: { content: 'done' } }] }), true);
 });
+
+test('complete learning JSON is required before an HTTP 200 result is accepted', () => {
+  const { hasCompleteLearningNote } = require('../luzeLearningResilience');
+  assert.equal(hasCompleteLearningNote({
+    content: [{ type: 'text', text: JSON.stringify({ title: '一页笔记', body: '完整的学习笔记正文' }) }],
+  }), true);
+  assert.equal(hasCompleteLearningNote({
+    content: [{ type: 'text', text: '```json\n{"title":"标题","body":"正文"}\n```' }],
+  }), true);
+  assert.equal(hasCompleteLearningNote({
+    content: [{ type: 'text', text: '{"title":"标题","body":"正文没有结束' }],
+  }), false);
+  assert.equal(hasCompleteLearningNote({
+    content: [{ type: 'text', text: '{"title":"标题","body":"   "}' }],
+  }), false);
+});
