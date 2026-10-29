@@ -114,3 +114,83 @@ test('quota failures and full batches receive a bounded maintenance retry', () =
   assert.match(photoRetentionSource, /catch \(error\)[\s\S]*scheduleRetry\(\)/);
   assert.match(photoRetentionSource, /Math\.max\(5 \* 60 \* 1000, retryDelayMs\)/);
 });
+
+
+test('photo cleanup paginates message rows and protects upload URLs saved in other features', async () => {
+  const messageRows = Array.from({ length: 500 }, (_, index) => ({
+    id: index + 1,
+    created_at: old,
+    attachment_url: `${base}old-${index}.jpg`,
+    attachment_type: 'image/jpeg',
+    attachment_summary: '',
+  }));
+  messageRows.push({
+    id: 501, created_at: old, attachment_url: `${base}unique-final.jpg`,
+    attachment_type: 'image/jpeg', attachment_summary: '普通图片分析',
+  });
+  messageRows.push({
+    id: 502, created_at: old, attachment_url: `${base}protected-final.jpg`,
+    attachment_type: 'image/jpeg', attachment_summary: '被其他功能引用的图片',
+  });
+
+  const favoriteRows = Array.from({ length: 500 }, (_, index) => ({ id: index + 1, source_url: '' }));
+  favoriteRows.push({ id: 501, source_url: `${base}protected-final.jpg` });
+  const tableRows = { messages: messageRows, memory_favorites: favoriteRows };
+  const removals = [];
+  let updatedIds = [];
+
+  function pagedQuery(rows) {
+    let start = 0;
+    let end = 499;
+    const builder = {
+      not() { return builder; },
+      order() { return builder; },
+      range(nextStart, nextEnd) { start = nextStart; end = nextEnd; return builder; },
+      then(resolve, reject) {
+        return Promise.resolve({ data: rows.slice(start, end + 1), error: null }).then(resolve, reject);
+      },
+    };
+    return builder;
+  }
+
+  const storage = {
+    async list() {
+      return {
+        data: [
+          { name: 'unique-final.jpg', metadata: { size: 1234 } },
+          { name: 'protected-final.jpg', metadata: { size: 5678 } },
+        ],
+        error: null,
+      };
+    },
+    async remove(paths) { removals.push(...paths); return { data: [], error: null }; },
+  };
+  const supabase = {
+    storage: { from() { return storage; } },
+    from(table) {
+      if (table === 'messages') {
+        return {
+          select() { return pagedQuery(tableRows.messages); },
+          update() {
+            return {
+              async in(column, ids) { updatedIds = ids; return { error: null }; },
+            };
+          },
+        };
+      }
+      return { select() { return pagedQuery(tableRows[table] || []); } };
+    },
+  };
+
+  const result = await runPhotoRetentionCleanup({
+    supabase,
+    now: new Date('2026-08-11T00:00:00.000Z'),
+    retentionDays: 30,
+    batchSize: 1,
+  });
+
+  assert.equal(result.deletedObjects, 1);
+  assert.deepEqual(removals, ['unique-final.jpg']);
+  assert.deepEqual(updatedIds, [501]);
+  assert.equal(messageRows[501].attachment_summary, '普通图片分析');
+});
