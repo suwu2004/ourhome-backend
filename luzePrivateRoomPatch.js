@@ -506,7 +506,9 @@ async function askDoorPermission() {
 async function listRoomEntries(kind, limit, offset = 0) {
   let query = getSupabase().from('luze_private_entries')
     .select('*')
-    .order('created_at', { ascending: false });
+    // A unique tie-breaker makes offset paging deterministic when timestamps match.
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false });
   if (ENTRY_KINDS.has(kind)) query = query.eq('kind', kind);
   const start = Math.max(0, Number(offset) || 0);
   const { data, error } = await query.range(start, start + limit - 1);
