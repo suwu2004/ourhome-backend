@@ -6,6 +6,7 @@ const {
   isImageMessage,
   uploadPath,
   runPhotoRetentionCleanup,
+  listUploadObjectSizes,
 } = require('../photoRetention');
 const photoRetentionSource = require('node:fs').readFileSync(require.resolve('../photoRetention'), 'utf8');
 
@@ -193,4 +194,29 @@ test('photo cleanup paginates message rows and protects upload URLs saved in oth
   assert.deepEqual(removals, ['unique-final.jpg']);
   assert.deepEqual(updatedIds, [501]);
   assert.equal(messageRows[500].attachment_summary, '普通图片分析');
+});
+
+
+test('storage size scan descends into nested upload folders', async () => {
+  const calls = [];
+  const folders = {
+    '': [
+      { name: 'chat', id: null, metadata: null },
+      { name: 'root.jpg', id: 'root-id', metadata: { size: 50 } },
+    ],
+    chat: [{ name: 'session-a', id: null, metadata: null }],
+    'chat/session-a': [{ name: 'photo.png', id: 'photo-id', metadata: { size: 1200 } }],
+  };
+  const storage = {
+    async list(path, options) {
+      calls.push({ path, offset: options.offset });
+      const rows = folders[path] || [];
+      return { data: options.offset === 0 ? rows : [], error: null };
+    },
+  };
+
+  const sizes = await listUploadObjectSizes(storage, { pageSize: 100 });
+  assert.equal(sizes.get('root.jpg'), 50);
+  assert.equal(sizes.get('chat/session-a/photo.png'), 1200);
+  assert.ok(calls.some(call => call.path === 'chat/session-a'));
 });
