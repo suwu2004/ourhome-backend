@@ -526,7 +526,7 @@ function registerLuzePrivateRoomRoutes(app) {
 
   app.get('/luze-room/entries', requireRoomPass, async (req, res) => {
     try {
-      const limit = clampInt(req.query?.limit, 1, 160, 80);
+      const limit = clampInt(req.query?.limit, 1, 1000, 80);
       res.json({ entries: await listRoomEntries(String(req.query?.kind || ''), limit) });
     } catch (error) {
       console.error('[luze:room:entries]', error.message);
