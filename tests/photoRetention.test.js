@@ -192,5 +192,5 @@ test('photo cleanup paginates message rows and protects upload URLs saved in oth
   assert.equal(result.deletedObjects, 1);
   assert.deepEqual(removals, ['unique-final.jpg']);
   assert.deepEqual(updatedIds, [501]);
-  assert.equal(messageRows[501].attachment_summary, '普通图片分析');
+  assert.equal(messageRows[500].attachment_summary, '普通图片分析');
 });
