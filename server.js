@@ -2557,11 +2557,14 @@ async function loadChatMemoryRecall(message) {
   const bigrams = [];
   for (let i = 0; i < text.length - 1; i++) bigrams.push(text.slice(i, i + 2));
   const uniqueBigrams = [...new Set(bigrams)].slice(0, 15);
+  // Tiny acknowledgements and affectionate one-liners do not justify a separate
+  // embedding request. Keyword/freshness fallback remains available for them.
+  const retrievalText = text.replace(/[^\p{L}\p{N}]/gu, '');
+  const shouldEmbedQuery = retrievalText.length >= 24;
 
-  // 并行：拉全部记忆 + 生成query向量
   const [{ data: allMemories }, queryEmbedding] = await Promise.all([
     supabase.from('memories').select('*').order('weight', { ascending: false }).limit(200),
-    getEmbedding(message || ''),
+    shouldEmbedQuery ? getEmbedding(message || '') : Promise.resolve(null),
   ]);
 
   const memories = allMemories || [];
@@ -2618,8 +2621,18 @@ async function loadChatMemoryRecall(message) {
     })).catch(err => console.error('记忆强化失败:', err.message));
   }
 
-  const protectedMemories = memories
-    .filter(memory => memory.is_protected)
+  // Keep the locked-memory store complete, but do not repeat every protected
+  // record in every single prompt. Weight-ranked core memories plus any core
+  // memory actually relevant to this turn are always retained.
+  const protectedCandidates = memories.filter(memory => memory.is_protected);
+  const protectedById = new Map();
+  for (const memory of protectedCandidates.slice(0, 20)) {
+    protectedById.set(String(memory.id), memory);
+  }
+  for (const memory of finalResult.filter(item => item.is_protected)) {
+    protectedById.set(String(memory.id), memory);
+  }
+  const protectedMemories = [...protectedById.values()]
     .sort((left, right) => String(left.timestamp || '').localeCompare(String(right.timestamp || '')));
   return { protectedMemories, relevantMemories: finalResult };
 }
@@ -2947,7 +2960,8 @@ ${openThreads}
     const result = await callClaude({
       settings,
       model,
-      maxTokens: 900,
+      // Keep the first attempt lean; give a parse-failure retry enough room to finish JSON.
+      maxTokens: attempt === 1 ? 900 : 2000,
       messages: [{ role: 'user', content: `${prompt}${retryInstruction}` }],
       temperature: 0.2,
     });

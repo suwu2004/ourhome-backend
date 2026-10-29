@@ -4,6 +4,7 @@ const {
   SYNTHESIS_TIMEOUT_MS,
   safeJsonBody,
   hasUsableText,
+  hasCompleteLearningNote,
   isLearningSynthesisRequest,
   isRetryableStatus,
   localFallbackResponse,
@@ -45,9 +46,10 @@ if (typeof providerFetch === 'function') {
           const raw = await probe.text();
           let payload = null;
           try { payload = raw ? JSON.parse(raw) : null; } catch { /* keep raw probe */ }
-          if (!hasUsableText(payload)) {
-            console.warn('[luze:learn] synthesis returned HTTP 200 with no usable text; saving local fallback note');
-            return localFallbackResponse(body, 'HTTP 200 空正文');
+          if (!hasUsableText(payload) || !hasCompleteLearningNote(payload)) {
+            const reason = hasUsableText(payload) ? '笔记 JSON 不完整' : 'HTTP 200 空正文';
+            console.warn(`[luze:learn] synthesis returned an unusable note (${reason}); saving local fallback note without another paid call`);
+            return localFallbackResponse(body, reason);
           }
         } catch (probeError) {
           console.warn('[luze:learn] synthesis response probe skipped:', probeError.message);
