@@ -28,6 +28,8 @@ require('./luzeLearningResiliencePatch');
 require('./runtimeTimeoutGuardPatch');
 require('./photoRetentionPatch');
 require('./photoMemoryVisionPatch');
+// Load before contextLedgerPatch so its wrapper sees the final post-ledger payload.
+require('./mainChatPayloadBudgetPatch');
 require('./contextLedgerPatch');
 require('./chatCurrentTurnGuardPatch');
 require('./lorebookPatch');
