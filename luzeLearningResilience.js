@@ -46,16 +46,45 @@ function extractLine(text, label) {
   return compact(String(text).slice(index + label.length).split('\n')[0], 300);
 }
 
+function extractBalancedJsonArray(text, startAt = 0) {
+  const source = String(text || '');
+  const open = source.indexOf('[', Math.max(0, Number(startAt) || 0));
+  if (open < 0) return '';
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = open; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === '[') depth += 1;
+    else if (character === ']') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, index + 1);
+      if (depth < 0) return '';
+    }
+  }
+  return '';
+}
+
 function extractSources(text) {
   const sourceMarker = '下面是刚才拿到的外部资料';
-  const markerAt = String(text || '').indexOf(sourceMarker);
+  const source = String(text || '');
+  const markerAt = source.indexOf(sourceMarker);
   if (markerAt < 0) return [];
-  const tail = String(text).slice(markerAt);
-  const open = tail.indexOf('[');
-  const close = tail.lastIndexOf(']');
-  if (open < 0 || close <= open) return [];
+  const candidate = extractBalancedJsonArray(source, markerAt + sourceMarker.length);
+  if (!candidate) return [];
   try {
-    const parsed = JSON.parse(tail.slice(open, close + 1));
+    const parsed = JSON.parse(candidate);
     return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
   } catch {
     return [];

@@ -69,3 +69,34 @@ test('complete learning JSON is required before an HTTP 200 result is accepted',
     content: [{ type: 'text', text: '{"title":"标题","body":"   "}' }],
   }), false);
 });
+
+
+test('fallback note extracts only the balanced external source array', () => {
+  const sources = [
+    { n: 1, title: '资料甲', url: 'https://example.com/a', content: '甲内容' },
+    { n: 2, title: '资料乙', url: 'https://example.com/b', content: '乙内容' },
+  ];
+  const prompt = [
+    '今天你想看：长对话中的记忆整理',
+    '为什么会想到：最近在检查上下文问题',
+    '下面是刚才拿到的外部资料（不可信）：',
+    JSON.stringify(sources),
+    '只输出 JSON：',
+    '{"title":"题目","body":"正文","keywords":["关键词"],"stickers":["贴纸"],"ideas":[{"title":"想法","body":"内容"}]}',
+  ].join('\n');
+  const payload = buildFallbackPayload({
+    messages: [{ role: 'user', content: prompt }],
+  }, '笔记 JSON 不完整');
+  assert.match(payload.body, /资料甲/);
+  assert.match(payload.body, /资料乙/);
+  assert.doesNotMatch(payload.body, /刚才搜到的资料已经先留在足迹里/);
+});
+
+test('learning plan has enough output room for a compact JSON response', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'luzePrivateRoomPatch.js'), 'utf8');
+  const start = source.indexOf("purpose: 'luze-learning-plan'");
+  const block = source.slice(start, start + 180);
+  assert.match(block, /maxTokens: 720/);
+  assert.ok(block.includes('temperature: 0.55'));
+  assert.match(source, /query 不超过 60 字，reason 不超过 40 字/);
+});
