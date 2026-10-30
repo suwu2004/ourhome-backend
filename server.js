@@ -64,6 +64,7 @@ const {
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
+const { shouldAnalyzeMemoryJournalTurn } = require('./memoryJournalTrigger');
 const { selectRecentHistory } = require('./chatContextWindow');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
@@ -283,29 +284,6 @@ function compactBlock(value, max = 3000) {
     .replace(/\n{4,}/g, '\n\n\n')
     .trim()
     .slice(0, max);
-}
-
-const MEMORY_JOURNAL_MODE = String(process.env.MEMORY_JOURNAL_MODE || 'smart').toLowerCase();
-const MEMORY_JOURNAL_MIN_SIGNAL = clampInt(process.env.MEMORY_JOURNAL_MIN_SIGNAL, 40, 500, 120);
-const MEMORY_JOURNAL_TRIGGER_RE = /(ourhome|agentmail|vercel|supabase|mcp|api|key|github|部署|上线|报错|失败|修复|优化|整合|计划|方案|项目|功能|页面|设置|模型|联网|邮箱|记忆|人设|年表|摘要|待续|收藏|置顶|提醒|待办|继续|明天|以后|记得|决定|约定|重要|偏好|喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|不喜欢.{0,8}(风格|功能|页面|模型|颜色|语气|设定)|工作|面试|简历|论文|毕业|上课|学生|生病|发烧|疼|痛|医院|月经)/i;
-
-function signalLength(value) {
-  return String(value || '')
-    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\s~～!！?？。,.，、…（）()[\]{}'"“”‘’/\\|_-]+/gu, '')
-    .length;
-}
-
-function shouldAnalyzeMemoryJournalTurn({ userText, assistantText }) {
-  if (MEMORY_JOURNAL_MODE === 'off') return false;
-  if (MEMORY_JOURNAL_MODE === 'full') return true;
-
-  const user = compactLine(userText, 2000);
-  if (!user) return false;
-  if (/^\[发送了附件/.test(user)) return true;
-
-  const combined = `${user}\n${compactLine(assistantText, 1200)}`;
-  if (MEMORY_JOURNAL_TRIGGER_RE.test(combined)) return true;
-  return signalLength(combined) >= MEMORY_JOURNAL_MIN_SIGNAL;
 }
 
 function scheduledMinutes(value) {
