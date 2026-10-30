@@ -83,7 +83,7 @@ test('fallback note extracts only the balanced external source array', () => {
     JSON.stringify(sources),
     '只输出 JSON：',
     '{"title":"题目","body":"正文","keywords":["关键词"],"stickers":["贴纸"],"ideas":[{"title":"想法","body":"内容"}]}',
-  ].join('\\n');
+  ].join('\n');
   const payload = buildFallbackPayload({
     messages: [{ role: 'user', content: prompt }],
   }, '笔记 JSON 不完整');
@@ -97,6 +97,6 @@ test('learning plan has enough output room for a compact JSON response', () => {
   const start = source.indexOf("purpose: 'luze-learning-plan'");
   const block = source.slice(start, start + 180);
   assert.match(block, /maxTokens: 720/);
-  assert.match(block, /temperature: 0\\.55/);
+  assert.ok(block.includes('temperature: 0.55'));
   assert.match(source, /query 不超过 60 字，reason 不超过 40 字/);
 });
