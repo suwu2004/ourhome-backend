@@ -31,3 +31,25 @@ test('relay Chat 请求未超限时不改动', () => {
   };
   assert.strictEqual(trimOldHistory(body), body);
 });
+
+
+test('relay cap preserves the latest human prompt before a tool-result tail', () => {
+  const messages = [];
+  for (let index = 0; index < 20; index += 1) {
+    messages.push({ role: 'user', content: `旧用户消息 ${index} ${'旧内容'.repeat(1600)}` });
+    messages.push({ role: 'assistant', content: `旧助手回复 ${index} ${'旧内容'.repeat(1600)}` });
+  }
+  messages.push({ role: 'assistant', content: '上一轮助手回复' });
+  messages.push({ role: 'user', content: '蝴蝶宝贝' });
+  messages.push({ role: 'assistant', content: [{ type: 'tool_use', id: 'lookup-1', name: 'search', input: {} }] });
+  messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'lookup-1', content: '{"ok":true}' }] });
+  const body = { model: '[B]claude-opus-4-5', max_tokens: 8192, system: '系统', messages };
+
+  const trimmed = trimOldHistory(body);
+  const serialized = JSON.stringify(trimmed.messages);
+  assert.ok(JSON.stringify(trimmed).length <= MAX_RELAY_CHAT_REQUEST_CHARS);
+  assert.ok(serialized.includes('蝴蝶宝贝'));
+  assert.ok(serialized.includes('tool_use'));
+  assert.ok(serialized.includes('tool_result'));
+  assert.ok(!serialized.includes('旧用户消息 0'));
+});

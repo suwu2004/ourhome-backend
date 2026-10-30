@@ -61,3 +61,25 @@ test('does not split an initial tool continuation pair', () => {
   };
   assert.equal(trimOldHistory(body, 8_000), body);
 });
+
+
+test('keeps the human prompt when a tool continuation is appended after it', () => {
+  const messages = [];
+  for (let index = 0; index < 12; index += 1) {
+    messages.push({ role: 'user', content: `旧用户消息 ${index} ${'旧内容'.repeat(100)}` });
+    messages.push({ role: 'assistant', content: `旧助手回复 ${index} ${'旧内容'.repeat(100)}` });
+  }
+  messages.push({ role: 'assistant', content: '上一轮回复'.repeat(80) });
+  messages.push({ role: 'user', content: '蝴蝶宝贝' });
+  messages.push({ role: 'assistant', content: [{ type: 'tool_use', id: 'lookup-1', name: 'search', input: {} }] });
+  messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'lookup-1', content: '{"ok":true}' }] });
+
+  const body = { model: 'test-model', system: '系统'.repeat(500), tools: [], messages };
+  const trimmed = trimOldHistory(body, 8_000);
+  const serialized = JSON.stringify(trimmed.messages);
+  assert.ok(trimmed !== body);
+  assert.ok(serialized.includes('蝴蝶宝贝'));
+  assert.ok(serialized.includes('tool_use'));
+  assert.ok(serialized.includes('tool_result'));
+  assert.ok(!serialized.includes('旧用户消息 0'));
+});

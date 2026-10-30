@@ -38,6 +38,30 @@ function hasToolContinuation(body = {}) {
   });
 }
 
+function isMeaningfulUserMessage(message = {}) {
+  if (message?.role !== 'user') return false;
+  const content = message.content;
+  if (typeof content === 'string') return Boolean(content.trim());
+  if (!Array.isArray(content)) return Boolean(String(content || '').trim());
+  return content.some(block => {
+    if (!block || block.type === 'tool_result') return false;
+    if (block.type === 'text') return Boolean(String(block.text || '').trim());
+    return block.type === 'image' || block.type === 'document'
+      || Boolean(block.source || block.data || block.url);
+  });
+}
+
+function findProtectedUserIndex(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (isMeaningfulUserMessage(list[index])) return index;
+  }
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index]?.role === 'user') return index;
+  }
+  return Math.max(0, list.length - MIN_HISTORY_MESSAGES);
+}
+
 function trimOldHistory(body = {}) {
   if (!body || !Array.isArray(body.messages) || body.messages.length <= MIN_HISTORY_MESSAGES) return body;
 
@@ -45,24 +69,31 @@ function trimOldHistory(body = {}) {
   if (originalChars <= MAX_RELAY_CHAT_REQUEST_CHARS) return body;
 
   const messages = [...body.messages];
+  let protectedUserIndex = findProtectedUserIndex(messages);
   let removed = 0;
 
-  while (messages.length > MIN_HISTORY_MESSAGES && bodyTextLength({ ...body, messages }) > MAX_RELAY_CHAT_REQUEST_CHARS) {
-    // Keep role ordering valid. Remove the oldest complete user/assistant pair.
-    if (messages.length < 2) break;
+  while (
+    protectedUserIndex > 0
+    && messages.length > MIN_HISTORY_MESSAGES
+    && bodyTextLength({ ...body, messages }) > MAX_RELAY_CHAT_REQUEST_CHARS
+  ) {
     const first = messages[0];
     const second = messages[1];
-    if ((first?.role === 'user' && second?.role === 'assistant')
-      || (first?.role === 'assistant' && second?.role === 'user')) {
+    const pairIsNormal = (first?.role === 'user' && second?.role === 'assistant')
+      || (first?.role === 'assistant' && second?.role === 'user');
+
+    // Keep the last real user prompt even when newer tool_result messages are
+    // present at the tail of a continuation request.
+    if (pairIsNormal && protectedUserIndex >= 2 && !hasToolContinuation({ messages: messages.slice(0, 2) })) {
       messages.splice(0, 2);
+      protectedUserIndex -= 2;
       removed += 2;
       continue;
     }
 
-    // Defensive fallback for unusual histories: remove only the oldest entry
-    // when doing so cannot strand a tool continuation at the beginning.
-    if (!hasToolContinuation({ messages: messages.slice(0, 2) })) {
+    if (protectedUserIndex >= 1 && !hasToolContinuation({ messages: messages.slice(0, 2) })) {
       messages.shift();
+      protectedUserIndex -= 1;
       removed += 1;
       continue;
     }
