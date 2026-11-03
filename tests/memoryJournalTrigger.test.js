@@ -7,6 +7,8 @@ const {
   MEMORY_JOURNAL_MIN_SIGNAL,
   signalLength,
   shouldAnalyzeMemoryJournalTurn,
+  isMemoryContinuationCue,
+  shouldAnalyzeMemoryJournalContinuation,
 } = require('../memoryJournalTrigger');
 
 test('short conversational turns do not launch background memory model calls', () => {
@@ -36,4 +38,29 @@ test('long user-authored messages use the user signal only, never assistant verb
   assert.equal(signalLength('🥺 你好，世界！'), 4);
   assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '甲'.repeat(230), assistantText: '' }), true);
   assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '好', assistantText: '甲'.repeat(500) }), false);
+});
+
+test('explicit temporary-memory maintenance requests trigger analysis even when short', () => {
+  assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '临时记忆更新感觉有点慢' }), true);
+  assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '记忆同步有延迟' }), true);
+});
+
+test('short continuation cues only trigger when there is open context to resume', () => {
+  const userText = '宝宝你继续';
+  assert.equal(isMemoryContinuationCue(userText), true);
+  assert.equal(shouldAnalyzeMemoryJournalContinuation({
+    userText,
+    existingContext: { openMarks: [], summary: { open_threads: [] } },
+  }), false);
+  assert.equal(shouldAnalyzeMemoryJournalContinuation({
+    userText,
+    existingContext: { openMarks: [{ id: 'open-1' }], summary: { open_threads: [] } },
+  }), true);
+});
+
+test('daily-summary open threads authorize a short continuation update', () => {
+  assert.equal(shouldAnalyzeMemoryJournalContinuation({
+    userText: '那就接着做',
+    existingContext: { openMarks: [], summary: { open_threads: ['正在修复 OurHome 的临时记忆'] } },
+  }), true);
 });
