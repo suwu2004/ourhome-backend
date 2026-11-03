@@ -1,7 +1,7 @@
 'use strict';
 
 function compact(value, max = 360) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max);
 }
 
 function normalizeLearningPlanResult(parsed, mode = 'curiosity') {
@@ -37,4 +37,24 @@ function normalizeLearningPlanResult(parsed, mode = 'curiosity') {
   };
 }
 
-module.exports = { normalizeLearningPlanResult };
+async function requestLearningPlanWithFallback(requestPlan, mode = 'curiosity') {
+  let parsed = null;
+  let failureReason = '';
+
+  try {
+    parsed = await requestPlan();
+  } catch (error) {
+    failureReason = compact(error?.message || error || '选题模型暂时没有回应', 240);
+  }
+
+  return {
+    ...normalizeLearningPlanResult(parsed, mode),
+    requestFailed: Boolean(failureReason),
+    failureReason,
+  };
+}
+
+module.exports = {
+  normalizeLearningPlanResult,
+  requestLearningPlanWithFallback,
+};
