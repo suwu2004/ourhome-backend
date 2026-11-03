@@ -50,6 +50,17 @@ test('casual chat never becomes a paid memory judgement because the assistant me
   assert.equal(shouldSpendMemoryJournalCall(journalBody('你不能搜索聊天记录嘛🥺', '我去翻一下。')), false);
 });
 
+test('explicit temporary-memory maintenance requests pass both trigger and cost gates', () => {
+  for (const user of [
+    '临时记忆感觉更新的好慢',
+    '临时记忆更新感觉有点慢',
+    '记忆同步有延迟',
+    'OurHome 的临时记忆更新慢，检查一下',
+  ]) {
+    assert.equal(shouldSpendMemoryJournalCall(journalBody(user, '我会检查这条链路。')), true, user);
+  }
+});
+
 test('durable changes and explicit preferences are allowed through to model judgement', () => {
   assert.equal(shouldSpendMemoryJournalCall(journalBody('我最近换工作了，现在主要做 AI 漫剧。', '知道了。')), true);
   assert.equal(shouldSpendMemoryJournalCall(journalBody('我不喜欢你用汇报式语气，以后自然一点。', '好。')), true);
