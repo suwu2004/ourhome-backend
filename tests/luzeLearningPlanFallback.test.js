@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeLearningPlanResult } = require('../luzeLearningPlanFallback');
+const { normalizeLearningPlanResult, requestLearningPlanWithFallback } = require('../luzeLearningPlanFallback');
 
 test('keeps a valid model-generated learning plan', () => {
   const result = normalizeLearningPlanResult({
@@ -39,4 +39,29 @@ test('compacts keywords and caps query lengths', () => {
   }, 'ourhome');
   assert.equal(result.query.length, 360);
   assert.deepEqual(result.keywords, ['长对话', '记忆']);
+});
+
+
+test('uses a zero-cost local plan when the planning provider is unavailable', async () => {
+  const result = await requestLearningPlanWithFallback(async () => {
+    throw new Error('陆泽的学习模型暂时没有回应 (503)');
+  }, 'ourhome');
+
+  assert.match(result.query, /长对话/);
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.requestFailed, true);
+  assert.match(result.failureReason, /503/);
+});
+
+test('keeps a valid plan when the planning request succeeds', async () => {
+  const result = await requestLearningPlanWithFallback(async () => ({
+    query: '为什么雨后空气闻起来不一样？',
+    reason: '今天下过雨。',
+    keywords: ['雨', '气味'],
+  }), 'curiosity');
+
+  assert.equal(result.query, '为什么雨后空气闻起来不一样？');
+  assert.equal(result.usedFallback, false);
+  assert.equal(result.requestFailed, false);
+  assert.equal(result.failureReason, '');
 });
