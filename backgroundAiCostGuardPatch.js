@@ -117,6 +117,10 @@ function shouldSpendMemoryJournalCall(body) {
   // changes are worth asking the model about. The regex is intentionally narrow:
   // it is only a zero-cost pre-gate, never the final storage decision.
   if (/(记住|记下来|别忘|以后(?:都|要|不要|别|必须|希望)|从现在开始|长期|一直都|偏好|界限|习惯|不许再|不要再)/i.test(user)) return true;
+  // Keep the journal trigger and the provider cost gate aligned: explicit
+  // requests to inspect or improve short-term memory must reach model judgement.
+  // This is deliberately narrower than the generic "临时记忆" topic keyword.
+  if (/(?:临时记忆|记忆同步|记忆整理|记忆更新|记忆延迟|接续记忆|近期记忆).{0,12}(?:更新|同步|整理|延迟|慢|卡|优化|检查|修复|调整|速度)|(?:更新|同步|整理|检查|修复|优化|调整).{0,10}(?:临时记忆|记忆同步|记忆整理|记忆更新|接续记忆)/i.test(user)) return true;
   if (/(我.{0,8}(?:喜欢|不喜欢|讨厌|介意)|(?:喜欢|不喜欢).{0,10}(?:风格|画风|颜色|语气|功能|模型|设置|称呼|方式))/i.test(user)) return true;
   if (/(换工作|换了工作|入职|离职|失业|毕业|搬家|结婚|分手|订婚|怀孕|确诊|住院|手术|过敏|长期用药|开始吃药|停药)/i.test(user)) return true;
 
