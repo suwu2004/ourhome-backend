@@ -64,3 +64,12 @@ test('纯文字模型可以选择视觉模型代读图片', () => {
   assert.equal(typeof bridged[0].content, 'string');
   assert.match(bridged[0].content, /一只趴着的小猫/);
 });
+
+test('native tool schemas are not duplicated into the initial system prompt', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(server, /let nativeToolsEnabled = Array\\.isArray\\(toolsParam\\) && toolsParam\\.length > 0;[\\s\\S]{0,500}let textBridgeEnabled = false;/);
+  assert.match(server, /nativeToolsEnabled = false;\\s*textBridgeEnabled = true;/);
+  assert.match(server, /rejected native tools; retrying once with the text protocol/);
+});
