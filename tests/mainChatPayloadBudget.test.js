@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   MAX_MAIN_CHAT_PAYLOAD_CHARS,
   serializedLength,
+  payloadComponentChars,
   trimOldHistory,
 } = require('../mainChatPayloadBudget');
 
@@ -82,4 +83,22 @@ test('keeps the human prompt when a tool continuation is appended after it', () 
   assert.ok(serialized.includes('tool_use'));
   assert.ok(serialized.includes('tool_result'));
   assert.ok(!serialized.includes('旧用户消息 0'));
+});
+
+test('payload breakdown reports component sizes without exposing component content', () => {
+  const body = {
+    model: 'test-model',
+    system: 'system text',
+    tools: [{ name: 'read_memory' }, { name: 'write_diary' }],
+    messages: [{ role: 'user', content: 'current turn' }],
+  };
+  const measured = payloadComponentChars(body);
+  assert.equal(measured.totalChars, serializedLength(body));
+  assert.equal(measured.systemChars, JSON.stringify(body.system).length);
+  assert.equal(measured.toolsChars, JSON.stringify(body.tools).length);
+  assert.equal(measured.messagesChars, JSON.stringify(body.messages).length);
+  assert.equal(measured.messageCount, 1);
+  assert.equal(measured.toolCount, 2);
+  assert.equal(Object.hasOwn(measured, 'system'), false);
+  assert.equal(Object.hasOwn(measured, 'messages'), false);
 });

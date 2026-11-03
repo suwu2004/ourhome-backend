@@ -3141,8 +3141,12 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   const MAX_TOOL_ROUNDS = 5;
   let currentMessages = messages;
   const textToolBridge = buildTextToolBridge(toolsParam);
-  let textBridgeEnabled = Boolean(gemini || !/claude/i.test(String(modelName || '')));
   let nativeToolsEnabled = Array.isArray(toolsParam) && toolsParam.length > 0;
+  // Native tool schemas are already sent in the request tools field; do not duplicate
+  // the same definitions in the system prompt on every Gemini/non-Claude turn.
+  // If the provider explicitly rejects native tools, the guarded fallback below adds
+  // the compact text protocol and retries once.
+  let textBridgeEnabled = false;
 
   const callRound = async () => {
     const compatibleSystemPrompt = systemPrompt + (textBridgeEnabled ? textToolBridge : '');
@@ -3159,6 +3163,7 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
       if (!nativeToolsEnabled || !isToolCompatibilityError(error)) throw error;
       // 有些中转站能正常聊天，却拒绝 Claude 格式的 tools 字段。
       // 只在明确的格式不兼容错误下关闭原生工具，并改用受控文字协议重试。
+      console.warn(`[chat:tool-compat] model=${String(modelName || '').slice(0, 100)} rejected native tools; retrying once with the text protocol`);
       nativeToolsEnabled = false;
       textBridgeEnabled = true;
       return callClaude({
