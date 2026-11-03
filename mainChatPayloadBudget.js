@@ -11,6 +11,21 @@ function serializedLength(body = {}) {
   }
 }
 
+function payloadComponentChars(body = {}) {
+  const componentLength = value => {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === 'string' ? serialized.length : 0;
+  };
+  return {
+    totalChars: serializedLength(body),
+    systemChars: componentLength(body.system),
+    toolsChars: componentLength(body.tools),
+    messagesChars: componentLength(body.messages),
+    messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+    toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+  };
+}
+
 function hasToolContinuation(messages = []) {
   return (Array.isArray(messages) ? messages : []).some(message => (
     Array.isArray(message?.content)
@@ -97,6 +112,7 @@ function trimOldHistory(body = {}, maxChars = MAX_MAIN_CHAT_PAYLOAD_CHARS) {
 module.exports = {
   MAX_MAIN_CHAT_PAYLOAD_CHARS,
   serializedLength,
+  payloadComponentChars,
   hasToolContinuation,
   isMeaningfulUserMessage,
   findProtectedUserIndex,
