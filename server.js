@@ -3142,11 +3142,11 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   let currentMessages = messages;
   const textToolBridge = buildTextToolBridge(toolsParam);
   let nativeToolsEnabled = Array.isArray(toolsParam) && toolsParam.length > 0;
-  // Native tool schemas are already sent in the request tools field; do not duplicate
-  // the same definitions in the system prompt on every Gemini/non-Claude turn.
-  // If the provider explicitly rejects native tools, the guarded fallback below adds
-  // the compact text protocol and retries once.
-  let textBridgeEnabled = false;
+  // Some non-Claude relays silently ignore Anthropic native tool schemas instead
+  // of returning a compatibility error. Keep the compact text bridge enabled for
+  // those routes; Claude uses native tools first and falls back only on explicit
+  // compatibility errors.
+  let textBridgeEnabled = Boolean(gemini || !/claude/i.test(String(modelName || '')));
 
   const callRound = async () => {
     const compatibleSystemPrompt = systemPrompt + (textBridgeEnabled ? textToolBridge : '');
