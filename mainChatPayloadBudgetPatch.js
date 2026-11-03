@@ -1,7 +1,7 @@
 'use strict';
 
 const { isMainChatRequest } = require('./intimacyFlowSupport');
-const { MAX_MAIN_CHAT_PAYLOAD_CHARS, serializedLength, trimOldHistory } = require('./mainChatPayloadBudget');
+const { MAX_MAIN_CHAT_PAYLOAD_CHARS, serializedLength, payloadComponentChars, trimOldHistory } = require('./mainChatPayloadBudget');
 
 const previousFetch = globalThis.fetch;
 const CHAT_PURPOSES = new Set(['chat', 'chat-empty-recovery']);
@@ -35,13 +35,14 @@ if (typeof previousFetch === 'function') {
       if (!body?.model || !isMainChatRequest(url, body)) return previousFetch(input, init);
 
       const nextBody = trimOldHistory(body, MAX_MAIN_CHAT_PAYLOAD_CHARS);
+      const finalChars = serializedLength(nextBody);
+      if (finalChars > MAX_MAIN_CHAT_PAYLOAD_CHARS) {
+        const parts = payloadComponentChars(nextBody);
+        console.warn(
+          `[chat:final-budget:breakdown] model=${String(body.model).slice(0, 100)} total=${parts.totalChars} system=${parts.systemChars} tools=${parts.toolsChars} messages=${parts.messagesChars} messageCount=${parts.messageCount} toolCount=${parts.toolCount} cap=${MAX_MAIN_CHAT_PAYLOAD_CHARS}`,
+        );
+      }
       if (nextBody !== body) {
-        const finalChars = serializedLength(nextBody);
-        if (finalChars > MAX_MAIN_CHAT_PAYLOAD_CHARS && nextBody.messages?.length <= 2) {
-          console.warn(
-            `[chat:final-budget] cannot reach cap without touching system/tools/current turn; chars=${finalChars} cap=${MAX_MAIN_CHAT_PAYLOAD_CHARS}`,
-          );
-        }
         return previousFetch(input, { ...init, body: JSON.stringify(nextBody) });
       }
     } catch (error) {
