@@ -188,7 +188,7 @@ function summarizeTurn(userText, assistantText) {
     return '两人围绕按摩、亲吻和开店设想轻松打趣，这段互动已经自然收尾。';
   }
   if (isRecentLifeUpdate(user)) {
-    const detail = user.replace(/^(?:(?:我|最近我|这几天我|这段时间我|今天我|昨天我|前几天我|上周我|目前我|现在我|刚刚我|刚才我)|(?:最近|这几天|这段时间|今天|昨天|前几天|上周))\\s*/i, '').trim();
+    const detail = user.replace(/^(?:(?:我|最近我|这几天我|这段时间我|今天我|昨天我|前几天我|上周我|目前我|现在我|刚刚我|刚才我)|(?:最近|这几天|这段时间|今天|昨天|前几天|上周))\s*/i, '').trim();
     return `叶檀近况：${detail || user}`.slice(0, 220);
   }
   return '';
