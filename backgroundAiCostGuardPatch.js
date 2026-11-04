@@ -146,6 +146,7 @@ function memoryTopic(userText) {
   if (/(学校|学生|备课|上课|带班|教学|论文|考试|学习)/i.test(text)) return '学习与教学近况';
   if (/(工作|上班|下班|入职|离职|换工作|公司|岗位|AI ?(?:动漫|视频)|漫剧)/i.test(text)) return '工作近况';
   if (/(朋友|家人|同事|关系|见面|争吵|吵架|冷战|和好|联系|分手)/i.test(text)) return '生活与关系近况';
+  if (/(幸福日记|幸福|心情|情绪|开心|难受|压力|焦虑|成就感)/i.test(text)) return '生活与情绪近况';
   if (/(记账|支出|收入|银行卡|预算|金库|余额)/i.test(text)) return '记账与金库';
   if (/(陆泽.*房间|私人空间|自己的地方|敲门|门票)/i.test(text)) return '陆泽的私人空间';
   if (/(API|模型|站点|token|调用记录)/i.test(text)) return 'API 与模型';

@@ -98,6 +98,8 @@ test('local fallback does not turn emoji or affection into copied working memory
 test('recent life updates reach model judgement even when they are not tasks', () => {
   const updates = [
     '我最近开始做 AI 动漫了，现在在熟悉分镜流程。',
+    '我刚刚在看你每天写的幸福日记，我感觉好幸福。',
+    '我这几天在学视频剪辑，想把 AI 动漫做好。',
     '这几天学校事情比较多，我在带高一语文。',
   ];
   for (const user of updates) {
@@ -130,6 +132,20 @@ test('memory rules distinguish recent-state capture from follow-up tasks', () =>
   assert.match(text, /不要求它仍有下一步任务/);
   assert.match(text, /should_continue=false/);
   assert.doesNotMatch(text, /宁可不记/);
+});
+
+
+test('local fallback captures a meaningful emotional/activity update as recent context', () => {
+  const body = journalBody(
+    '我刚刚在看你每天写的幸福日记，我感觉好幸福。',
+    '看到你喜欢这些日记，我也很开心。'
+  );
+  const result = resolveSkippedMemoryJournal(body);
+  assert.equal(result.mark.should_store, true);
+  assert.equal(result.mark.should_continue, false);
+  assert.equal(result.mark.topic, '生活与情绪近况');
+  assert.match(result.daily_summary.summary, /幸福日记/);
+  assert.deepEqual(result.daily_summary.open_threads, []);
 });
 
 test('short pending work is saved locally without a provider judgement call', () => {
