@@ -93,6 +93,44 @@ test('local fallback does not turn emoji or affection into copied working memory
   assert.equal(affectionate.mark.summary, '');
 });
 
+
+test('recent life updates reach model judgement even when they are not tasks', () => {
+  const updates = [
+    '我最近开始做 AI 动漫了，现在在熟悉分镜流程。',
+    '这几天学校事情比较多，我在带高一语文。',
+  ];
+  for (const user of updates) {
+    assert.equal(shouldSpendMemoryJournalCall(journalBody(user, '我知道了。')), true, user);
+  }
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('我今天有点困', '先休息一下。')), false);
+  assert.equal(shouldSpendMemoryJournalCall(journalBody('我刚买了杯拿铁', '听起来不错。')), false);
+});
+
+test('zero-cost fallback preserves meaningful recent status without calling it unfinished work', () => {
+  const body = journalBody(
+    '我最近开始做 AI 动漫了，现在在熟悉分镜流程。',
+    '最近刚开始接触这个方向，先慢慢熟悉制作流程。'
+  );
+  const result = resolveSkippedMemoryJournal(body);
+  assert.equal(result.mark.should_store, true);
+  assert.equal(result.mark.should_continue, false);
+  assert.equal(result.mark.topic, '工作近况');
+  assert.match(result.mark.summary, /叶檀近况/);
+  assert.match(result.daily_summary.summary, /AI 动漫/);
+  assert.deepEqual(result.daily_summary.open_threads, []);
+});
+
+test('memory rules distinguish recent-state capture from follow-up tasks', () => {
+  const text = addModelMemoryRules(journalBody(
+    '这几天学校事情比较多，我在带高一语文。',
+    '我知道了。'
+  )).messages[0].content;
+  assert.match(text, /daily_summary 负责自然摄取当天有意义的近况/);
+  assert.match(text, /不要求它仍有下一步任务/);
+  assert.match(text, /should_continue=false/);
+  assert.doesNotMatch(text, /宁可不记/);
+});
+
 test('short pending work is saved locally without a provider judgement call', () => {
   const pending = journalBody('宝宝你帮我看看这篇作文', '我先看一下，再帮你逐段修改。');
   assert.equal(shouldSpendMemoryJournalCall(pending), false);
