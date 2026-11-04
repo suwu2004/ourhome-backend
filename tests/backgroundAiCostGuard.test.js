@@ -73,11 +73,12 @@ test('model prompt makes storage explicit, sparse, and update-oriented', () => {
   const body = addModelMemoryRules(journalBody('我不喜欢这种语气，以后别这样。', '好，我改。'));
   const text = body.messages[0].content;
   assert.match(text, /should_store/);
-  assert.match(text, /默认 should_store=false/);
-  assert.match(text, /同一事实/);
-  assert.match(text, /没有实质变化/);
-  assert.match(text, /沿用稳定、简短、可复用的 topic/);
-  assert.match(text, /不需要用户手动升级|长期记忆仍由 long_memory 独立判断/);
+  assert.match(text, /daily_summary 负责自然摄取当天有意义的近况/);
+  assert.match(text, /mark 与 daily_summary 分开判断/);
+  assert.match(text, /should_continue 表示事情是否还在进行/);
+  assert.match(text, /topic 应稳定、简短、可复用/);
+  assert.match(text, /long_memory 默认 should_save=false/);
+  assert.doesNotMatch(text, /宁可不记/);
 });
 
 test('local fallback does not turn emoji or affection into copied working memory', () => {
