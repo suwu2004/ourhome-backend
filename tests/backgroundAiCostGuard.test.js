@@ -11,6 +11,7 @@ const {
   localOnlyEnabled,
   resolveMemoryJournalModel,
   shouldSpendMemoryJournalCall,
+  resolveSkippedMemoryJournal,
   summarizeTurn,
   shouldContinueWorkingMemory,
 } = require('../backgroundAiCostGuardPatch');
@@ -90,6 +91,23 @@ test('local fallback does not turn emoji or affection into copied working memory
   assert.equal(affectionate.mark.should_continue, false);
   assert.equal(affectionate.mark.should_store, false);
   assert.equal(affectionate.mark.summary, '');
+});
+
+test('short pending work is saved locally without a provider judgement call', () => {
+  const pending = journalBody('宝宝你帮我检查一下这个问题', '我先排查原因，接下来再改。');
+  assert.equal(shouldSpendMemoryJournalCall(pending), false);
+  const saved = resolveSkippedMemoryJournal(pending);
+  assert.equal(saved.mark.should_store, true);
+  assert.equal(saved.mark.should_continue, true);
+  assert.match(saved.mark.summary, /继续帮忙|问题/);
+
+  const completed = journalBody('宝宝你帮我检查一下这个问题', '已经查好了，问题解决了。');
+  const ignored = resolveSkippedMemoryJournal(completed);
+  assert.equal(ignored.mark.should_store, false);
+  assert.equal(ignored.mark.summary, '');
+
+  const casual = resolveSkippedMemoryJournal(journalBody('亲亲宝宝，我也想你', '我也想你，抱抱。'));
+  assert.equal(casual.mark.should_store, false);
 });
 
 test('local fallback paraphrases a meaningful turn instead of copying the user sentence', () => {
