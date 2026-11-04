@@ -231,6 +231,15 @@ function localMemoryJournal(body) {
   };
 }
 
+function resolveSkippedMemoryJournal(body) {
+  const { userText, assistantText } = extractJournalTurn(body);
+  // Clear in-progress work is safe to capture with local rules. This preserves
+  // useful handoff context without buying another model judgement call.
+  return shouldContinueWorkingMemory(userText, assistantText)
+    ? localMemoryJournal(body)
+    : noOpMemoryJournal();
+}
+
 function noOpMemoryJournal() {
   return {
     mark: {
@@ -270,8 +279,13 @@ if (typeof providerFetch === 'function') {
 
     const preparedBody = addModelMemoryRules(body);
     if (!shouldSpendMemoryJournalCall(preparedBody)) {
-      console.log('[memory:journal] obvious non-memory turn skipped locally');
-      return localAnthropicResponse(noOpMemoryJournal());
+      const localResult = resolveSkippedMemoryJournal(preparedBody);
+      if (localResult?.mark?.should_store) {
+        console.log('[memory:journal] clear pending work captured locally; provider call skipped');
+      } else {
+        console.log('[memory:journal] obvious non-memory turn skipped locally');
+      }
+      return localAnthropicResponse(localResult);
     }
 
     if (localOnlyEnabled()) {
@@ -304,6 +318,7 @@ module.exports = {
   stripMemoryNoise,
   extractJournalTurn,
   shouldSpendMemoryJournalCall,
+  resolveSkippedMemoryJournal,
   summarizeTurn,
   shouldContinueWorkingMemory,
   localMemoryJournal,
