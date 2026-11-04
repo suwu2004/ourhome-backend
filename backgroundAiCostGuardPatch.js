@@ -1,5 +1,7 @@
 'use strict';
 
+const { isRecentLifeUpdate } = require('./memoryJournalTrigger');
+
 // Memory is a core OurHome feature, but ordinary chat must not pay for a second
 // model call just because a reply is long. A conservative local pre-filter removes
 // obviously ephemeral turns; ambiguous or durable candidates still go to a real
@@ -36,15 +38,16 @@ function resolveMemoryJournalModel(body, env = process.env) {
 
 const MODEL_MEMORY_RULES = `
 
-【临时记忆决策规则｜优先于上面的旧规则】
-- 临时记忆由你自己判断；默认 should_store=false，只有未来对理解叶檀或承接一件正在变化的事情确实有用时才设为 true。
-- mark 必须额外输出字段 "should_store": true 或 false。should_continue、should_remember 都不能代替 should_store。
-- 不要保存：寒暄、撒娇、表情、当下饿/困/累/想吃什么、一次性情绪、普通天气、已经结束的小事、对你上一句话的简单回应、工具报错本身、你自己的回复内容、没有新增事实的重复聊天。
-- 已经在“今天已有摘要/未收尾话题”里出现的同一事实，如果这一轮没有实质变化，should_store=false，不要再记一遍。
-- 同一件事出现真正后续时，可以 should_store=true，但必须沿用稳定、简短、可复用的 topic 名称，并把 summary 写成“最新状态”，不要追加成流水账。这样系统会更新原临时记忆而不是新增一条。
-- 适合保存的例子：稳定偏好或界限、身份/工作等重要状态变化、明确约定或未来计划、需要跨几轮继续的关键事项、长期项目中会影响后续决策的规则变化。
-- should_continue 只表示这件值得保存的事情是否还没收尾；should_remember 只是稍长保留提示；长期记忆仍由 long_memory 独立判断，不要自动升级。
-- 宁可不记，也不要为了“完整”而制造临时记忆。
+【临时记忆与近况摄取规则｜优先于上面的旧规则】
+- 把“叶檀最近经历了什么、生活和工作有什么变化、正在处于什么状态”也当作重要记录对象；记忆不是待办清单。
+- daily_summary 负责自然摄取当天有意义的近况：近期发生的事件、正在做的事、工作/学习/生活状态变化、重要的人际互动、阶段性进展与感受。即使没有明确任务，也应在有新事实时更新摘要。
+- mark 与 daily_summary 分开判断。对未来72小时内可能帮助理解叶檀、接续上下文或避免反复询问的近况，可以 should_store=true；不要求它仍有下一步任务。已经结束但对理解当前处境有价值的事件，也可以保存，should_continue=false。
+- mark 必须输出 "should_store": true 或 false。should_continue 表示事情是否还在进行/需要接续，不能用它代替 should_store；should_remember 也不能代替 should_store。
+- 不要保存：寒暄、撒娇、表情、对你上一句话的简单回应、单次饿/困/累/想吃什么、随口一句短暂情绪、普通天气、孤立玩笑、工具报错本身、你自己的回复内容、没有新增事实的重复聊天。
+- 对持续数日的情绪/压力、反复出现的生活困扰或重要关系变化，可以记录简短状态；不要把一时情绪夸大成长期事实，也不要擅自推断原因。
+- 已经在今日摘要/近期 mark 里出现的同一事实，如果这一轮没有实质变化，不要重复记录；有新进展时更新为最新状态，不要堆成流水账。
+- topic 应稳定、简短、可复用；summary 用自然、准确的第三人称概括事实，不要机械复述整段聊天，也不要编造缺失的信息。
+- long_memory 默认 should_save=false。稳定偏好/界限、明确要求长期记住的内容、长期项目确定规则、生日纪念日和长期身份资料，才考虑进入长期记忆；今天发生的事和阶段性近况留在今日摘要/临时记忆。
 `;
 
 function addModelMemoryRules(body) {
@@ -124,6 +127,9 @@ function shouldSpendMemoryJournalCall(body) {
   if (/(我.{0,8}(?:喜欢|不喜欢|讨厌|介意)|(?:喜欢|不喜欢).{0,10}(?:风格|画风|颜色|语气|功能|模型|设置|称呼|方式))/i.test(user)) return true;
   if (/(换工作|换了工作|入职|离职|失业|毕业|搬家|结婚|分手|订婚|怀孕|确诊|住院|手术|过敏|长期用药|开始吃药|停药)/i.test(user)) return true;
 
+  // Meaningful recent-life updates deserve model judgement even without a task verb.
+  if (isRecentLifeUpdate(user)) return true;
+
   const hasFutureTime = /(明天|后天|下周|下个月|月底|年底|待会|稍后|之后|下次|截止|DDL|到时候)/i.test(user);
   const hasFutureCommitment = /(计划|决定|约定|预约|面试|考试|出发|提交|提醒|待办|要去|要做|准备去|准备做|必须|不能忘)/i.test(user);
   if (hasFutureTime && hasFutureCommitment) return true;
@@ -137,6 +143,9 @@ function shouldSpendMemoryJournalCall(body) {
 
 function memoryTopic(userText) {
   const text = stripMemoryNoise(userText, 420);
+  if (/(学校|学生|备课|上课|带班|教学|论文|考试|学习)/i.test(text)) return '学习与教学近况';
+  if (/(工作|上班|下班|入职|离职|换工作|公司|岗位|AI动漫|AI视频|漫剧)/i.test(text)) return '工作近况';
+  if (/(朋友|家人|关系|见面|争吵|和好|联系)/i.test(text)) return '生活与关系近况';
   if (/(记账|支出|收入|银行卡|预算|金库|余额)/i.test(text)) return '记账与金库';
   if (/(陆泽.*房间|私人空间|自己的地方|敲门|门票)/i.test(text)) return '陆泽的私人空间';
   if (/(API|模型|站点|token|调用记录)/i.test(text)) return 'API 与模型';
@@ -178,6 +187,10 @@ function summarizeTurn(userText, assistantText) {
   if (/(足浴店|按摩|亲晕|还亲亲|转账8888)/i.test(user)) {
     return '两人围绕按摩、亲吻和开店设想轻松打趣，这段互动已经自然收尾。';
   }
+  if (isRecentLifeUpdate(user)) {
+    const detail = user.replace(/^(?:(?:我|最近我|这几天我|这段时间我|今天我|昨天我|前几天我|上周我|目前我|现在我|刚刚我|刚才我)|(?:最近|这几天|这段时间|今天|昨天|前几天|上周))\\s*/i, '').trim();
+    return `叶檀近况：${detail || user}`.slice(0, 220);
+  }
   return '';
 }
 
@@ -201,7 +214,9 @@ function localMemoryJournal(body) {
   const { userText, assistantText } = extractJournalTurn(body);
   const turnSummary = summarizeTurn(userText, assistantText);
   const shouldContinue = Boolean(turnSummary) && shouldContinueWorkingMemory(userText, assistantText);
-  const markSummary = shouldContinue ? turnSummary : '';
+  const recentState = isRecentLifeUpdate(userText);
+  const shouldStore = Boolean(turnSummary) && (shouldContinue || recentState);
+  const markSummary = shouldStore ? turnSummary : '';
   const dailySummary = compact([
     existing && existing !== '无' ? existing : '',
     turnSummary ? `本轮：${turnSummary}` : '',
@@ -209,13 +224,13 @@ function localMemoryJournal(body) {
 
   return {
     mark: {
-      topic: shouldContinue ? memoryTopic(userText) : '',
+      topic: shouldStore ? memoryTopic(userText) : '',
       emotion: '',
       summary: markSummary,
-      importance: shouldContinue ? 3 : 1,
+      importance: shouldContinue ? 3 : (recentState ? 2 : 1),
       should_continue: shouldContinue,
       should_remember: false,
-      should_store: shouldContinue,
+      should_store: shouldStore,
       tags: [],
     },
     daily_summary: {
@@ -233,9 +248,9 @@ function localMemoryJournal(body) {
 
 function resolveSkippedMemoryJournal(body) {
   const { userText, assistantText } = extractJournalTurn(body);
-  // Clear in-progress work is safe to capture with local rules. This preserves
-  // useful handoff context without buying another model judgement call.
-  return shouldContinueWorkingMemory(userText, assistantText)
+  // Clear in-progress work and recognizable recent-life updates can be captured
+  // with a zero-cost fallback; small talk and isolated transient states stay out.
+  return shouldContinueWorkingMemory(userText, assistantText) || isRecentLifeUpdate(userText)
     ? localMemoryJournal(body)
     : noOpMemoryJournal();
 }
