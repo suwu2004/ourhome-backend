@@ -7,6 +7,7 @@ const {
   MEMORY_JOURNAL_MIN_SIGNAL,
   signalLength,
   shouldAnalyzeMemoryJournalTurn,
+  isRecentLifeUpdate,
   isMemoryContinuationCue,
   shouldAnalyzeMemoryJournalContinuation,
 } = require('../memoryJournalTrigger');
@@ -30,6 +31,22 @@ test('explicit save requests, stable preferences, and meaningful project changes
 test('short actionable work requests enter the zero-cost memory path', () => {
   for (const userText of ['宝宝你帮我检查一下这个问题', '帮我核对这份材料', '这个分镜再改一下']) {
     assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), true, userText);
+  }
+});
+
+
+test('meaningful recent life updates trigger capture without a task verb', () => {
+  for (const userText of [
+    '我最近开始做 AI 动漫了，现在在熟悉分镜流程。',
+    '这几天学校事情比较多，我在带高一语文。',
+    '今天去学校给学生上课，回来还整理了教案。',
+  ]) {
+    assert.equal(isRecentLifeUpdate(userText), true, userText);
+    assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), true, userText);
+  }
+  for (const userText of ['我今天有点困', '我刚买了杯拿铁', '今天的天气不错']) {
+    assert.equal(isRecentLifeUpdate(userText), false, userText);
+    assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), false, userText);
   }
 });
 
