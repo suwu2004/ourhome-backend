@@ -27,6 +27,12 @@ test('explicit save requests, stable preferences, and meaningful project changes
   assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '今天确认了新的高一课表和教学安排。' }), true);
 });
 
+test('short actionable work requests enter the zero-cost memory path', () => {
+  for (const userText of ['宝宝你帮我检查一下这个问题', '帮我核对这份材料', '这个分镜再改一下']) {
+    assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), true, userText);
+  }
+});
+
 test('an attachment marker without a meaningful caption does not trigger a second model call', () => {
   assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '[发送了附件：一张图片]' }), false);
   assert.equal(shouldAnalyzeMemoryJournalTurn({ userText: '[发送了附件：一张图片] 请帮我把这张课表整理进长期项目记录。' }), true);
