@@ -26,7 +26,7 @@ const PENDING_WORK_REQUEST_RE = /(?:帮我|帮忙|看看|检查|核对|排查|�
 const RECENT_LIFE_UPDATE_RE = /(?:我(?:最近|这几天|这段时间|目前|现在|今天|昨天|前几天|上周|刚刚|刚才)|(?:最近|这几天|这段时间|今天|昨天|前几天|上周)).{0,40}(?:开始|正在|在做|做了|完成|结束|去了|回来|换了|入职|离职|辞职|报名|参加|通过|遇到|发生|经历|发现|联系|见了|搬家|旅行|出差|上课|带班|备课|工作|上班|下班|考试|面试|学习|写了|提交|收到|更新|恢复|生病|看病|复查|治疗|加班|忙着|准备|计划|决定|处理|项目|学校|学生|论文|新岗位|新工作)|(?:最近|这几天|这段时间|目前).{0,24}(?:很忙|比较忙|压力大|状态|在学校|在公司|在家|做兼职|带高一|做视频|做动漫|备课比较多|工作比较多)/i;
 
 function isRecentLifeUpdate(userText) {
-  const user = String(userText || '').replace(/\\s+/g, ' ').trim().slice(0, 2000);
+  const user = String(userText || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   return Boolean(user && RECENT_LIFE_UPDATE_RE.test(user));
 }
 
