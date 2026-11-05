@@ -27,7 +27,7 @@ test('promotes clear recurring writing-style preference even if model defaults t
     daily_summary: { summary: '模型生成的新摘要' },
     long_memory: { should_save: false, summary: '' },
   }, '已有的今日摘要', currentPreference);
-  assert.equal(result.daily_summary.summary, '已有的今日摘要');
+  assert.equal(result.daily_summary.summary, '模型生成的新摘要');
   assert.equal(result.long_memory.should_save, true);
   assert.match(result.long_memory.summary, /长期表达偏好/);
   assert.match(result.long_memory.summary, /顿了顿/);
@@ -40,4 +40,12 @@ test('does not promote one-off plans or casual affection into long-term style me
   }, '摘要', '我希望你明天来接我。');
   assert.equal(result.long_memory.should_save, false);
   assert.equal(result.long_memory.summary, '');
+});
+
+test('a curated nightly diary summary remains unchanged during later chat turns', () => {
+  const result = patchJournalResult({
+    daily_summary: { summary: '新的聊天轮次摘要' },
+    long_memory: { should_save: false, summary: '' },
+  }, '昨日由幸福日记整理的正式摘要', currentPreference, 'daily_journal');
+  assert.equal(result.daily_summary.summary, '昨日由幸福日记整理的正式摘要');
 });

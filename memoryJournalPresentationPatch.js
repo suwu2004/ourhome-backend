@@ -33,10 +33,24 @@ function extractExistingSummary(body) {
   const start = prompt.indexOf('【今天已有摘要】');
   if (start < 0) return '';
   const rest = prompt.slice(start + '【今天已有摘要】'.length);
-  const end = rest.indexOf('【未收尾话题】');
+  const boundaries = [
+    rest.indexOf('【摘要来源】'),
+    rest.indexOf('【未收尾话题】'),
+  ].filter(index => index >= 0);
+  const end = boundaries.length ? Math.min(...boundaries) : -1;
   const value = (end >= 0 ? rest.slice(0, end) : rest).trim();
   return value && value !== '无' ? value.slice(0, 1200) : '';
 }
+
+function extractExistingSummarySource(body) {
+  const prompt = messageText(body?.messages);
+  const start = prompt.indexOf('【摘要来源】');
+  if (start < 0) return '';
+  const rest = prompt.slice(start + '【摘要来源】'.length);
+  const end = rest.indexOf('【未收尾话题】');
+  return (end >= 0 ? rest.slice(0, end) : rest).trim().slice(0, 80);
+}
+
 
 function extractCurrentUserText(body) {
   const prompt = messageText(body?.messages);
@@ -50,11 +64,30 @@ function extractCurrentUserText(body) {
   return (assistantStart < 0 ? prompt.slice(contentStart) : prompt.slice(contentStart, assistantStart)).trim().slice(0, 1200);
 }
 
-function patchJournalResult(result, existingSummary, userText = '') {
+function isInternalTurnSummary(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return /(?:^|[\n；;。])\s*(?:本轮|这轮|这一轮|本次聊天)\s*[：:]/u.test(text)
+    || /(?:内部接续标记|记忆日志分析结果)/u.test(text);
+}
+
+function chooseDailySummary(candidate, existingSummary, summarySource = '') {
+  const generated = String(candidate || '').trim().slice(0, 1200);
+  const existing = String(existingSummary || '').trim().slice(0, 1200);
+  // A nightly diary produces the polished, user-facing summary and remains the
+  // source of truth for that day. Chat-turn summaries may continue to evolve.
+  if (summarySource === 'daily_journal' && existing) return existing;
+  // Allow a real cumulative chat update through. Only suppress explicit per-turn
+  // diagnostics; preserve the last clean summary when the model returns one.
+  if (!generated || isInternalTurnSummary(generated)) return existing;
+  return generated;
+}
+
+function patchJournalResult(result, existingSummary, userText = '', summarySource = '') {
   if (!result || typeof result !== 'object') return result;
   const next = JSON.parse(JSON.stringify(result));
   if (!next.daily_summary || typeof next.daily_summary !== 'object') next.daily_summary = {};
-  next.daily_summary.summary = existingSummary || '';
+  next.daily_summary.summary = chooseDailySummary(next.daily_summary.summary, existingSummary, summarySource);
 
   // Make stable, recurring writing-style preferences durable even if the
   // journal model incorrectly defaults long_memory.should_save to false.
@@ -69,20 +102,20 @@ function patchJournalResult(result, existingSummary, userText = '') {
   return next;
 }
 
-function patchProviderPayload(payload, existingSummary, userText = '') {
+function patchProviderPayload(payload, existingSummary, userText = '', summarySource = '') {
   if (!payload || typeof payload !== 'object') return payload;
   const next = JSON.parse(JSON.stringify(payload));
   if (Array.isArray(next.content)) {
     for (const block of next.content) {
       if (!block || typeof block.text !== 'string') continue;
       try {
-        block.text = JSON.stringify(patchJournalResult(JSON.parse(block.text), existingSummary, userText));
+        block.text = JSON.stringify(patchJournalResult(JSON.parse(block.text), existingSummary, userText, summarySource));
         return next;
       } catch {}
     }
   }
   if (typeof next.content === 'string') {
-    try { next.content = JSON.stringify(patchJournalResult(JSON.parse(next.content), existingSummary, userText)); } catch {}
+    try { next.content = JSON.stringify(patchJournalResult(JSON.parse(next.content), existingSummary, userText, summarySource)); } catch {}
   }
   return next;
 }
@@ -109,7 +142,7 @@ if (typeof previousFetch === 'function') {
     if (!response?.ok) return response;
     try {
       const payload = await response.clone().json();
-      return jsonResponseLike(response, patchProviderPayload(payload, extractExistingSummary(body), extractCurrentUserText(body)));
+      return jsonResponseLike(response, patchProviderPayload(payload, extractExistingSummary(body), extractCurrentUserText(body), extractExistingSummarySource(body)));
     } catch (error) {
       console.warn('[memory:journal-display] response patch skipped:', error.message);
       return response;
@@ -122,7 +155,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function memoryJournalPresentationHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, memory_journal_presentation: 'display-summary-isolation-v1' };
+      body = { ...body, memory_journal_presentation: 'source-aware-summary-preservation-v3' };
     }
     return originalJson.call(this, body);
   };
@@ -133,7 +166,10 @@ try {
 module.exports = {
   isMemoryJournalRequest,
   extractExistingSummary,
+  extractExistingSummarySource,
   extractCurrentUserText,
+  isInternalTurnSummary,
+  chooseDailySummary,
   patchJournalResult,
   patchProviderPayload,
 };

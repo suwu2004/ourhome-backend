@@ -8,6 +8,7 @@ const {
   LEDGER_REFRESH_TOKEN_DELTA,
   estimateLedgerRowsTokens,
   parseLedgerModelResponse,
+  parseLedgerEntries,
   overflowRows,
   rowsAfterCursor,
   splitRowsIntoChunks,
@@ -21,7 +22,7 @@ const {
 const patchSource = fs.readFileSync(path.resolve(__dirname, '..', 'contextLedgerPatch.js'), 'utf8');
 
 function row(id, role = 'user', content = `消息 ${id}`) {
-  return { id, role, content, attachment_summary: null };
+  return { id, role, content, attachment_name: null, attachment_type: null, attachment_summary: null };
 }
 
 test('只把最近上下文窗口之外的历史交给滚动账本', () => {
@@ -77,7 +78,9 @@ test('隐藏账本默认绝不继承当前 Chat 模型，付费模式也一轮�
   assert.doesNotMatch(patchSource, /CONTEXT_LEDGER_MODEL\s*\|\|\s*mainBody/);
   assert.match(patchSource, /PAID_LEDGER_MAX_CHUNKS_PER_TURN\s*=\s*1/);
   assert.match(patchSource, /X-OurHome-Call-Purpose[^\n]*context-ledger/);
-  assert.match(patchSource, /rolling-summary-v4-threshold32-token6000/);
+  assert.match(patchSource, /rolling-summary-v6-contiguous-cursor/);
+  assert.match(patchSource, /attachment_name,attachment_type,attachment_summary/);
+  assert.match(patchSource, /protectRecentFacts: false/);
   assert.match(patchSource, /loadPendingOverflow/);
   assert.doesNotMatch(patchSource, /\.range\(offset/);
 });
@@ -93,6 +96,60 @@ test('注入块包含滚动账本和紧邻最近窗口的桥接旧消息', () =>
   assert.match(block, /刚被挤出的上下文/);
   assert.match(block, /80\/92/);
   assert.match(block, /最近可见对话冲突，以最近对话为准/);
+});
+
+test('滚动账本会把附件名称与类型保留为上下文线索，不携带原始附件 URL', () => {
+  const { rowText } = require('../contextLedgerSupport');
+  const line = rowText({
+    id: 300,
+    role: 'user',
+    content: '',
+    attachment_name: '高一语文课表.xlsx',
+    attachment_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    attachment_summary: '包含周一至周五的高一语文课时安排。',
+    attachment_url: 'https://private.example/file-token',
+    created_at: '2026-11-05T01:00:00.000Z',
+  });
+  assert.match(line, /高一语文课表.xlsx/);
+  assert.match(line, /application\/vnd/);
+  assert.doesNotMatch(line, /private\.example|file-token/);
+});
+
+test('附件只有存储地址时也保留存在性线索，但不暴露地址', () => {
+  const { rowText } = require('../contextLedgerSupport');
+  const line = rowText({
+    id: 302,
+    role: 'user',
+    content: '',
+    attachment_url: 'https://private.example/signed-object-token',
+    attachment_name: null,
+    attachment_type: null,
+    attachment_summary: null,
+  });
+  assert.match(line, /存在附件/);
+  assert.doesNotMatch(line, /private\.example|signed-object-token/);
+});
+
+test('模型自然语言摘要不会被本地兜底截断到前 900 字', () => {
+  const legacy = [
+    '【重要事实】',
+    '叶檀长期偏好清晰自然的回复，明确不喜欢客服式模板语言。',
+    '【项目进展】',
+    'OurHome 已经完成前后端部署，当前继续完善聊天上下文和临时记忆。',
+    '【待续话题】',
+    '接下来要核对同一早晨的上下文是否能跨越窗口裁剪，并验证新的滚动摘要。',
+    '【后续决定】',
+    '最终决定保留原始聊天记录，只对旧消息做摘要，不删除任何消息。',
+  ].join('\n');
+  const entries = parseLedgerEntries(legacy);
+  assert.ok(entries.length >= 6);
+  const summary = localLedgerSummary(legacy, [
+    row(301, 'user', '今天上午确认了滚动摘要要同时保留附件名称与附件解析线索。'),
+  ]);
+  assert.match(summary, /客服式模板语言/);
+  assert.match(summary, /保留原始聊天记录/);
+  assert.match(summary, /附件名称/);
+  assert.ok(summary.length <= 6000);
 });
 
 test('模型返回的账本会去掉代码块和内部控制标签', () => {

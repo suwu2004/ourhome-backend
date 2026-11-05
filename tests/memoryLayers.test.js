@@ -73,13 +73,18 @@ test('记忆标记约束接受后台整理使用的 expired 状态', () => {
   assert.doesNotMatch(expiredStatusMigration, /delete\s+from\s+public\.memory_marks/i);
 });
 
-test('自动临时记忆超过 72 小时工作窗口后只归档不删除', () => {
+test('所有自动临时记忆超过 72 小时后只归档不删除，手工记忆不受影响', () => {
   assert.match(memoryPatch, /archiveStaleWorkingMemory/);
   assert.match(memoryPatch, /updated_at.*lt\.\$\{cutoff\}/s);
   assert.match(memoryPatch, /metadata\?\.assistant_message_id/);
   assert.match(memoryPatch, /status: 'archived'/);
   assert.match(memoryPatch, /should_continue: false/);
-  assert.match(memoryPatch, /working_memory_lifecycle: 'auto-archive-after-72h-v1'/);
+  assert.match(memoryPatch, /working_memory_lifecycle: 'auto-archive-all-journal-marks-after-72h-v2'/);
+  const archiver = memoryPatch.slice(
+    memoryPatch.indexOf('async function archiveStaleWorkingMemory'),
+    memoryPatch.indexOf('async function runMemoryConsolidation'),
+  );
+  assert.doesNotMatch(archiver, /searchParams\.set\('should_continue'/);
   assert.doesNotMatch(memoryPatch, /DELETE[^\n]*memory_marks/i);
 });
 

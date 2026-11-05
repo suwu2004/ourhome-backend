@@ -37,3 +37,20 @@ test('未设置 token 预算时仍按原有轮数截取', () => {
   const history = Array.from({ length: 12 }, (_, index) => row(index + 1, '短消息'));
   assert.deepEqual(selectRecentHistory(history, { maxRounds: 3, maxTokens: 0 }).map(item => item.id), [7, 8, 9, 10, 11, 12]);
 });
+
+
+test('the ledger can calculate a contiguous suffix without recent-life extras', () => {
+  const now = new Date().toISOString();
+  const history = Array.from({ length: 12 }, (_, index) => ({
+    ...row(index + 1, index === 0 ? '我今天上午去了学校上课。' : '普通消息'),
+    created_at: now,
+  }));
+  const withProtectedFact = selectRecentHistory(history, { maxRounds: 2, maxTokens: 0 });
+  const contiguous = selectRecentHistory(history, {
+    maxRounds: 2,
+    maxTokens: 0,
+    protectRecentFacts: false,
+  });
+  assert.ok(withProtectedFact.some(item => item.id === 1));
+  assert.deepEqual(contiguous.map(item => item.id), [9, 10, 11, 12]);
+});

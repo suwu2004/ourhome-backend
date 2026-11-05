@@ -139,22 +139,31 @@ function installExpressContextBridge() {
 async function loadLedgerWindow(sessionId, settings) {
   const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, {
     maxRounds: settings.maxContextRounds,
-    columns: 'id,role,content,attachment_summary,created_at',
+    columns: 'id,role,content,attachment_url,attachment_name,attachment_type,attachment_summary,created_at',
   });
-  const recentKeep = selectRecentHistory(candidates, {
+  const selectionOptions = {
     maxRounds: settings.maxContextRounds,
     maxTokens: settings.maxContextTokens,
+  };
+  const recentKeep = selectRecentHistory(candidates, selectionOptions);
+  // The prompt may protect a few older recent-life facts in addition to the
+  // contiguous suffix. The rolling cursor must be based on that suffix, otherwise
+  // ordinary messages between a protected fact and the suffix can fall into a gap:
+  // they are absent from the prompt but also newer than the ledger cursor.
+  const contiguousWindow = selectRecentHistory(candidates, {
+    ...selectionOptions,
+    protectRecentFacts: false,
   });
   return {
     recentKeep,
-    cutoffId: safeId(recentKeep[0]?.id),
+    cutoffId: safeId(contiguousWindow[0]?.id || recentKeep[0]?.id),
   };
 }
 
 async function loadPendingOverflow(sessionId, { cursorId = null, cutoffId, descending = false, limit = LEDGER_PENDING_ROW_LIMIT } = {}) {
   if (!supabase || !sessionId || !cutoffId) return [];
   let query = supabase.from('messages')
-    .select('id,role,content,attachment_summary,created_at')
+    .select('id,role,content,attachment_url,attachment_name,attachment_type,attachment_summary,created_at')
     .eq('session_id', sessionId)
     .eq('visible', true)
     .lt('id', cutoffId);
@@ -368,7 +377,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function contextLedgerHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, context_ledger: 'rolling-summary-v4-threshold32-token6000' };
+      body = { ...body, context_ledger: 'rolling-summary-v6-contiguous-cursor' };
     }
     return originalJson.call(this, body);
   };

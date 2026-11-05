@@ -50,8 +50,17 @@ function parseScheduledDiaryResponse(replyText) {
   };
 }
 
+function shouldReplaceDailySummary(existing = {}) {
+  if (!String(existing?.summary || '').trim()) return true;
+  // The nightly Happiness Diary owns the polished day summary. It may replace a
+  // provisional chat-turn rollup, but must never overwrite a curated diary summary
+  // or an entry whose origin is unknown.
+  return String(existing?.metadata?.source || '') === 'chat_turn';
+}
+
 module.exports = {
   compactText,
   fallbackDiarySummary,
   parseScheduledDiaryResponse,
+  shouldReplaceDailySummary,
 };

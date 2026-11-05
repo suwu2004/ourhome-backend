@@ -62,8 +62,9 @@ const {
   previousAttachmentLabel,
   latestImageMessageId,
 } = require('./attachmentContext');
-const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
+const { fallbackDiarySummary, parseScheduledDiaryResponse, shouldReplaceDailySummary } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
+const { isMemoryRecallRelevant, sampleQueryBigrams } = require('./memoryRecallScoring');
 const {
   shouldAnalyzeMemoryJournalTurn,
   isMemoryContinuationCue,
@@ -2536,11 +2537,9 @@ function cosineSimilarity(a, b) {
 // 核心记忆与相关记忆共享同一次数据读取，避免每轮 Chat 重复拉 memories。
 async function loadChatMemoryRecall(message) {
   const text = (message || '').replace(/[\s,，。！？、!?.]/g, '');
-  const bigrams = [];
-  for (let i = 0; i < text.length - 1; i++) bigrams.push(text.slice(i, i + 2));
-  const uniqueBigrams = [...new Set(bigrams)].slice(0, 15);
+  const uniqueBigrams = sampleQueryBigrams(text, 24);
   // Tiny acknowledgements and affectionate one-liners do not justify a separate
-  // embedding request. Keyword/freshness fallback remains available for them.
+  // embedding request; keyword-only recall remains available for them.
   const retrievalText = text.replace(/[^\p{L}\p{N}]/gu, '');
   const shouldEmbedQuery = retrievalText.length >= 24;
 
@@ -2580,19 +2579,22 @@ async function loadChatMemoryRecall(message) {
       ? vectorScore * 0.55 + keywordScore * 0.25 + freshnessScore * 0.1 + Math.min((m.weight || 1) / 2, 1) * 0.1
       : keywordScore * 0.5 + freshnessScore * 0.25 + Math.min((m.weight || 1) / 2, 1) * 0.25;
 
-    return { ...m, _score: finalScore };
+    const hasVectorSignal = Boolean(queryEmbedding && m.embedding);
+    const isRelevant = isMemoryRecallRelevant({
+      vectorScore,
+      keywordScore,
+      hasVector: hasVectorSignal,
+    });
+    return { ...m, _score: finalScore, _isRelevant: isRelevant };
   });
 
-  // 取top8，过滤掉完全不相关的（向量+关键词都是0）
+  // Require an actual semantic or keyword signal before ranking by freshness and weight.
+  // Fresh but unrelated memories must not enter every prompt as a fallback.
   const result = scored
-    .filter(m => m._score > 0.01)
+    .filter(memory => memory._isRelevant)
     .sort((a, b) => b._score - a._score)
     .slice(0, 8);
-
-  // 如果向量+关键词都搜不出来东西，fallback到纯权重Top3
-  const finalResult = result.length > 0
-    ? result
-    : memories.slice(0, 3);
+  const finalResult = result.map(({ _score, _isRelevant, ...memory }) => memory);
 
   // 被命中的记忆权重回升（不阻塞主流程）
   if (finalResult.length > 0) {
@@ -2883,6 +2885,7 @@ function buildPinnedFavoritesPromptBlock(favorites = []) {
 
 async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext }) {
   const currentSummary = existingContext.summary?.summary || '无';
+  const summarySource = String(existingContext.summary?.metadata?.source || 'unknown');
   const openThreads = Array.isArray(existingContext.summary?.open_threads)
     ? existingContext.summary.open_threads.join('；')
     : '无';
@@ -2890,6 +2893,9 @@ async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistant
 
 【今天已有摘要】
 ${currentSummary}
+
+【摘要来源】
+${summarySource}
 
 【未收尾话题】
 ${openThreads}
@@ -3011,17 +3017,25 @@ async function recordMemoryJournalTurn({
   const daily = analysis.daily_summary || {};
   const summary = compactLine(daily.summary, 1200);
   if (summary) {
+    const existingSummary = compactLine(existingContext.summary?.summary, 1200);
+    const existingMetadata = existingContext.summary?.metadata && typeof existingContext.summary.metadata === 'object'
+      ? existingContext.summary.metadata
+      : null;
+    const summaryUnchanged = summary === existingSummary;
+    const summaryMetadata = summaryUnchanged && existingMetadata
+      ? existingMetadata
+      : { source: 'chat_turn' };
     const { error: summaryError } = await supabase.from('daily_summaries').upsert({
       summary_date: dateKey,
       summary,
       highlights: normalizeTags(daily.highlights, 5).map(item => item.slice(0, 160)),
       open_threads: normalizeTags(daily.open_threads, 5).map(item => item.slice(0, 160)),
       mood: compactLine(daily.mood, 100) || null,
-      event_count: 0,
+      event_count: Number(existingContext.summary?.event_count) || 0,
       last_message_id: assistantMessageId ? String(assistantMessageId) : null,
       updated_at: now.toISOString(),
       generated_at: now.toISOString(),
-      metadata: { source: 'chat_turn' },
+      metadata: summaryMetadata,
     }, { onConflict: 'summary_date' });
     if (summaryError) persistenceErrors.push(`今日摘要: ${summaryError.message}`);
     else dailySummaryStored = true;
@@ -6336,11 +6350,11 @@ async function loadDailyConversation(day) {
 async function upsertDailyDiarySummary(day, diary, preferredSummary = '') {
   if (!day?.date || !diary?.id) return false;
   const { data: existing, error: existingError } = await supabase.from('daily_summaries')
-    .select('summary')
+    .select('summary, metadata')
     .eq('summary_date', day.date)
     .maybeSingle();
   if (existingError) throw existingError;
-  if (String(existing?.summary || '').trim()) return true;
+  if (!shouldReplaceDailySummary(existing || {})) return true;
 
   const summary = String(preferredSummary || fallbackDiarySummary(diary.title, diary.content)).trim();
   if (!summary) throw new Error('幸福日记摘要为空');
