@@ -89,6 +89,23 @@ function parseTextToolCalls(result) {
   return calls;
 }
 
+function finalizeToolLoopResult(result, { rounds = 0, maxRounds = 5, actionsPerformed = [] } = {}) {
+  const content = Array.isArray(result?.content) ? result.content : [];
+  const hasNativeToolRequest = content.some(block => block?.type === 'tool_use');
+  const hasTextToolRequest = !hasNativeToolRequest && parseTextToolCalls(result).length > 0;
+  if (rounds < maxRounds || (!hasNativeToolRequest && !hasTextToolRequest)) return result;
+
+  const existingText = stripTextToolMarkup(resultText(result));
+  const completedCount = Array.isArray(actionsPerformed) ? actionsPerformed.length : 0;
+  const notice = `本轮已达到 ${maxRounds} 轮工具操作上限，后续请求没有执行。前面已完成 ${completedCount} 项操作；剩余步骤尚未执行，请把它们单独发给我。`;
+  return {
+    ...result,
+    content: [{ type: 'text', text: [existingText, notice].filter(Boolean).join('\\n\\n') }],
+    stop_reason: 'end_turn',
+    ourhome_tool_round_limit: true,
+  };
+}
+
 function stripTextToolMarkup(value) {
   return String(value || '')
     .replace(TEXT_TOOL_CALL_RE, '')
@@ -173,6 +190,7 @@ function replaceImagesWithDescription(messages = [], description, visionModel) {
 module.exports = {
   buildTextToolBridge,
   parseTextToolCalls,
+  finalizeToolLoopResult,
   stripTextToolMarkup,
   isToolCompatibilityError,
   hasImageContent,
