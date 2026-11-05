@@ -64,7 +64,7 @@ const {
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse, shouldReplaceDailySummary } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
-const { isMemoryRecallRelevant } = require('./memoryRecallScoring');
+const { isMemoryRecallRelevant, sampleQueryBigrams } = require('./memoryRecallScoring');
 const {
   shouldAnalyzeMemoryJournalTurn,
   isMemoryContinuationCue,
@@ -2537,11 +2537,9 @@ function cosineSimilarity(a, b) {
 // 核心记忆与相关记忆共享同一次数据读取，避免每轮 Chat 重复拉 memories。
 async function loadChatMemoryRecall(message) {
   const text = (message || '').replace(/[\s,，。！？、!?.]/g, '');
-  const bigrams = [];
-  for (let i = 0; i < text.length - 1; i++) bigrams.push(text.slice(i, i + 2));
-  const uniqueBigrams = [...new Set(bigrams)].slice(0, 15);
+  const uniqueBigrams = sampleQueryBigrams(text, 24);
   // Tiny acknowledgements and affectionate one-liners do not justify a separate
-  // embedding request. Keyword/freshness fallback remains available for them.
+  // embedding request; keyword-only recall remains available for them.
   const retrievalText = text.replace(/[^\p{L}\p{N}]/gu, '');
   const shouldEmbedQuery = retrievalText.length >= 24;
 
