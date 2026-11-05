@@ -93,9 +93,10 @@ test('memory-log separates active context from archived history and returns dail
     .split("app.get('/memory-log'")[1]
     .split("app.patch('/memory-marks/:id'")[0];
   assert.match(route, /\.in\('status', \['active', 'continued'\]\)/);
-  assert.match(route, /\.in\('status', \['archived', 'expired', 'resolved'\]\)/);
   assert.match(route, /historyMarks: historyMarks \|\| \[\]/);
   assert.match(route, /summaries: summaries \|\| \[\]/);
+  assert.match(route, /\.gte\('updated_at', activeCutoff\)/);
+  assert.match(route, /status\.in\.\(archived,expired,resolved\),and\(status\.in\.\(active,continued\),updated_at\.lt/);
   assert.doesNotMatch(route, /\.eq\('should_continue', true\)/);
 });
 
