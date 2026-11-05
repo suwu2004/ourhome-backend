@@ -3314,8 +3314,8 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, session
   if (sessionSummaryError) console.warn('当前窗口简介读取失败:', sessionSummaryError.message);
   const summaryCheckpoint = String(sessionSummary?.last_message_id ?? '');
   const excludedMessageId = String(excludeSummaryThroughMessageId ?? '');
-  const summaryCoversExcludedMessage = /^\\d+$/.test(summaryCheckpoint)
-    && /^\\d+$/.test(excludedMessageId)
+  const summaryCoversExcludedMessage = /^\d+$/.test(summaryCheckpoint)
+    && /^\d+$/.test(excludedMessageId)
     && BigInt(summaryCheckpoint) >= BigInt(excludedMessageId);
   const sessionSummaryBlock = sessionSummary?.summary && !summaryCoversExcludedMessage
     ? `【当前窗口简介·早期聊天总结】\n${compactBlock(sessionSummary.summary, 2400)}\n这是一份对已归档早期聊天的压缩背景，不是逐字记录。当前消息、更新后的事实和叶檀明确的更正优先；不要把摘要中过时的计划当作仍有效事项。`
