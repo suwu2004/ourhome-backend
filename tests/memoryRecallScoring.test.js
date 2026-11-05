@@ -36,6 +36,16 @@ test('vector scores without an available embedding do not qualify on their own',
 });
 
 
+test('keyword sampling is case-insensitive and normalizes full-width Latin characters', () => {
+  const mixedCase = sampleQueryBigrams('OurHome GitHub');
+  assert.ok(mixedCase.includes('ou'));
+  assert.ok(mixedCase.includes('gi'));
+
+  const fullWidth = sampleQueryBigrams('ＧＩＴＨＵＢ');
+  assert.ok(fullWidth.includes('gi'));
+  assert.ok(fullWidth.includes('it'));
+});
+
 test('keyword sampling covers the start, middle and end of long messages', () => {
   const text = Array.from({ length: 70 }, (_, index) => String.fromCharCode(0x4e00 + index)).join('');
   const sampled = sampleQueryBigrams(text, 6);
