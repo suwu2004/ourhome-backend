@@ -4915,7 +4915,11 @@ app.get('/memory-log', async (req, res) => {
     startDate.setUTCDate(startDate.getUTCDate() - days + 1);
     const startKey = startDate.toISOString().slice(0, 10);
 
-    const now = new Date().toISOString();
+    const nowDate = new Date();
+    const now = nowDate.toISOString();
+    // Keep the visible working set small and aligned with the 72-hour chat
+    // continuation window. Older, still-retained rows remain browsable as history.
+    const activeCutoff = new Date(nowDate.getTime() - 72 * 60 * 60 * 1000).toISOString();
     const [{ data: summaries, error: summariesError }, { data: marks, error: marksError }, { data: historyMarks, error: historyError }] = await Promise.all([
       supabase.from('daily_summaries')
         .select('*')
@@ -4927,14 +4931,15 @@ app.get('/memory-log', async (req, res) => {
         .in('status', ['active', 'continued'])
         .gte('mark_date', startKey)
         .lte('mark_date', date)
+        .gte('updated_at', activeCutoff)
         .or(`expires_at.is.null,expires_at.gt.${now}`)
-        .order('created_at', { ascending: false })
-        .limit(100),
+        .order('updated_at', { ascending: false })
+        .limit(40),
       supabase.from('memory_marks')
         .select('*')
-        .in('status', ['archived', 'expired', 'resolved'])
         .gte('mark_date', startKey)
         .lte('mark_date', date)
+        .or(`status.in.(archived,expired,resolved),and(status.in.(active,continued),updated_at.lt.${activeCutoff})`)
         .order('created_at', { ascending: false })
         .limit(200),
     ]);
