@@ -27,6 +27,29 @@ function estimateMessageTokens(message = {}) {
   return 16 + estimateTextTokens(message.content) + estimateTextTokens(attachmentText);
 }
 
+function findArchivedHistoryPrefix(history = [], contextHistory = []) {
+  const rows = Array.isArray(history) ? history : [];
+  const contextIds = new Set((Array.isArray(contextHistory) ? contextHistory : [])
+    .map(message => message?.id)
+    .filter(value => value !== undefined && value !== null)
+    .map(String));
+  if (!rows.length || !contextIds.size) return [];
+  let suffixStart = rows.length;
+  while (suffixStart > 0 && contextIds.has(String(rows[suffixStart - 1]?.id))) {
+    suffixStart -= 1;
+  }
+  return rows.slice(0, suffixStart);
+}
+
+function shouldSummarizeArchivedMessages(messages = [], options = {}) {
+  const rows = Array.isArray(messages) ? messages : [];
+  if (!rows.length) return false;
+  const minMessages = normalizePositiveInteger(options.minMessages, 12, 1000);
+  const minTokens = normalizePositiveInteger(options.minTokens, 6000, 1_000_000);
+  const estimatedTokens = rows.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+  return rows.length >= minMessages || estimatedTokens >= minTokens;
+}
+
 function formatTimelineStamp(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -136,6 +159,8 @@ function selectRecentHistory(history = [], options = {}) {
 module.exports = {
   estimateTextTokens,
   estimateMessageTokens,
+  findArchivedHistoryPrefix,
+  shouldSummarizeArchivedMessages,
   formatTimelineStamp,
   stripHistoryTimelineAnnotations,
   annotateHistoryTimeline,
