@@ -127,7 +127,7 @@ test('附件只有存储地址时也保留存在性线索，但不暴露地址',
     attachment_summary: null,
   });
   assert.match(line, /存在附件/);
-  assert.doesNotMatch(line, /private\\.example|signed-object-token/);
+  assert.doesNotMatch(line, /private\.example|signed-object-token/);
 });
 
 test('模型自然语言摘要不会被本地兜底截断到前 900 字', () => {
