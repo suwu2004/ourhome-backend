@@ -10,6 +10,8 @@ const {
   isLikelyVisionModel,
   listVisionModels,
   chooseVisionModel,
+  MAX_VISION_MODEL_ATTEMPTS,
+  isTransientVisionProviderError,
   parseVisionReaderOutput,
   replaceImagesWithDescription,
 } = require('../modelCompatibility');
