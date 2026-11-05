@@ -62,7 +62,7 @@ const {
   previousAttachmentLabel,
   latestImageMessageId,
 } = require('./attachmentContext');
-const { fallbackDiarySummary, parseScheduledDiaryResponse } = require('./dailyJournalSummary');
+const { fallbackDiarySummary, parseScheduledDiaryResponse, shouldReplaceDailySummary } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
 const {
   shouldAnalyzeMemoryJournalTurn,
@@ -6340,11 +6340,11 @@ async function loadDailyConversation(day) {
 async function upsertDailyDiarySummary(day, diary, preferredSummary = '') {
   if (!day?.date || !diary?.id) return false;
   const { data: existing, error: existingError } = await supabase.from('daily_summaries')
-    .select('summary')
+    .select('summary, metadata')
     .eq('summary_date', day.date)
     .maybeSingle();
   if (existingError) throw existingError;
-  if (String(existing?.summary || '').trim()) return true;
+  if (!shouldReplaceDailySummary(existing || {})) return true;
 
   const summary = String(preferredSummary || fallbackDiarySummary(diary.title, diary.content)).trim();
   if (!summary) throw new Error('幸福日记摘要为空');
