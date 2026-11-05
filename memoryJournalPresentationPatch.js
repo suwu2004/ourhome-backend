@@ -50,11 +50,27 @@ function extractCurrentUserText(body) {
   return (assistantStart < 0 ? prompt.slice(contentStart) : prompt.slice(contentStart, assistantStart)).trim().slice(0, 1200);
 }
 
+function isInternalTurnSummary(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return /(?:^|[\n；;。])\s*(?:本轮|这轮|这一轮|本次聊天)\s*[：:]/u.test(text)
+    || /(?:内部接续标记|记忆日志分析结果)/u.test(text);
+}
+
+function chooseDailySummary(candidate, existingSummary) {
+  const generated = String(candidate || '').trim().slice(0, 1200);
+  const existing = String(existingSummary || '').trim().slice(0, 1200);
+  // Allow a real cumulative update through. Only suppress explicit per-turn
+  // diagnostics; preserve the last curated summary when the model returns one.
+  if (!generated || isInternalTurnSummary(generated)) return existing;
+  return generated;
+}
+
 function patchJournalResult(result, existingSummary, userText = '') {
   if (!result || typeof result !== 'object') return result;
   const next = JSON.parse(JSON.stringify(result));
   if (!next.daily_summary || typeof next.daily_summary !== 'object') next.daily_summary = {};
-  next.daily_summary.summary = existingSummary || '';
+  next.daily_summary.summary = chooseDailySummary(next.daily_summary.summary, existingSummary);
 
   // Make stable, recurring writing-style preferences durable even if the
   // journal model incorrectly defaults long_memory.should_save to false.
@@ -122,7 +138,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function memoryJournalPresentationHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, memory_journal_presentation: 'display-summary-isolation-v1' };
+      body = { ...body, memory_journal_presentation: 'preserve-valid-cumulative-summary-v2' };
     }
     return originalJson.call(this, body);
   };
@@ -134,6 +150,8 @@ module.exports = {
   isMemoryJournalRequest,
   extractExistingSummary,
   extractCurrentUserText,
+  isInternalTurnSummary,
+  chooseDailySummary,
   patchJournalResult,
   patchProviderPayload,
 };
