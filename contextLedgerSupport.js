@@ -46,11 +46,11 @@ function rowText(row = {}) {
   const attachment = compactText(stripInternalControls(row.attachment_summary), 1_200);
   const attachmentName = compactText(stripInternalControls(row.attachment_name), 160);
   const attachmentType = compactText(stripInternalControls(row.attachment_type), 80);
-  const attachmentInfo = attachment
-    ? `附件摘要：${attachment}`
-    : (attachmentName || attachmentType)
-      ? `附件信息：${[attachmentName, attachmentType].filter(Boolean).join('｜')}`
-      : '';
+  const attachmentInfo = [
+    attachmentName ? '附件名称：' + attachmentName : '',
+    attachmentType ? '附件类型：' + attachmentType : '',
+    attachment ? '附件摘要：' + attachment : '',
+  ].filter(Boolean).join('；');
   const timestamp = formatLedgerTime(row.created_at);
   const timePrefix = timestamp ? `[历史时间：${timestamp}] ` : '';
   const parts = [content, attachmentInfo].filter(Boolean);
