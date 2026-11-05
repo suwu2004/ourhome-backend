@@ -78,8 +78,9 @@ test('隐藏账本默认绝不继承当前 Chat 模型，付费模式也一轮�
   assert.doesNotMatch(patchSource, /CONTEXT_LEDGER_MODEL\s*\|\|\s*mainBody/);
   assert.match(patchSource, /PAID_LEDGER_MAX_CHUNKS_PER_TURN\s*=\s*1/);
   assert.match(patchSource, /X-OurHome-Call-Purpose[^\n]*context-ledger/);
-  assert.match(patchSource, /rolling-summary-v5-semantic-fallback-attachments/);
+  assert.match(patchSource, /rolling-summary-v6-contiguous-cursor/);
   assert.match(patchSource, /attachment_name,attachment_type,attachment_summary/);
+  assert.match(patchSource, /protectRecentFacts: false/);
   assert.match(patchSource, /loadPendingOverflow/);
   assert.doesNotMatch(patchSource, /\.range\(offset/);
 });
