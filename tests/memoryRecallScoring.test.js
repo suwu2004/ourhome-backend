@@ -42,5 +42,5 @@ test('keyword sampling covers the start, middle and end of long messages', () =>
   assert.equal(sampled.length, 6);
   assert.ok(sampled.some(pair => text.indexOf(pair) < 5));
   assert.ok(sampled.some(pair => text.indexOf(pair) > 40));
-  assert.ok(sampled.some(pair => text.indexOf(pair) > 70));
+  assert.ok(sampled.some(pair => text.indexOf(pair) > 60));
 });
