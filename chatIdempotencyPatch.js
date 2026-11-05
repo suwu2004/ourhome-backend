@@ -3,7 +3,10 @@
 const crypto = require('crypto');
 const express = require('express');
 
-const CACHE_TTL_MS = 15 * 60 * 1000;
+// Keep a paid Chat request id reserved long enough to catch delayed client or
+// transport replays. A 15-minute window was shorter than some slow Android/relay
+// recoveries and allowed the exact same request id to generate twice.
+const CACHE_TTL_MS = 60 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 300;
 const originalPost = express.application.post;
 const requests = new Map();
