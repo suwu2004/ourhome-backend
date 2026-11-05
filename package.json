@@ -29,5 +29,9 @@
   },
   "devDependencies": {
     "jszip": "^3.10.1"
+  },
+  "overrides": {
+    "qs": "6.17.1",
+    "@xmldom/xmldom": "0.8.15"
   }
 }
