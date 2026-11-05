@@ -18,7 +18,7 @@ function isMemoryRecallRelevant({
 }
 
 function sampleQueryBigrams(value, limit = 24) {
-  const text = String(value || '');
+  const text = String(value || '').normalize('NFKC').toLowerCase();
   const max = Math.max(1, Math.min(64, Number.parseInt(limit, 10) || 24));
   const unique = [];
   const seen = new Set();
