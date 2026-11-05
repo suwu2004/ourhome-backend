@@ -141,13 +141,22 @@ async function loadLedgerWindow(sessionId, settings) {
     maxRounds: settings.maxContextRounds,
     columns: 'id,role,content,attachment_name,attachment_type,attachment_summary,created_at',
   });
-  const recentKeep = selectRecentHistory(candidates, {
+  const selectionOptions = {
     maxRounds: settings.maxContextRounds,
     maxTokens: settings.maxContextTokens,
+  };
+  const recentKeep = selectRecentHistory(candidates, selectionOptions);
+  // The prompt may protect a few older recent-life facts in addition to the
+  // contiguous suffix. The rolling cursor must be based on that suffix, otherwise
+  // ordinary messages between a protected fact and the suffix can fall into a gap:
+  // they are absent from the prompt but also newer than the ledger cursor.
+  const contiguousWindow = selectRecentHistory(candidates, {
+    ...selectionOptions,
+    protectRecentFacts: false,
   });
   return {
     recentKeep,
-    cutoffId: safeId(recentKeep[0]?.id),
+    cutoffId: safeId(contiguousWindow[0]?.id || recentKeep[0]?.id),
   };
 }
 
@@ -368,7 +377,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function contextLedgerHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, context_ledger: 'rolling-summary-v5-semantic-fallback-attachments' };
+      body = { ...body, context_ledger: 'rolling-summary-v6-contiguous-cursor' };
     }
     return originalJson.call(this, body);
   };
