@@ -3356,12 +3356,14 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
   const MAX_TOOL_ROUNDS = 5;
   let currentMessages = messages;
   const textToolBridge = buildTextToolBridge(toolsParam);
-  let nativeToolsEnabled = Array.isArray(toolsParam) && toolsParam.length > 0;
-  // Some non-Claude relays silently ignore Anthropic native tool schemas instead
-  // of returning a compatibility error. Keep the compact text bridge enabled for
-  // those routes; Claude uses native tools first and falls back only on explicit
-  // compatibility errors.
+  // Non-Claude relays do not consistently implement Anthropic's native tool
+  // schema. Use the compact text protocol as the single transport for those
+  // models; sending both representations duplicated the same tool definitions
+  // in every prompt and pushed otherwise-small Chat requests over the payload cap.
+  // Claude keeps native tools first and falls back to the text protocol only when
+  // the provider explicitly rejects the native schema.
   let textBridgeEnabled = Boolean(gemini || !/claude/i.test(String(modelName || '')));
+  let nativeToolsEnabled = !textBridgeEnabled && Array.isArray(toolsParam) && toolsParam.length > 0;
 
   const callRound = async () => {
     const compatibleSystemPrompt = systemPrompt + (textBridgeEnabled ? textToolBridge : '');
