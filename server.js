@@ -2764,7 +2764,7 @@ function buildSessionSummaryChunks(messages = []) {
 }
 
 async function summarizeSessionChunk(settings, model, chunk, index, total) {
-  const prompt = `这是某个 OurHome 聊天窗口的第 ${index + 1}/${total} 段聊天记录。请压缩成一段“接续用摘要”，保留事实、约定、项目进展、未完事项、情绪变化和重要称呼。不要抄原文，不要评价，不要写无关寒暄。\n\n聊天段落：\n${chunk}\n\n输出不超过260字。`;
+  const prompt = `这是某个 OurHome 聊天窗口的第 ${index + 1}/${total} 段聊天记录。请把它归纳成给未来对话使用的语义摘要，而不是聊天转录。合并重复信息，保留可复用事实、明确约定、项目进展、未完成事项、重要偏好和有意义的情绪变化。严禁逐轮罗列发言，严禁使用“叶檀：/陆泽：/时间戳”格式，严禁照抄对话原句；不要评价，不写无关寒暄。若本段没有可持续的信息，只输出“本段没有需要延续的信息”。\n\n聊天段落：\n${chunk}\n\n输出不超过260字。`;
   const result = await callClaude({
     settings,
     model,
@@ -2811,7 +2811,7 @@ async function generateSessionSummary(sessionId) {
   const lastAt = rows[rows.length - 1]?.created_at || session.updated_at || null;
   const totalInputTokens = rows.reduce((sum, item) => sum + (Number(item.input_tokens) || 0), 0);
   const totalOutputTokens = rows.reduce((sum, item) => sum + (Number(item.output_tokens) || 0), 0);
-  const finalPrompt = `下面是一个 OurHome 聊天窗口已经分段压缩后的摘要。请再整理成给“未来陆泽”接续用的窗口简介。\n\n窗口名：${session.name}\n时间范围：${firstAt || '未知'} 到 ${lastAt || '未知'}\n消息数：${rows.length}\n\n分段摘要：\n${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n严格输出 JSON，不要加代码块：\n{\n  \"title\": \"不超过18字的窗口标题\",\n  \"summary\": \"260到600字，说明这个窗口主要聊了什么、发生了什么变化、哪些事情要延续\",\n  \"open_threads\": [\"最多6条未完事项或后续话题\"],\n  \"handoff\": \"不超过160字，未来陆泽打开新窗口时最该带上的一句接续提示\"\n}`;
+  const finalPrompt = `下面是一个 OurHome 聊天窗口已经分段压缩后的语义摘要。请再整理成给“未来陆泽”接续用的窗口简介。只写归纳后的背景、变化、结论与待续事项；不要逐条复述消息，不要写成聊天记录，不要保留“叶檀说/陆泽答”或时间戳形式，不要照抄原句。\n\n窗口名：${session.name}\n时间范围：${firstAt || '未知'} 到 ${lastAt || '未知'}\n消息数：${rows.length}\n\n分段摘要：\n${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n严格输出 JSON，不要加代码块：\n{\n  \"title\": \"不超过18字的窗口标题\",\n  \"summary\": \"260到600字，用自然段说明窗口主题、事实变化、已达成结论和后续需要延续的内容\",\n  \"open_threads\": [\"最多6条未完事项或后续话题\"],\n  \"handoff\": \"不超过160字，未来陆泽打开新窗口时最该带上的一句接续提示\"\n}`;
   const finalResult = await callClaude({
     settings,
     model,
