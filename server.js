@@ -67,6 +67,7 @@ const {
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse, shouldReplaceDailySummary } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
+const { buildSessionSummaryPrompt, normalizeSessionSummaryResult } = require('./sessionSummarySinglePass');
 const { isMemoryRecallRelevant, sampleQueryBigrams } = require('./memoryRecallScoring');
 const {
   shouldAnalyzeMemoryJournalTurn,
@@ -120,8 +121,6 @@ const WEATHER_REQUEST_TIMEOUT_MS = 8000;
 const WEATHER_REQUEST_ATTEMPTS = 2;
 const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
-const SESSION_SUMMARY_CHUNK_CHARS = 12_000;
-const SESSION_SUMMARY_MAX_CHUNKS = 36;
 const SESSION_SUMMARY_AUTO_MIN_MESSAGES = 12;
 const SESSION_SUMMARY_AUTO_MIN_TOKENS = 6000;
 const activeSessionSummaryJobs = new Set();
@@ -2734,60 +2733,67 @@ function parseJsonObject(text) {
   return null;
 }
 
-function sessionSummaryLine(message) {
-  const speaker = message.role === 'user' ? '叶檀' : '陆泽';
-  const time = message.created_at ? new Date(message.created_at).toISOString().replace('T', ' ').slice(0, 16) : '';
-  const content = compactLine(message.content, 760);
-  const attachmentName = compactLine(message.attachment_name, 100);
-  const attachmentSummary = compactLine(message.attachment_summary, 360);
-  const attachmentContext = [
-    attachmentName ? `附件：${attachmentName}` : '',
-    attachmentSummary ? `附件内容摘要：${attachmentSummary}` : '',
-  ].filter(Boolean).join('；');
-  return `${time} ${speaker}：${content}${attachmentContext ? `（${attachmentContext}）` : ''}`;
-}
+async function loadSessionSummaryMemoryContext(sessionId) {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const temporaryCutoff = new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString();
+  const dateKey = shanghaiDateKeyFromTime();
 
-function buildSessionSummaryChunks(messages = []) {
-  const chunks = [];
-  let current = '';
-  for (const message of messages) {
-    const line = `${sessionSummaryLine(message)}\n`;
-    if (current && current.length + line.length > SESSION_SUMMARY_CHUNK_CHARS) {
-      chunks.push(current.trim());
-      current = '';
+  const tasks = await Promise.all([
+    supabase.from('session_context_ledgers')
+      .select('summary, summarized_message_count, updated_at')
+      .eq('session_id', sessionId)
+      .maybeSingle(),
+    supabase.from('memories')
+      .select('summary, memory_tier, memory_kind, is_protected, weight, timestamp, last_confirmed_at, expires_at')
+      .neq('memory_tier', 'archived')
+      .or('expires_at.is.null,expires_at.gt.' + nowIso)
+      .order('is_protected', { ascending: false })
+      .order('weight', { ascending: false })
+      .limit(60),
+    supabase.from('memory_marks')
+      .select('mark_date, topic, emotion, summary, tags, importance, should_continue, status, created_at, updated_at, expires_at')
+      .in('status', ['active', 'continued'])
+      .gte('created_at', temporaryCutoff)
+      .or('expires_at.is.null,expires_at.gt.' + nowIso)
+      .order('importance', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(24),
+    supabase.from('daily_summaries')
+      .select('summary_date, summary, highlights, open_threads, mood')
+      .eq('summary_date', dateKey)
+      .maybeSingle(),
+  ]);
+
+  const labels = ['滚动账本', '核心与阶段记忆', '临时记忆', '今日摘要'];
+  const values = tasks.map((result, index) => {
+    if (result.error) {
+      console.warn('[memory:session-summary] ' + labels[index] + '读取失败，继续使用其他材料：' + result.error.message);
+      return null;
     }
-    current += line;
-  }
-  if (current.trim()) chunks.push(current.trim());
-  if (chunks.length <= SESSION_SUMMARY_MAX_CHUNKS) return chunks;
-
-  const keepHead = Math.floor(SESSION_SUMMARY_MAX_CHUNKS * 0.4);
-  const keepTail = SESSION_SUMMARY_MAX_CHUNKS - keepHead;
-  return [
-    ...chunks.slice(0, keepHead),
-    `（中间有 ${chunks.length - SESSION_SUMMARY_MAX_CHUNKS} 段很长的聊天。摘要时请在最终简介里标明：中段较长，已按首尾重点压缩。）`,
-    ...chunks.slice(-keepTail),
-  ];
-}
-
-async function summarizeSessionChunk(settings, model, chunk, index, total) {
-  const prompt = `这是某个 OurHome 聊天窗口的第 ${index + 1}/${total} 段聊天记录。请把它归纳成给未来对话使用的语义摘要，而不是聊天转录。合并重复信息，保留可复用事实、明确约定、项目进展、未完成事项、重要偏好和有意义的情绪变化。严禁逐轮罗列发言，严禁使用“叶檀：/陆泽：/时间戳”格式，严禁照抄对话原句；不要评价，不写无关寒暄。若本段没有可持续的信息，只输出“本段没有需要延续的信息”。\n\n聊天段落：\n${chunk}\n\n输出不超过260字。`;
-  const result = await callClaude({
-    settings,
-    model,
-    maxTokens: 520,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.35,
+    return result.data;
   });
-  return compactLine(extractText(result), 1200);
+
+  return {
+    rollingLedger: values[0]?.summary || '',
+    stableMemories: Array.isArray(values[1]) ? values[1] : [],
+    temporaryMemories: Array.isArray(values[2]) ? values[2] : [],
+    dailySummary: values[3] || null,
+  };
 }
 
 async function generateSessionSummary(sessionId) {
-  const [{ data: session, error: sessionError }, rows] = await Promise.all([
+  const [
+    { data: session, error: sessionError },
+    rows,
+    { data: existingSummary, error: existingSummaryError },
+  ] = await Promise.all([
     supabase.from('sessions').select('id, name, created_at, updated_at').eq('id', sessionId).maybeSingle(),
     loadVisibleMessagesForRollingSummary(sessionId),
+    supabase.from('session_summaries').select('*').eq('session_id', sessionId).maybeSingle(),
   ]);
   if (sessionError) throw sessionError;
+  if (existingSummaryError) throw existingSummaryError;
   if (!session) {
     const error = new Error('找不到这个聊天窗口');
     error.status = 404;
@@ -2799,44 +2805,51 @@ async function generateSessionSummary(sessionId) {
     throw error;
   }
 
+  const memoryContext = await loadSessionSummaryMemoryContext(sessionId);
   const settings = await runtimeConfig.loadSettings();
   const model = settings?.selected_model || 'claude-sonnet-4-6';
-  const chunks = buildSessionSummaryChunks(rows);
-  const chunkSummaries = [];
-  for (let index = 0; index < chunks.length; index += 1) {
-    chunkSummaries.push(await summarizeSessionChunk(settings, model, chunks[index], index, chunks.length));
-  }
-
   const firstAt = rows[0]?.created_at || session.created_at || null;
   const lastAt = rows[rows.length - 1]?.created_at || session.updated_at || null;
-  const totalInputTokens = rows.reduce((sum, item) => sum + (Number(item.input_tokens) || 0), 0);
-  const totalOutputTokens = rows.reduce((sum, item) => sum + (Number(item.output_tokens) || 0), 0);
-  const finalPrompt = `下面是一个 OurHome 聊天窗口已经分段压缩后的语义摘要。请再整理成给“未来陆泽”接续用的窗口简介。只写归纳后的背景、变化、结论与待续事项；不要逐条复述消息，不要写成聊天记录，不要保留“叶檀说/陆泽答”或时间戳形式，不要照抄原句。\n\n窗口名：${session.name}\n时间范围：${firstAt || '未知'} 到 ${lastAt || '未知'}\n消息数：${rows.length}\n\n分段摘要：\n${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n严格输出 JSON，不要加代码块：\n{\n  \"title\": \"不超过18字的窗口标题\",\n  \"summary\": \"260到600字，用自然段说明窗口主题、事实变化、已达成结论和后续需要延续的内容\",\n  \"open_threads\": [\"最多6条未完事项或后续话题\"],\n  \"handoff\": \"不超过160字，未来陆泽打开新窗口时最该带上的一句接续提示\"\n}`;
-  const finalResult = await callClaude({
+  const prompt = buildSessionSummaryPrompt({
+    mode: 'full',
+    sessionName: session.name,
+    firstAt,
+    lastAt,
+    totalMessages: rows.length,
+    messages: rows,
+    previousSummary: existingSummary?.summary || '',
+    rollingLedger: memoryContext.rollingLedger,
+    stableMemories: memoryContext.stableMemories,
+    temporaryMemories: memoryContext.temporaryMemories,
+    dailySummary: memoryContext.dailySummary,
+  });
+
+  // One provider request only. Invalid/truncated output is rejected; the previous
+  // summary and its checkpoint remain untouched.
+  const result = await callClaude({
     settings,
     model,
-    // Long sessions can produce a large JSON handoff; 1200 caused max_tokens truncation.
     maxTokens: 2400,
-    messages: [{ role: 'user', content: finalPrompt }],
-    temperature: 0.3,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.25,
+    purpose: 'session-summary-single-pass',
   });
-  const parsed = parseJsonObject(extractText(finalResult)) || {};
-  const title = compactLine(parsed.title, 80) || compactLine(session.name, 80) || '窗口简介';
-  const openThreads = Array.isArray(parsed.open_threads)
-    ? parsed.open_threads.map(item => compactLine(item, 160)).filter(Boolean).slice(0, 6)
-    : [];
-  const handoff = compactLine(parsed.handoff, 320);
-  const summaryText = compactLine(parsed.summary, 1600);
-  if (!summaryText) throw new Error('窗口简介没有返回有效摘要，保留现有简介不变');
+  if (result?.stop_reason === 'max_tokens') {
+    throw new Error('窗口简介模型输出达到上限，保留现有简介不变；本次不会重试或推进游标');
+  }
+  const parsed = parseJsonObject(extractText(result));
+  const normalized = normalizeSessionSummaryResult(parsed, session.name || '窗口简介');
   const body = [
-    summaryText,
-    openThreads.length ? `\n未完待续：\n${openThreads.map(item => `- ${item}`).join('\n')}` : '',
-    handoff ? `\n接续提示：${handoff}` : '',
+    normalized.summary,
+    normalized.open_threads.length ? '\n未完待续：\n' + normalized.open_threads.map(item => '- ' + item).join('\n') : '',
+    normalized.handoff ? '\n接续提示：' + normalized.handoff : '',
   ].filter(Boolean).join('\n');
 
+  const totalInputTokens = rows.reduce((sum, item) => sum + (Number(item.input_tokens) || 0), 0);
+  const totalOutputTokens = rows.reduce((sum, item) => sum + (Number(item.output_tokens) || 0), 0);
   const payload = {
     session_id: session.id,
-    title,
+    title: normalized.title,
     summary: body,
     message_count: rows.length,
     last_message_id: rows[rows.length - 1]?.id || null,
@@ -2849,9 +2862,9 @@ async function generateSessionSummary(sessionId) {
     .select('*')
     .single();
   if (error) throw error;
+  console.log('[memory:session-summary] full rebuild provider_calls=1 session=' + sessionId + ' messages=' + rows.length);
   return data;
 }
-
 
 async function loadVisibleMessagesForRollingSummary(sessionId, afterMessageId = null) {
   const pageSize = 1000;
@@ -2883,16 +2896,12 @@ async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
     .maybeSingle();
   if (summaryError) throw summaryError;
 
-  // Once a summary exists, only fetch messages written after its exclusive
-  // last_message_id checkpoint. The active context suffix remains in raw chat;
-  // the rolling summary only absorbs the older prefix that has fallen out.
+  // The summary checkpoint is exclusive. Only messages newer than it are eligible
+  // for this incremental pass; the live context suffix remains in raw chat.
   let rows;
   if (existingSummary?.last_message_id !== null && existingSummary?.last_message_id !== undefined) {
     rows = await loadVisibleMessagesForRollingSummary(sessionId, existingSummary.last_message_id);
   } else {
-    // Before the first summary exists, inspect only the bounded candidate window
-    // on ordinary turns. Load the full visible history only after the archive
-    // threshold is crossed, so long-running chats do not repeatedly scan all rows.
     const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, {
       maxRounds: options.maxRounds,
       maxTokens: options.maxTokens,
@@ -2920,14 +2929,6 @@ async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
     minTokens: SESSION_SUMMARY_AUTO_MIN_TOKENS,
   })) return null;
 
-  const settings = await runtimeConfig.loadSettings();
-  const model = settings?.selected_model || 'claude-sonnet-4-6';
-  const chunks = buildSessionSummaryChunks(archivedRows);
-  const chunkSummaries = [];
-  for (let index = 0; index < chunks.length; index += 1) {
-    chunkSummaries.push(await summarizeSessionChunk(settings, model, chunks[index], index, chunks.length));
-  }
-
   const { data: session, error: sessionError } = await supabase.from('sessions')
     .select('id, name')
     .eq('id', sessionId)
@@ -2935,55 +2936,54 @@ async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
   if (sessionError) throw sessionError;
   if (!session) return null;
 
-  const finalPrompt = `下面是 OurHome 当前聊天窗口的滚动总结任务。请把“此前已保存的窗口简介”和“这次新归档的聊天摘要”合并成一份新的接续简介，旧摘要中已经过时的计划要根据新聊天修正，不要重复堆叠。
+  const memoryContext = await loadSessionSummaryMemoryContext(sessionId);
+  const settings = await runtimeConfig.loadSettings();
+  const model = settings?.selected_model || 'claude-sonnet-4-6';
+  const firstAt = archivedRows[0]?.created_at || null;
+  const lastAt = archivedRows[archivedRows.length - 1]?.created_at || null;
+  const totalMessageCount = (Number(existingSummary?.message_count) || 0) + archivedRows.length;
+  const prompt = buildSessionSummaryPrompt({
+    mode: 'incremental',
+    sessionName: session.name,
+    firstAt,
+    lastAt,
+    totalMessages: totalMessageCount,
+    messages: archivedRows,
+    previousSummary: existingSummary?.summary || '',
+    rollingLedger: memoryContext.rollingLedger,
+    stableMemories: memoryContext.stableMemories,
+    temporaryMemories: memoryContext.temporaryMemories,
+    dailySummary: memoryContext.dailySummary,
+  });
 
-窗口名：${session.name || '日常'}
-本次新增归档：${archivedRows.length} 条消息
-此前窗口简介：
-${existingSummary?.summary || '（尚无此前简介）'}
-
-本次新增分段摘要：
-${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}
-
-请保留稳定事实、重要约定、项目进度、关系变化、明确偏好和仍待继续的话题；删除已完成事项和重复内容。不要抄聊天原句，不要把猜测写成事实。严格输出 JSON，不要加代码块：
-{
-  "title": "不超过18字的窗口标题",
-  "summary": "260到700字，作为未来聊天接续用的累计总结",
-  "open_threads": ["最多6条仍未完成的事项"],
-  "handoff": "不超过160字，未来陆泽最需要注意的接续提示"
-}`;
-  const finalResult = await callClaude({
+  // Exactly one model call for this update. Never advance the exclusive checkpoint
+  // unless a complete, schema-valid summary has been stored successfully.
+  const result = await callClaude({
     settings,
     model,
-    maxTokens: 1400,
-    messages: [{ role: 'user', content: finalPrompt }],
+    maxTokens: 2400,
+    messages: [{ role: 'user', content: prompt }],
     temperature: 0.25,
+    purpose: 'session-summary-single-pass',
   });
-  const parsed = parseJsonObject(extractText(finalResult)) || {};
-  const summaryText = compactLine(parsed.summary, 1600);
-  if (!summaryText) throw new Error('滚动窗口总结没有返回有效摘要，保留上一份简介不变');
-
-  const title = compactLine(parsed.title, 80)
-    || existingSummary?.title
-    || compactLine(session.name, 80)
-    || '窗口简介';
-  const openThreads = Array.isArray(parsed.open_threads)
-    ? parsed.open_threads.map(item => compactLine(item, 160)).filter(Boolean).slice(0, 6)
-    : [];
-  const handoff = compactLine(parsed.handoff, 320);
+  if (result?.stop_reason === 'max_tokens') {
+    throw new Error('窗口简介模型输出达到上限，保留上一份简介；本次不会重试或推进游标');
+  }
+  const parsed = parseJsonObject(extractText(result));
+  const normalized = normalizeSessionSummaryResult(parsed, existingSummary?.title || session.name || '窗口简介');
   const body = [
-    summaryText,
-    openThreads.length ? `\n未完待续：\n${openThreads.map(item => `- ${item}`).join('\n')}` : '',
-    handoff ? `\n接续提示：${handoff}` : '',
+    normalized.summary,
+    normalized.open_threads.length ? '\n未完待续：\n' + normalized.open_threads.map(item => '- ' + item).join('\n') : '',
+    normalized.handoff ? '\n接续提示：' + normalized.handoff : '',
   ].filter(Boolean).join('\n');
 
   const addedInputTokens = archivedRows.reduce((sum, item) => sum + (Number(item.input_tokens) || 0), 0);
   const addedOutputTokens = archivedRows.reduce((sum, item) => sum + (Number(item.output_tokens) || 0), 0);
   const payload = {
     session_id: session.id,
-    title,
+    title: normalized.title,
     summary: body,
-    message_count: (Number(existingSummary?.message_count) || 0) + archivedRows.length,
+    message_count: totalMessageCount,
     last_message_id: archivedRows[archivedRows.length - 1]?.id || existingSummary?.last_message_id || null,
     input_tokens: (Number(existingSummary?.input_tokens) || 0) + addedInputTokens || null,
     output_tokens: (Number(existingSummary?.output_tokens) || 0) + addedOutputTokens || null,
@@ -2994,7 +2994,7 @@ ${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}
     .select('*')
     .single();
   if (error) throw error;
-  console.log(`[memory:session-summary] updated session=${sessionId} archived=${archivedRows.length} total=${payload.message_count}`);
+  console.log('[memory:session-summary] incremental update provider_calls=1 session=' + sessionId + ' archived=' + archivedRows.length + ' total=' + payload.message_count);
   return data;
 }
 
