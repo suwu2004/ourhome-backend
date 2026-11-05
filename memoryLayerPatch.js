@@ -169,20 +169,18 @@ function supabaseHeaders(key, prefer = '') {
   return headers;
 }
 
-async function archiveStaleWorkingMemory(now = new Date()) {
+async function expireElapsedWorkingMemory(now = new Date()) {
   const baseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const key = process.env.SUPABASE_KEY || '';
-  if (!baseUrl || !key || typeof originalFetch !== 'function') return { scanned: 0, archived: 0 };
+  if (!baseUrl || !key || typeof originalFetch !== 'function') return { scanned: 0, expired: 0 };
 
-  const cutoff = new Date(now.getTime() - EXACT_THREAD_WINDOW_MS).toISOString();
+  // The 72-hour window is for chat retrieval and thread matching, not data retention.
+  // Expire automatic marks only after their row-specific expires_at deadline.
   const query = new URL(`${baseUrl}/rest/v1/memory_marks`);
-  query.searchParams.set('select', 'id,metadata');
+  query.searchParams.set('select', 'id,metadata,expires_at');
   query.searchParams.set('status', 'in.(active,continued)');
-  // All automatic journal marks are short-lived working context, not only open tasks.
-  // Archive should_continue=false near-state notes too, so they do not remain active
-  // after the 72-hour retrieval window. Manual notes are protected by metadata filter.
-  query.searchParams.set('updated_at', `lt.${cutoff}`);
-  query.searchParams.set('order', 'updated_at.asc');
+  query.searchParams.set('expires_at', `lte.${now.toISOString()}`);
+  query.searchParams.set('order', 'expires_at.asc');
   query.searchParams.set('limit', String(STALE_WORKING_MEMORY_LIMIT));
 
   const staleResponse = await originalFetch(query.toString(), {
@@ -191,14 +189,16 @@ async function archiveStaleWorkingMemory(now = new Date()) {
   });
   if (!staleResponse.ok) {
     const detail = await staleResponse.text().catch(() => '');
-    throw new Error(`working-memory stale lookup failed (${staleResponse.status}) ${detail}`.trim());
+    throw new Error(`working-memory expiry lookup failed (${staleResponse.status}) ${detail}`.trim());
   }
   const rows = await staleResponse.json().catch(() => []);
   const autoIds = (Array.isArray(rows) ? rows : [])
-    .filter(row => Boolean(row?.metadata?.assistant_message_id))
+    .filter(row => Boolean(row?.metadata?.assistant_message_id)
+      && Number.isFinite(Date.parse(row?.expires_at || ''))
+      && Date.parse(row.expires_at) <= now.getTime())
     .map(row => String(row.id || '').trim())
     .filter(Boolean);
-  if (!autoIds.length) return { scanned: Array.isArray(rows) ? rows.length : 0, archived: 0 };
+  if (!autoIds.length) return { scanned: Array.isArray(rows) ? rows.length : 0, expired: 0 };
 
   const patchUrl = new URL(`${baseUrl}/rest/v1/memory_marks`);
   patchUrl.searchParams.set('id', `in.(${autoIds.join(',')})`);
@@ -207,17 +207,16 @@ async function archiveStaleWorkingMemory(now = new Date()) {
     method: 'PATCH',
     headers: supabaseHeaders(key, 'return=minimal'),
     body: JSON.stringify({
-      status: 'archived',
-      should_continue: false,
+      status: 'expired',
       settled_at: settledAt,
     }),
   });
   if (!patchResponse.ok) {
     const detail = await patchResponse.text().catch(() => '');
-    throw new Error(`working-memory stale archive failed (${patchResponse.status}) ${detail}`.trim());
+    throw new Error(`working-memory expiry update failed (${patchResponse.status}) ${detail}`.trim());
   }
-  console.info(`[memory:working] archived ${autoIds.length} automatic notes older than the 72h working window`);
-  return { scanned: Array.isArray(rows) ? rows.length : 0, archived: autoIds.length };
+  console.info(`[memory:working] expired ${autoIds.length} automatic notes after their configured retention period`);
+  return { scanned: Array.isArray(rows) ? rows.length : 0, expired: autoIds.length };
 }
 
 async function runMemoryConsolidation() {
@@ -242,9 +241,9 @@ async function runMemoryConsolidation() {
 }
 
 async function runMemoryMaintenance(now = new Date()) {
-  const archived = await archiveStaleWorkingMemory(now);
+  const expired = await expireElapsedWorkingMemory(now);
   const consolidation = await runMemoryConsolidation();
-  return { archived, consolidation };
+  return { expired, consolidation };
 }
 
 if (typeof originalFetch === 'function') {
@@ -289,7 +288,7 @@ try {
         ...body,
         memory_layers: 'model-owned-working-memory-v4',
         working_memory_dedup: 'rolling-thread-v3-cross-session',
-        working_memory_lifecycle: 'auto-archive-all-journal-marks-after-72h-v2',
+        working_memory_lifecycle: 'expire-at-configured-retention-v3',
       };
     }
     return originalJson.call(this, body);
@@ -309,7 +308,7 @@ module.exports = {
   updateWorkingMemoryThread,
   rollupJournalWorkingMemory,
   supabaseHeaders,
-  archiveStaleWorkingMemory,
+  expireElapsedWorkingMemory,
   runMemoryConsolidation,
   runMemoryMaintenance,
 };

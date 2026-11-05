@@ -73,19 +73,30 @@ test('记忆标记约束接受后台整理使用的 expired 状态', () => {
   assert.doesNotMatch(expiredStatusMigration, /delete\s+from\s+public\.memory_marks/i);
 });
 
-test('所有自动临时记忆超过 72 小时后只归档不删除，手工记忆不受影响', () => {
-  assert.match(memoryPatch, /archiveStaleWorkingMemory/);
-  assert.match(memoryPatch, /updated_at.*lt\.\$\{cutoff\}/s);
+test('自动临时记忆按各自 expires_at 到期，不再在 72 小时后统一归档', () => {
+  assert.match(memoryPatch, /expireElapsedWorkingMemory/);
+  assert.match(memoryPatch, /expires_at.*lte\.\$\{now\.toISOString\(\)\}/s);
   assert.match(memoryPatch, /metadata\?\.assistant_message_id/);
-  assert.match(memoryPatch, /status: 'archived'/);
-  assert.match(memoryPatch, /should_continue: false/);
-  assert.match(memoryPatch, /working_memory_lifecycle: 'auto-archive-all-journal-marks-after-72h-v2'/);
-  const archiver = memoryPatch.slice(
-    memoryPatch.indexOf('async function archiveStaleWorkingMemory'),
+  assert.match(memoryPatch, /status: 'expired'/);
+  assert.doesNotMatch(memoryPatch, /updated_at.*lt\.\$\{cutoff\}/s);
+  assert.match(memoryPatch, /working_memory_lifecycle: 'expire-at-configured-retention-v3'/);
+  const expiry = memoryPatch.slice(
+    memoryPatch.indexOf('async function expireElapsedWorkingMemory'),
     memoryPatch.indexOf('async function runMemoryConsolidation'),
   );
-  assert.doesNotMatch(archiver, /searchParams\.set\('should_continue'/);
+  assert.doesNotMatch(expiry, /should_continue.*false/);
   assert.doesNotMatch(memoryPatch, /DELETE[^\n]*memory_marks/i);
+});
+
+test('memory-log separates active context from archived history and returns daily summaries', () => {
+  const route = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
+    .split("app.get('/memory-log'")[1]
+    .split("app.patch('/memory-marks/:id'")[0];
+  assert.match(route, /\.in\('status', \['active', 'continued'\]\)/);
+  assert.match(route, /\.in\('status', \['archived', 'expired', 'resolved'\]\)/);
+  assert.match(route, /historyMarks: historyMarks \|\| \[\]/);
+  assert.match(route, /summaries: summaries \|\| \[\]/);
+  assert.doesNotMatch(route, /\.eq\('should_continue', true\)/);
 });
 
 test('生产启动只走 node server.js，由 runtimeConfig 统一加载 runtimeBootstrap', () => {

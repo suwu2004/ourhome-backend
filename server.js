@@ -4915,7 +4915,8 @@ app.get('/memory-log', async (req, res) => {
     startDate.setUTCDate(startDate.getUTCDate() - days + 1);
     const startKey = startDate.toISOString().slice(0, 10);
 
-    const [{ data: summaries, error: summariesError }, { data: marks, error: marksError }] = await Promise.all([
+    const now = new Date().toISOString();
+    const [{ data: summaries, error: summariesError }, { data: marks, error: marksError }, { data: historyMarks, error: historyError }] = await Promise.all([
       supabase.from('daily_summaries')
         .select('*')
         .gte('summary_date', startKey)
@@ -4923,15 +4924,21 @@ app.get('/memory-log', async (req, res) => {
         .order('summary_date', { ascending: false }),
       supabase.from('memory_marks')
         .select('*')
-        .eq('should_continue', true)
         .in('status', ['active', 'continued'])
         .gte('mark_date', startKey)
         .lte('mark_date', date)
-        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+        .or(`expires_at.is.null,expires_at.gt.${now}`)
         .order('created_at', { ascending: false })
-        .limit(40),
+        .limit(100),
+      supabase.from('memory_marks')
+        .select('*')
+        .in('status', ['archived', 'expired', 'resolved'])
+        .gte('mark_date', startKey)
+        .lte('mark_date', date)
+        .order('created_at', { ascending: false })
+        .limit(200),
     ]);
-    const firstError = summariesError || marksError;
+    const firstError = summariesError || marksError || historyError;
     if (firstError) return res.status(500).json({ error: firstError.message });
 
     res.json({
@@ -4940,6 +4947,7 @@ app.get('/memory-log', async (req, res) => {
       todaySummary: (summaries || []).find(item => item.summary_date === date) || null,
       events: [],
       openMarks: marks || [],
+      historyMarks: historyMarks || [],
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
