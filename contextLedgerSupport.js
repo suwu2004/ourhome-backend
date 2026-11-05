@@ -160,29 +160,74 @@ function buildLedgerUpdatePrompt(existingSummary, rows, meta = {}) {
 // plus the newest overflow transcript, then trims the middle when necessary. This
 // guarantees that an ordinary Chat turn never silently spends the user's current
 // (possibly expensive) model merely to maintain hidden context.
-function parseLedgerEntries(value) {
-  const text = String(value || '');
-  const marker = /\[历史时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*(?:叶檀|陆泽)：/g;
-  const matches = [...text.matchAll(marker)];
-  if (!matches.length) {
-    const legacy = compactText(text, 900);
-    return legacy ? [{ text: legacy, index: 0 }] : [];
+function splitLedgerParagraph(value, maxChars = 520) {
+  const text = compactText(value);
+  if (!text) return [];
+  const sentences = text.split(/(?<=[。！？!?；;])\s*/u).filter(Boolean);
+  const output = [];
+  let current = '';
+  for (const sentence of sentences.length ? sentences : [text]) {
+    if (sentence.length > maxChars) {
+      if (current) output.push(current);
+      current = '';
+      for (let offset = 0; offset < sentence.length; offset += maxChars) {
+        output.push(sentence.slice(offset, offset + maxChars));
+      }
+      continue;
+    }
+    if (current && current.length + sentence.length > maxChars) {
+      output.push(current);
+      current = sentence;
+    } else {
+      current += sentence;
+    }
   }
-  return matches.map((match, index) => {
-    const start = match.index;
-    const end = index + 1 < matches.length ? matches[index + 1].index : text.length;
-    return { text: compactText(text.slice(start, end).replace(/\s+/g, ' '), 520), index };
-  }).filter(entry => entry.text);
+  if (current) output.push(current);
+  return output.map(item => compactText(item, maxChars)).filter(Boolean);
 }
 
+function parseLedgerEntries(value) {
+  const text = String(value || '').trim();
+  if (!text) return [];
+  const marker = /\[历史时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*(?:叶檀|陆泽)：/g;
+  const matches = [...text.matchAll(marker)];
+  if (matches.length) {
+    return matches.map((match, index) => {
+      const start = match.index;
+      const end = index + 1 < matches.length ? matches[index + 1].index : text.length;
+      return { text: compactText(text.slice(start, end).replace(/\s+/g, ' '), 520), index };
+    }).filter(entry => entry.text);
+  }
+
+  // Model-generated ledgers are organized as headings and paragraphs, not
+  // timestamped transcript rows. Split them meaningfully rather than shrinking
+  // the whole existing summary to its first 900 characters.
+  const paragraphs = text.split(/\n{1,2}/).map(line => line.trim()).filter(Boolean);
+  const entries = [];
+  let section = '';
+  for (const paragraph of paragraphs) {
+    const isHeading = /^(?:【[^】]{1,80}】|#{1,4}\s|(?:重要事实|近况与情绪|决定与进展|待续话题|对话关联|长期偏好|关系与边界|项目进度)[：:]?$)/u.test(paragraph);
+    if (isHeading) {
+      section = paragraph;
+      entries.push({ text: paragraph, index: entries.length });
+      continue;
+    }
+    for (const chunk of splitLedgerParagraph(paragraph)) {
+      const entryText = section && !chunk.startsWith(section) ? section + ' ' + chunk : chunk;
+      entries.push({ text: compactText(entryText, 560), index: entries.length });
+    }
+  }
+  return entries;
+}
 function ledgerEntryScore(value) {
   const text = String(value || '');
   const roleScore = /叶檀：/.test(text) ? 4 : /陆泽：/.test(text) ? 2 : 1;
-  const detailScore = /(?:今天|昨天|前天|刚刚|刚才|早上|上午|中午|下午|晚上|最近|目前|现在|已经|正在|决定|选择|计划|准备|打算|完成|开始|结束|遇到|发现|担心|希望|需要|不喜欢|讨厌|喜欢|重要|约定|答应|项目|工作|学校|教学|论文|部署|报错|修复|数据库|Supabase|GitHub|Render|OurHome|家人|妈妈|爸爸|身体|情绪|开心|难过|焦虑|委屈|压力|工资|收入|课程|学生|考试)/iu.test(text) ? 5 : 0;
+  const detailScore = /(?:今天|昨天|前天|刚刚|刚才|早上|上午|中午|下午|晚上|最近|目前|现在|已经|正在|决定|选择|计划|准备|打算|完成|开始|结束|遇到|发现|担心|希望|需要|不喜欢|讨厌|喜欢|重要|约定|答应|项目|工作|学校|教学|论文|部署|报错|修复|数据库|Supabase|GitHub|Render|OurHome|家人|妈妈|爸爸|身体|情绪|开心|难过|焦虑|委屈|压力|工资|收入|课程|学生|考试|偏好|边界|称呼|人设|习惯|权限|规则|待办|进展|摘要|上下文)/iu.test(text) ? 5 : 0;
+  const headingScore = /(?:^【|^#{1,4}\s|重要事实|近况与情绪|决定与进展|待续话题|长期偏好|关系与边界)/u.test(text) ? 2 : 0;
   const lengthScore = text.length >= 80 ? 2 : text.length >= 24 ? 1 : 0;
   const timeScore = /\[历史时间：\d{4}-\d{2}-\d{2}/.test(text) ? 1 : 0;
   const fillerPenalty = text.length < 40 && /(?:亲亲|抱抱|蹭蹭|晚安|早安|爱你|嘿嘿|哈哈|嗯嗯)/u.test(text) ? 3 : 0;
-  return roleScore + detailScore + lengthScore + timeScore - fillerPenalty;
+  return roleScore + detailScore + headingScore + lengthScore + timeScore - fillerPenalty;
 }
 
 // Deterministic fallback used only when no dedicated summarizer is configured or
@@ -192,12 +237,12 @@ function ledgerEntryScore(value) {
 function localLedgerSummary(existingSummary, rows = []) {
   const previous = parseLedgerEntries(existingSummary);
   const incoming = (Array.isArray(rows) ? rows : [])
-    .map(row => ({ text: compactText(rowText(row).replace(/\s+/g, ' '), 520), index: previous.length }))
+    .map(row => ({ text: compactText(rowText(row).replace(/\s+/g, ' '), 520) }))
     .filter(entry => entry.text);
   const all = [...previous, ...incoming];
   const seen = new Set();
   const unique = all.filter(entry => {
-    const key = entry.text.toLocaleLowerCase('zh-CN').replace(/\s+/g, ' ').slice(0, 260);
+    const key = entry.text.toLocaleLowerCase('zh-CN').replace(/\s+/g, ' ');
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -208,24 +253,25 @@ function localLedgerSummary(existingSummary, rows = []) {
     sourceIndex: index,
     score: ledgerEntryScore(entry.text),
   }));
-  const recent = ranked.slice(-16);
-  const important = [...ranked]
-    .sort((left, right) => right.score - left.score || right.sourceIndex - left.sourceIndex)
-    .slice(0, 22);
-  const chosen = new Map();
-  for (const entry of [...recent, ...important]) chosen.set(entry.sourceIndex, entry);
-  const ordered = [...chosen.values()].sort((left, right) => left.sourceIndex - right.sourceIndex);
-
   const header = '【滚动接续摘要｜本地提取兜底】\n保留高信息量的历史片段；原始聊天记录仍完整保存在消息历史中。';
-  const lines = [];
+  const selected = [];
   let used = header.length;
-  for (const entry of ordered) {
+
+  // Spend the fixed summary budget on the strongest details first. Restore
+  // chronological order after selection so older lines cannot crowd out newer
+  // facts merely because they appear earlier in the source.
+  const prioritized = [...ranked].sort((left, right) => (
+    right.score - left.score || right.sourceIndex - left.sourceIndex
+  ));
+  for (const entry of prioritized) {
     const line = '- ' + entry.text.slice(0, 520);
     if (used + line.length + 1 > MAX_LEDGER_CHARS) continue;
-    lines.push(line);
+    selected.push({ ...entry, line });
     used += line.length + 1;
   }
-  return compactText(header + '\n' + lines.join('\n'), MAX_LEDGER_CHARS);
+
+  selected.sort((left, right) => left.sourceIndex - right.sourceIndex);
+  return compactText(header + '\n' + selected.map(entry => entry.line).join('\n'), MAX_LEDGER_CHARS);
 }
 function buildBridgeText(rows = [], maxChars = LEDGER_BRIDGE_CHARS) {
   const list = Array.isArray(rows) ? rows : [];
