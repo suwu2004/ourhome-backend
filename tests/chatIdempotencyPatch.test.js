@@ -4,9 +4,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const {
+  CACHE_TTL_MS,
   chatRequestFingerprint,
   normalizeRequestId,
 } = require('../chatIdempotencyPatch');
+
+test('paid Chat idempotency window covers delayed request replays', () => {
+  assert.equal(CACHE_TTL_MS, 60 * 60 * 1000);
+});
 
 test('Chat request ids accept only compact safe tokens', () => {
   assert.equal(normalizeRequestId('chat-12345678'), 'chat-12345678');
