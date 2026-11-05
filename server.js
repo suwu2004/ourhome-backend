@@ -2730,7 +2730,14 @@ function parseJsonObject(text) {
 function sessionSummaryLine(message) {
   const speaker = message.role === 'user' ? '叶檀' : '陆泽';
   const time = message.created_at ? new Date(message.created_at).toISOString().replace('T', ' ').slice(0, 16) : '';
-  return `${time} ${speaker}：${compactLine(message.content, 900)}`;
+  const content = compactLine(message.content, 760);
+  const attachmentName = compactLine(message.attachment_name, 100);
+  const attachmentSummary = compactLine(message.attachment_summary, 360);
+  const attachmentContext = [
+    attachmentName ? `附件：${attachmentName}` : '',
+    attachmentSummary ? `附件内容摘要：${attachmentSummary}` : '',
+  ].filter(Boolean).join('；');
+  return `${time} ${speaker}：${content}${attachmentContext ? `（${attachmentContext}）` : ''}`;
 }
 
 function buildSessionSummaryChunks(messages = []) {
@@ -2772,7 +2779,7 @@ async function generateSessionSummary(sessionId) {
   const [{ data: session, error: sessionError }, { data: messages, error: messagesError }] = await Promise.all([
     supabase.from('sessions').select('id, name, created_at, updated_at').eq('id', sessionId).maybeSingle(),
     supabase.from('messages')
-      .select('id, role, content, created_at, input_tokens, output_tokens')
+      .select('id, role, content, attachment_name, attachment_summary, created_at, input_tokens, output_tokens')
       .eq('session_id', sessionId)
       .eq('visible', true)
       .order('created_at', { ascending: true }),
