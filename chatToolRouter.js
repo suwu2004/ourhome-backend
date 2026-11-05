@@ -90,6 +90,10 @@ function selectChatTools(tools, routingContext) {
     return tools.filter(tool => selected.has(tool?.name));
   }
 
+  // Keep initiative lightweight: ordinary chat may leave a note, while reading
+  // and deleting letters still require an explicit room-related intent.
+  selected.add('write_whisper');
+
   if (CHAT_HISTORY_RE.test(text)) {
     selected.add('search_chat_history');
   } else if (MEMORY_LOOKUP_RE.test(text)) {
