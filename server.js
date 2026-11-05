@@ -39,6 +39,7 @@ const {
 const {
   buildTextToolBridge,
   parseTextToolCalls,
+  finalizeToolLoopResult,
   stripTextToolMarkup,
   isToolCompatibilityError,
   hasImageContent,
@@ -3522,9 +3523,16 @@ async function runToolLoop({ settings, modelName, maxTokens, systemPrompt, messa
     recordThinking(result);
   }
 
+  // Do not leak a sixth tool request or an empty assistant message when the
+  // five-round cap is reached. Report completed work and leave remaining steps
+  // explicitly unexecuted without making another paid model call.
+  result = finalizeToolLoopResult(result, {
+    rounds,
+    maxRounds: MAX_TOOL_ROUNDS,
+    actionsPerformed,
+  });
+
   // Never persist or return a successful assistant turn with no usable text.
-  // Tool calls are handled above; reaching here with an empty final body is a provider
-  // anomaly and should surface as an error instead of creating an empty DB row.
   const finalHasToolUse = (result?.content || []).some(block => block?.type === 'tool_use');
   if (!extractText(result).trim() && !finalHasToolUse) {
     const error = new Error('模型返回了空正文，请重试。');
