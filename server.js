@@ -3015,17 +3015,25 @@ async function recordMemoryJournalTurn({
   const daily = analysis.daily_summary || {};
   const summary = compactLine(daily.summary, 1200);
   if (summary) {
+    const existingSummary = compactLine(existingContext.summary?.summary, 1200);
+    const existingMetadata = existingContext.summary?.metadata && typeof existingContext.summary.metadata === 'object'
+      ? existingContext.summary.metadata
+      : null;
+    const summaryUnchanged = summary === existingSummary;
+    const summaryMetadata = summaryUnchanged && existingMetadata
+      ? existingMetadata
+      : { source: 'chat_turn' };
     const { error: summaryError } = await supabase.from('daily_summaries').upsert({
       summary_date: dateKey,
       summary,
       highlights: normalizeTags(daily.highlights, 5).map(item => item.slice(0, 160)),
       open_threads: normalizeTags(daily.open_threads, 5).map(item => item.slice(0, 160)),
       mood: compactLine(daily.mood, 100) || null,
-      event_count: 0,
+      event_count: Number(existingContext.summary?.event_count) || 0,
       last_message_id: assistantMessageId ? String(assistantMessageId) : null,
       updated_at: now.toISOString(),
       generated_at: now.toISOString(),
-      metadata: { source: 'chat_turn' },
+      metadata: summaryMetadata,
     }, { onConflict: 'summary_date' });
     if (summaryError) persistenceErrors.push(`今日摘要: ${summaryError.message}`);
     else dailySummaryStored = true;
