@@ -15,7 +15,7 @@ const {
   localLedgerSummary,
   buildLedgerBlock,
   injectLedger,
-  providerText,
+  parseLedgerModelResponse,
   normalizeLedgerSummary,
 } = require('./contextLedgerSupport');
 
@@ -204,25 +204,33 @@ async function generateLedgerSummary(url, init, existingSummary, chunkRows, cove
     model,
     max_tokens: 1200,
     temperature: 0.2,
-    system: '你只负责维护隐藏的聊天接续账本。严格依据给出的旧聊天整理事实，不虚构，不输出对话回复，不输出思考过程。',
+    stream: false,
+    system: '你只负责维护隐藏的聊天接续摘要。严格依据给出的旧聊天整理事实，不虚构，不输出对话回复，不输出思考过程。',
     messages: [{ role: 'user', content: prompt }],
   };
   const headers = new Headers(init?.headers || undefined);
   headers.delete('content-length');
   headers.delete('anthropic-beta');
+  headers.set('Content-Type', 'application/json');
+  headers.set('Accept', 'application/json');
   headers.set('X-OurHome-Call-Purpose', 'context-ledger');
   const response = await previousFetch(url, {
     ...init,
+    method: 'POST',
     headers,
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(`账本模型返回 ${response.status}`);
-  const payload = await response.json();
-  const summary = normalizeLedgerSummary(providerText(payload));
-  if (!summary) throw new Error('账本模型返回空内容');
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error('账本模型返回 ' + response.status + (detail ? '：' + detail.slice(0, 240) : ''));
+  }
+  const rawBody = await response.text();
+  const contentType = response.headers?.get?.('content-type') || '';
+  const rawSummary = parseLedgerModelResponse(rawBody, contentType);
+  const summary = normalizeLedgerSummary(rawSummary);
+  if (!summary) throw new Error('账本模型响应中没有可用的文本摘要');
   return summary;
 }
-
 function retryBlocked(ledger) {
   const retryAt = ledger?.retry_after ? new Date(ledger.retry_after).getTime() : 0;
   return Number.isFinite(retryAt) && retryAt > Date.now();
@@ -249,9 +257,22 @@ async function prepareLedger(ctx, url, init, body) {
     const paidModel = configuredLedgerModel();
     const chunkLimit = paidModel ? PAID_LEDGER_MAX_CHUNKS_PER_TURN : LEDGER_MAX_CHUNKS_PER_TURN;
     const chunks = splitRowsIntoChunks(pending).slice(0, chunkLimit);
+    let failurePhase = 'summarize';
     try {
       for (const chunk of chunks) {
-        const nextSummary = await generateLedgerSummary(url, init, summary, chunk, coveredCount);
+        let summaryError = null;
+        let nextSummary = '';
+        try {
+          failurePhase = 'summarize';
+          nextSummary = await generateLedgerSummary(url, init, summary, chunk, coveredCount);
+        } catch (error) {
+          summaryError = error;
+          nextSummary = localLedgerSummary(summary, chunk);
+          console.warn('[context:ledger] model summary failed; using extractive fallback:', error.message);
+        }
+        if (!nextSummary) throw new Error('滚动摘要为空，未推进消息游标');
+
+        failurePhase = 'commit';
         const last = chunk[chunk.length - 1];
         const nextCount = coveredCount + chunk.length;
         const nextChars = coveredChars + rowsChars(chunk);
@@ -262,6 +283,8 @@ async function prepareLedger(ctx, url, init, body) {
           cursorId: safeId(last?.id),
           count: nextCount,
           chars: nextChars,
+          retryAfter: summaryError ? new Date(Date.now() + LEDGER_RETRY_MS).toISOString() : null,
+          errorText: summaryError ? '模型摘要失败，暂用本地提取式摘要：' + summaryError.message : null,
         });
         if (!committed) {
           ledger = await readLedger(ctx.sessionId);
@@ -276,8 +299,14 @@ async function prepareLedger(ctx, url, init, body) {
         cursorId = safeId(committed.summarized_through_message_id) || safeId(last?.id);
         coveredCount = Number(committed.summarized_message_count) || nextCount;
         coveredChars = Number(committed.summarized_chars) || nextChars;
+
+        if (summaryError) {
+          console.warn('[context:ledger] extractive fallback committed session=' + ctx.sessionId + ' through=' + cursorId + '; model retry is delayed');
+          break;
+        }
       }
-      console.log(`[context:ledger] mode=${paidModel ? `paid:${paidModel}` : 'local-zero-cost'} session=${ctx.sessionId} covered=${coveredCount}`);
+      const mode = paidModel ? 'model:' + paidModel : 'local-extractive';
+      console.log('[context:ledger] mode=' + mode + ' session=' + ctx.sessionId + ' covered=' + coveredCount);
     } catch (error) {
       const retryAfter = new Date(Date.now() + LEDGER_RETRY_MS).toISOString();
       try {
@@ -289,16 +318,15 @@ async function prepareLedger(ctx, url, init, body) {
           count: coveredCount,
           chars: coveredChars,
           retryAfter,
-          errorText: error.message,
+          errorText: failurePhase + ': ' + error.message,
         });
         if (failed) ledger = failed;
       } catch (commitError) {
         console.warn('[context:ledger] failed to save retry marker:', commitError.message);
       }
-      console.warn(`[context:ledger] refresh delayed session=${ctx.sessionId}:`, error.message);
+      console.warn('[context:ledger] refresh delayed phase=' + failurePhase + ' session=' + ctx.sessionId + ':', error.message);
     }
   }
-
   pending = await loadPendingOverflow(ctx.sessionId, {
     cursorId,
     cutoffId,
@@ -340,7 +368,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function contextLedgerHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, context_ledger: 'incremental-window-v3' };
+      body = { ...body, context_ledger: 'rolling-summary-v4-threshold32-token6000' };
     }
     return originalJson.call(this, body);
   };

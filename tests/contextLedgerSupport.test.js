@@ -5,6 +5,9 @@ const path = require('node:path');
 
 const {
   LEDGER_REFRESH_MESSAGE_DELTA,
+  LEDGER_REFRESH_TOKEN_DELTA,
+  estimateLedgerRowsTokens,
+  parseLedgerModelResponse,
   overflowRows,
   rowsAfterCursor,
   splitRowsIntoChunks,
@@ -74,7 +77,7 @@ test('隐藏账本默认绝不继承当前 Chat 模型，付费模式也一轮�
   assert.doesNotMatch(patchSource, /CONTEXT_LEDGER_MODEL\s*\|\|\s*mainBody/);
   assert.match(patchSource, /PAID_LEDGER_MAX_CHUNKS_PER_TURN\s*=\s*1/);
   assert.match(patchSource, /X-OurHome-Call-Purpose[^\n]*context-ledger/);
-  assert.match(patchSource, /incremental-window-v3/);
+  assert.match(patchSource, /rolling-summary-v4-threshold32-token6000/);
   assert.match(patchSource, /loadPendingOverflow/);
   assert.doesNotMatch(patchSource, /\.range\(offset/);
 });
@@ -95,4 +98,43 @@ test('注入块包含滚动账本和紧邻最近窗口的桥接旧消息', () =>
 test('模型返回的账本会去掉代码块和内部控制标签', () => {
   const value = normalizeLedgerSummary('```text\n事实 A\n<intimacy_control action="stop"/>\n```');
   assert.equal(value, '事实 A');
+});
+
+
+test('滚动摘要按 32 条消息或约 6000 tokens 任一条件触发', () => {
+  const ledger = { summary: '已有摘要', summarized_through_message_id: 100 };
+  const small = Array.from({ length: LEDGER_REFRESH_MESSAGE_DELTA - 1 }, (_, index) => row(101 + index, 'user', '短消息'));
+  assert.equal(shouldRefreshLedger(ledger, small), false);
+  const countTriggered = [...small, row(999, 'assistant', '再增加一条')];
+  assert.equal(countTriggered.length, 32);
+  assert.equal(shouldRefreshLedger(ledger, countTriggered), true);
+
+  const tokenHeavy = [row(1001, 'user', '中'.repeat(LEDGER_REFRESH_TOKEN_DELTA))];
+  assert.ok(estimateLedgerRowsTokens(tokenHeavy) >= LEDGER_REFRESH_TOKEN_DELTA);
+  assert.equal(shouldRefreshLedger(ledger, tokenHeavy), true);
+});
+
+test('账本模型响应兼容 Anthropic/OpenAI JSON 与 SSE 文本增量', () => {
+  const json = JSON.stringify({ content: [{ type: 'text', text: '这是滚动摘要' }] });
+  assert.equal(parseLedgerModelResponse(json, 'application/json'), '这是滚动摘要');
+
+  const sse = [
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"第一段"}}',
+    'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"第二段"}}',
+    'data: [DONE]',
+    '',
+  ].join('\n');
+  assert.equal(parseLedgerModelResponse(sse, 'text/event-stream'), '第一段第二段');
+});
+
+test('本地兜底生成有重点的摘录摘要，而不是简单截取首尾', () => {
+  const summary = localLedgerSummary('已有稳定事实', [
+    row(201, 'user', '今天上午我们确定了 OurHome 的摘要要保留原始聊天，并记录重要决定。'),
+    row(202, 'assistant', '接下来先修复上下文账本，再跑测试。'),
+  ]);
+  assert.match(summary, /已有稳定事实/);
+  assert.match(summary, /今天上午/);
+  assert.match(summary, /修复上下文账本/);
+  assert.doesNotMatch(summary, /intimacy_control/);
 });
