@@ -70,7 +70,7 @@ const {
   isMemoryContinuationCue,
   shouldAnalyzeMemoryJournalContinuation,
 } = require('./memoryJournalTrigger');
-const { selectRecentHistory } = require('./chatContextWindow');
+const { selectRecentHistory, findArchivedHistoryPrefix, shouldSummarizeArchivedMessages } = require('./chatContextWindow');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
 const { normalizeExplicitMemorySummary, isExactMemoryDuplicate } = require('./explicitMemorySave');
@@ -119,6 +119,9 @@ const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
 const SESSION_SUMMARY_CHUNK_CHARS = 12_000;
 const SESSION_SUMMARY_MAX_CHUNKS = 36;
+const SESSION_SUMMARY_AUTO_MIN_MESSAGES = 12;
+const SESSION_SUMMARY_AUTO_MIN_TOKENS = 6000;
+const activeSessionSummaryJobs = new Set();
 let uploadBucketReady = false;
 
 async function ensureUploadBucket() {
@@ -2838,6 +2841,142 @@ async function generateSessionSummary(sessionId) {
   return data;
 }
 
+
+async function loadVisibleMessagesForRollingSummary(sessionId, afterMessageId = null) {
+  const pageSize = 1000;
+  const rows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    let query = supabase.from('messages')
+      .select('id, role, content, attachment_name, attachment_summary, created_at, input_tokens, output_tokens')
+      .eq('session_id', sessionId)
+      .eq('visible', true);
+    if (afterMessageId !== null && afterMessageId !== undefined && String(afterMessageId).trim()) {
+      query = query.gt('id', afterMessageId);
+    }
+    const { data, error } = await query
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
+}
+
+async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
+  const { data: existingSummary, error: summaryError } = await supabase.from('session_summaries')
+    .select('*')
+    .eq('session_id', sessionId)
+    .maybeSingle();
+  if (summaryError) throw summaryError;
+
+  // Once a summary exists, only fetch messages written after its exclusive
+  // last_message_id checkpoint. The active context suffix remains in raw chat;
+  // the rolling summary only absorbs the older prefix that has fallen out.
+  const rows = await loadVisibleMessagesForRollingSummary(sessionId, existingSummary?.last_message_id ?? null);
+  if (!rows.length) return null;
+
+  const contextHistory = selectRecentHistory(rows, {
+    maxRounds: options.maxRounds,
+    maxTokens: options.maxTokens,
+  });
+  const archivedRows = findArchivedHistoryPrefix(rows, contextHistory);
+  if (!shouldSummarizeArchivedMessages(archivedRows, {
+    minMessages: SESSION_SUMMARY_AUTO_MIN_MESSAGES,
+    minTokens: SESSION_SUMMARY_AUTO_MIN_TOKENS,
+  })) return null;
+
+  const settings = await runtimeConfig.loadSettings();
+  const model = settings?.selected_model || 'claude-sonnet-4-6';
+  const chunks = buildSessionSummaryChunks(archivedRows);
+  const chunkSummaries = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    chunkSummaries.push(await summarizeSessionChunk(settings, model, chunks[index], index, chunks.length));
+  }
+
+  const { data: session, error: sessionError } = await supabase.from('sessions')
+    .select('id, name')
+    .eq('id', sessionId)
+    .maybeSingle();
+  if (sessionError) throw sessionError;
+  if (!session) return null;
+
+  const finalPrompt = `下面是 OurHome 当前聊天窗口的滚动总结任务。请把“此前已保存的窗口简介”和“这次新归档的聊天摘要”合并成一份新的接续简介，旧摘要中已经过时的计划要根据新聊天修正，不要重复堆叠。
+
+窗口名：${session.name || '日常'}
+本次新增归档：${archivedRows.length} 条消息
+此前窗口简介：
+${existingSummary?.summary || '（尚无此前简介）'}
+
+本次新增分段摘要：
+${chunkSummaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}
+
+请保留稳定事实、重要约定、项目进度、关系变化、明确偏好和仍待继续的话题；删除已完成事项和重复内容。不要抄聊天原句，不要把猜测写成事实。严格输出 JSON，不要加代码块：
+{
+  "title": "不超过18字的窗口标题",
+  "summary": "260到700字，作为未来聊天接续用的累计总结",
+  "open_threads": ["最多6条仍未完成的事项"],
+  "handoff": "不超过160字，未来陆泽最需要注意的接续提示"
+}`;
+  const finalResult = await callClaude({
+    settings,
+    model,
+    maxTokens: 1400,
+    messages: [{ role: 'user', content: finalPrompt }],
+    temperature: 0.25,
+  });
+  const parsed = parseJsonObject(extractText(finalResult)) || {};
+  const summaryText = compactLine(parsed.summary, 1600);
+  if (!summaryText) throw new Error('滚动窗口总结没有返回有效摘要，保留上一份简介不变');
+
+  const title = compactLine(parsed.title, 80)
+    || existingSummary?.title
+    || compactLine(session.name, 80)
+    || '窗口简介';
+  const openThreads = Array.isArray(parsed.open_threads)
+    ? parsed.open_threads.map(item => compactLine(item, 160)).filter(Boolean).slice(0, 6)
+    : [];
+  const handoff = compactLine(parsed.handoff, 320);
+  const body = [
+    summaryText,
+    openThreads.length ? `\n未完待续：\n${openThreads.map(item => `- ${item}`).join('\n')}` : '',
+    handoff ? `\n接续提示：${handoff}` : '',
+  ].filter(Boolean).join('\n');
+
+  const addedInputTokens = archivedRows.reduce((sum, item) => sum + (Number(item.input_tokens) || 0), 0);
+  const addedOutputTokens = archivedRows.reduce((sum, item) => sum + (Number(item.output_tokens) || 0), 0);
+  const payload = {
+    session_id: session.id,
+    title,
+    summary: body,
+    message_count: (Number(existingSummary?.message_count) || 0) + archivedRows.length,
+    last_message_id: archivedRows[archivedRows.length - 1]?.id || existingSummary?.last_message_id || null,
+    input_tokens: (Number(existingSummary?.input_tokens) || 0) + addedInputTokens || null,
+    output_tokens: (Number(existingSummary?.output_tokens) || 0) + addedOutputTokens || null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from('session_summaries')
+    .upsert(payload, { onConflict: 'session_id' })
+    .select('*')
+    .single();
+  if (error) throw error;
+  console.log(`[memory:session-summary] updated session=${sessionId} archived=${archivedRows.length} total=${payload.message_count}`);
+  return data;
+}
+
+function scheduleAutomaticSessionSummary(sessionId, options = {}) {
+  const key = String(sessionId || '').trim();
+  if (!key || activeSessionSummaryJobs.has(key)) return;
+  activeSessionSummaryJobs.add(key);
+  setImmediate(() => {
+    maybeGenerateAutomaticSessionSummary(sessionId, options)
+      .catch(error => console.warn(`[memory:session-summary] background update failed for session ${key}:`, error.message))
+      .finally(() => activeSessionSummaryJobs.delete(key));
+  });
+}
+
 async function loadTodayMemoryContext(dateKey) {
   const now = new Date();
   const [{ data: summary }, { data: openMarks }] = await Promise.all([
@@ -3113,7 +3252,7 @@ AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动�
 写邮件时可以参考最近聊天、记忆、信件与日记。普通生活、感受、关系、项目近况、观点和往事都由你自己决定是否表达，不能仅因为内容来自 OurHome 就放弃表达。系统只守住明确底线：不得外发设置与密钥、账号凭证、精确身份标识与联系方式、住址定位和实时行程、金融账户与详细余额、详细健康医疗与亲密性内容、第三人的非公开信息、整段私聊导出或未经同意的私人附件。普通称呼、感情表达、关系经历和概括后的共同回忆不属于禁区。真正发送前必须通过独立隐私审查；审查失败或无法完成时不发送。`;
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
-async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
+async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, sessionId = null) {
   // 各块彼此独立，同时读取；核心记忆与相关记忆共用一个 memories 快照。
   const [
     memoryRecall,
@@ -3124,6 +3263,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
     musicRoomBlock,
     photoMemoryBlock,
     chatSharedRules,
+    { data: sessionSummary, error: sessionSummaryError },
   ] = await Promise.all([
     loadChatMemoryRecall(userMessage || ''),
     supabase.from('letters').select('category, author, title, content, created_at')
@@ -3141,9 +3281,16 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
       console.warn('Chat 共享规则读取失败:', error.message);
       return '';
     }),
+    sessionId
+      ? supabase.from('session_summaries').select('title, summary, message_count, last_message_id, updated_at').eq('session_id', sessionId).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
   ]);
   const protectedMemories = memoryRecall.protectedMemories;
   const memories = memoryRecall.relevantMemories;
+  if (sessionSummaryError) console.warn('当前窗口简介读取失败:', sessionSummaryError.message);
+  const sessionSummaryBlock = sessionSummary?.summary
+    ? `【当前窗口简介·早期聊天总结】\n${compactBlock(sessionSummary.summary, 2400)}\n这是一份对已归档早期聊天的压缩背景，不是逐字记录。当前消息、更新后的事实和叶檀明确的更正优先；不要把摘要中过时的计划当作仍有效事项。`
+    : '';
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
   const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(pinnedFavorites);
   const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
@@ -3157,6 +3304,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote) {
 
   let prompt = basePrompt + `\n\n${timeAwarenessPromptBlock()}`;
   if (todayMemoryBlock) prompt += `\n\n${todayMemoryBlock}`;
+  if (sessionSummaryBlock) prompt += `\n\n${sessionSummaryBlock}`;
   if (pinnedFavoritesBlock) prompt += `\n\n${pinnedFavoritesBlock}`;
   if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
   if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
@@ -4275,6 +4423,8 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
     }
 
     await supabase.from('sessions').update({ updated_at: new Date().toISOString() }).eq('id', target.session_id);
+    const { error: summaryInvalidationError } = await supabase.from('session_summaries').delete().eq('session_id', target.session_id);
+    if (summaryInvalidationError) console.warn('编辑聊天后清除旧窗口简介失败:', summaryInvalidationError.message);
 
     res.json({
       reply: replyText,
@@ -4314,6 +4464,10 @@ app.post('/messages/:id/rollback', async (req, res) => {
     if (hideError) return res.status(500).json({ error: hideError.message });
 
     const hiddenIds = (hiddenMessages || []).map(message => message.id);
+    if (hiddenIds.length) {
+      const { error: summaryInvalidationError } = await supabase.from('session_summaries').delete().eq('session_id', target.session_id);
+      if (summaryInvalidationError) console.warn('回溯聊天后清除旧窗口简介失败:', summaryInvalidationError.message);
+    }
     res.json({ success: true, hiddenIds, hiddenCount: hiddenIds.length });
   } catch (err) {
     console.error('回溯错误:', err);
@@ -6065,7 +6219,7 @@ app.post('/chat', async (req, res) => {
     });
     const messages = await buildApiMessages(recentHistory);
     const latestUserMessage = cleanMessage || `[发送了附件：${attachment_name || '文件'}]`;
-    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage);
+    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage, undefined, session_id);
 
     const thinkingBudget = 3000;
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
@@ -6112,6 +6266,10 @@ app.post('/chat', async (req, res) => {
       userText: latestUserMessage,
       assistantText: replyText,
       actionsPerformed,
+    });
+    scheduleAutomaticSessionSummary(session_id, {
+      maxRounds: maxContextRounds,
+      maxTokens: maxContextTokens,
     });
 
     res.json({
@@ -6177,7 +6335,8 @@ app.post('/chat/regenerate', async (req, res) => {
       `【重新生成】
 这是对叶檀同一条消息的重新回应。不要只替换措辞、调换句序或机械扩写，也不要默认上一版的理解一定正确。重新回到她当时说的话和当前上下文，先判断她真正想表达、询问或需要的是什么，再生成一版独立、自然、完整的回应。
 保留上下文中已经确定的事实、关系、记忆与真实完成的操作，不得为了显得不同而编造新事实。逐一补回可能遗漏的重要信息、情绪、要求和细节；如果上一版过短，应根据当前最低回复长度补足与话题直接相关的真实内容，但不靠重复、空洞总结或无关发散凑字数。
-正式回复中不要提“重新生成”“上一版”或这些要求。`
+正式回复中不要提“重新生成”“上一版”或这些要求。`,
+      session_id,
     );
 
     const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
