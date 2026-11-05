@@ -105,7 +105,7 @@ test('滚动账本会把附件名称与类型保留为上下文线索，不携�
     content: '',
     attachment_name: '高一语文课表.xlsx',
     attachment_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    attachment_summary: null,
+    attachment_summary: '包含周一至周五的高一语文课时安排。',
     attachment_url: 'https://private.example/file-token',
     created_at: '2026-11-05T01:00:00.000Z',
   });
