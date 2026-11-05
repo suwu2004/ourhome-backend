@@ -34,12 +34,15 @@ function findArchivedHistoryPrefix(history = [], contextHistory = []) {
     .filter(value => value !== undefined && value !== null)
     .map(String));
   if (!rows.length || !contextIds.size) return [];
-  // Recent-life protection may retain older messages outside the contiguous
-  // suffix. Stop before the earliest retained message so no raw context item
-  // is accidentally absorbed into the summary checkpoint or skipped forever.
-  const firstContextIndex = rows.findIndex(message => contextIds.has(String(message?.id)));
-  if (firstContextIndex < 0) return [];
-  return rows.slice(0, firstContextIndex);
+  // The newest contiguous context suffix owns the archive cursor. Older
+  // recent-life extras may still appear in context, but must be included in the
+  // rolling summary too; otherwise messages behind those extras can be skipped
+  // forever when the cursor advances.
+  let suffixStart = rows.length;
+  while (suffixStart > 0 && contextIds.has(String(rows[suffixStart - 1]?.id))) {
+    suffixStart -= 1;
+  }
+  return rows.slice(0, suffixStart);
 }
 
 function shouldSummarizeArchivedMessages(messages = [], options = {}) {
