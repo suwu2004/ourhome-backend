@@ -2,6 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
+
 const {
   extractExistingSummary,
   extractExistingSummarySource,
@@ -75,4 +79,11 @@ test('an internal per-turn diagnostic preserves the last curated summary', () =>
   assert.equal(isInternalTurnSummary('今天的重点是课程安排和 OurHome 项目进展。'), false);
   assert.equal(chooseDailySummary('本轮：不应显示的日志', '已有的干净日摘要。'), '已有的干净日摘要。');
   assert.equal(chooseDailySummary('', '已有的干净日摘要。'), '已有的干净日摘要。');
+});
+
+
+test('chat updates keep a curated diary source when the displayed summary is unchanged', () => {
+  assert.match(server, /const summaryUnchanged = summary === existingSummary/);
+  assert.match(server, /const summaryMetadata = summaryUnchanged && existingMetadata/);
+  assert.match(server, /metadata: summaryMetadata/);
 });
