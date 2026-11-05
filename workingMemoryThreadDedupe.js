@@ -141,6 +141,39 @@ function uniqueStrings(values, limit = 12) {
   return output.slice(-limit);
 }
 
+const MEMORY_VERSION_HISTORY_LIMIT = 8;
+
+function memoryVersionSnapshot(mark) {
+  const summary = String(mark?.summary || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  if (!summary) return null;
+  const metadata = mark?.metadata && typeof mark.metadata === 'object' ? mark.metadata : {};
+  return {
+    message_id: String(mark?.message_id || metadata.last_message_id || '').trim() || null,
+    assistant_message_id: String(metadata.assistant_message_id || '').trim() || null,
+    session_id: String(mark?.session_id || '').trim() || null,
+    topic: String(mark?.topic || '').replace(/\s+/g, ' ').trim().slice(0, 80) || null,
+    summary,
+    recorded_at: String(mark?.updated_at || mark?.created_at || '').trim() || null,
+  };
+}
+
+function appendMemoryVersion(history, mark) {
+  const versions = (Array.isArray(history) ? history : [])
+    .filter(version => version && typeof version.summary === 'string' && version.summary.trim())
+    .slice(-MEMORY_VERSION_HISTORY_LIMIT);
+  const snapshot = memoryVersionSnapshot(mark);
+  if (!snapshot) return versions;
+
+  const duplicate = versions.some(version => {
+    if (snapshot.message_id && version.message_id) {
+      return String(version.message_id) === snapshot.message_id;
+    }
+    return String(version.summary || '').trim() === snapshot.summary
+      && String(version.recorded_at || '') === String(snapshot.recorded_at || '');
+  });
+  return duplicate ? versions : [...versions, snapshot].slice(-MEMORY_VERSION_HISTORY_LIMIT);
+}
+
 function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now = new Date() } = {}) {
   const metadata = existing?.metadata && typeof existing.metadata === 'object' ? existing.metadata : {};
   const candidateMetadata = candidate?.metadata && typeof candidate.metadata === 'object' ? candidate.metadata : {};
@@ -157,6 +190,11 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
   ]);
   const mergedTurnCount = Math.max(1, Number(metadata.merged_turn_count) || 1) + (sameSource ? 0 : 1);
   const useCandidateState = !staleSource;
+  // Keep the summary that would otherwise be overwritten (or a late-arriving
+  // older source) as a bounded, source-linked version inside this same memory row.
+  const memoryVersions = sameSource
+    ? (Array.isArray(metadata.memory_versions) ? metadata.memory_versions.slice(-MEMORY_VERSION_HISTORY_LIMIT) : [])
+    : appendMemoryVersion(metadata.memory_versions, staleSource ? candidate : existing);
 
   return {
     message_id: newestMessageId,
@@ -179,6 +217,7 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
     metadata: {
       ...metadata,
       ...(useCandidateState ? candidateMetadata : {}),
+      memory_versions: memoryVersions,
       working_memory_rollup: 'rolling-thread-v3-cross-session',
       merge_reason: staleSource ? `${reason}:stale-source` : reason,
       first_message_id: firstMessageId,
@@ -191,6 +230,7 @@ function mergeWorkingMemoryThread(existing, candidate, { reason = 'rolling', now
 
 module.exports = {
   THREAD_WINDOW_MS,
+  MEMORY_VERSION_HISTORY_LIMIT,
   EXACT_THREAD_WINDOW_MS,
   RECENT_THREAD_LIMIT,
   normalizeMemoryText,
