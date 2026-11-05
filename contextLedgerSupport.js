@@ -46,7 +46,9 @@ function rowText(row = {}) {
   const attachment = compactText(stripInternalControls(row.attachment_summary), 1_200);
   const attachmentName = compactText(stripInternalControls(row.attachment_name), 160);
   const attachmentType = compactText(stripInternalControls(row.attachment_type), 80);
+  const hasAttachment = Boolean(row.attachment_url || row.attachment_name || row.attachment_type || attachment);
   const attachmentInfo = [
+    hasAttachment ? '存在附件' : '',
     attachmentName ? '附件名称：' + attachmentName : '',
     attachmentType ? '附件类型：' + attachmentType : '',
     attachment ? '附件摘要：' + attachment : '',
