@@ -48,6 +48,15 @@ test('工具格式不兼容错误可以安全降级到文字协议', () => {
   assert.equal(isToolCompatibilityError(new Error('[503] no available channel')), false);
 });
 
+test('视觉代读最多只尝试一个备用模型，并且上游限流/故障时停止', () => {
+  assert.equal(MAX_VISION_MODEL_ATTEMPTS, 2);
+  assert.equal(isTransientVisionProviderError(new Error('[503] service updating')), true);
+  assert.equal(isTransientVisionProviderError(new Error('[429] too many requests')), true);
+  assert.equal(isTransientVisionProviderError(new Error('fetch failed')), true);
+  assert.equal(isTransientVisionProviderError(new Error('[404] model_not_found')), false);
+  assert.equal(isTransientVisionProviderError(new Error('线路没有确认读到图片像素')), false);
+});
+
 test('纯文字模型可以选择视觉模型代读图片', () => {
   const messages = [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', data: 'abc' } }, { type: 'text', text: '看看这个' }] }];
   assert.equal(hasImageContent(messages), true);
