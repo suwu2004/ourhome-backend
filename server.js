@@ -2815,7 +2815,8 @@ async function generateSessionSummary(sessionId) {
   const finalResult = await callClaude({
     settings,
     model,
-    maxTokens: 1200,
+    // Long sessions can produce a large JSON handoff; 1200 caused max_tokens truncation.
+    maxTokens: 2400,
     messages: [{ role: 'user', content: finalPrompt }],
     temperature: 0.3,
   });
