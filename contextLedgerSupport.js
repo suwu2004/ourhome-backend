@@ -44,9 +44,16 @@ function rowText(row = {}) {
   const role = row.role === 'assistant' ? '陆泽' : row.role === 'user' ? '叶檀' : String(row.role || '消息');
   const content = compactText(stripInternalControls(row.content), 12_000);
   const attachment = compactText(stripInternalControls(row.attachment_summary), 1_200);
+  const attachmentName = compactText(stripInternalControls(row.attachment_name), 160);
+  const attachmentType = compactText(stripInternalControls(row.attachment_type), 80);
+  const attachmentInfo = attachment
+    ? \`附件摘要：\${attachment}\`
+    : (attachmentName || attachmentType)
+      ? \`附件信息：\${[attachmentName, attachmentType].filter(Boolean).join('｜')}\`
+      : '';
   const timestamp = formatLedgerTime(row.created_at);
-  const timePrefix = timestamp ? `[历史时间：${timestamp}] ` : '';
-  const parts = [content, attachment ? `附件摘要：${attachment}` : ''].filter(Boolean);
+  const timePrefix = timestamp ? \`[历史时间：\${timestamp}] \` : '';
+  const parts = [content, attachmentInfo].filter(Boolean);
   return parts.length ? `${timePrefix}${role}：${parts.join('\n')}` : '';
 }
 
@@ -66,7 +73,9 @@ function estimateLedgerRowsTokens(rows = []) {
   return (Array.isArray(rows) ? rows : []).reduce((sum, row) => {
     return sum + 12
       + estimateLedgerTextTokens(row?.content)
-      + estimateLedgerTextTokens(row?.attachment_summary);
+      + estimateLedgerTextTokens(row?.attachment_summary)
+      + estimateLedgerTextTokens(row?.attachment_name)
+      + estimateLedgerTextTokens(row?.attachment_type);
   }, 0);
 }
 
