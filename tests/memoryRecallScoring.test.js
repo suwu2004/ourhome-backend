@@ -37,7 +37,7 @@ test('vector scores without an available embedding do not qualify on their own',
 
 
 test('keyword sampling covers the start, middle and end of long messages', () => {
-  const text = 'abcdefghij'.repeat(8);
+  const text = Array.from({ length: 70 }, (_, index) => String.fromCharCode(0x4e00 + index)).join('');
   const sampled = sampleQueryBigrams(text, 6);
   assert.equal(sampled.length, 6);
   assert.ok(sampled.some(pair => text.indexOf(pair) < 5));
