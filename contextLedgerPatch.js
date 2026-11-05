@@ -15,7 +15,6 @@ const {
   localLedgerSummary,
   buildLedgerBlock,
   injectLedger,
-  providerText,
   parseLedgerModelResponse,
   normalizeLedgerSummary,
 } = require('./contextLedgerSupport');
