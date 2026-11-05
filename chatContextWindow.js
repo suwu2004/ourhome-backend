@@ -34,11 +34,12 @@ function findArchivedHistoryPrefix(history = [], contextHistory = []) {
     .filter(value => value !== undefined && value !== null)
     .map(String));
   if (!rows.length || !contextIds.size) return [];
-  let suffixStart = rows.length;
-  while (suffixStart > 0 && contextIds.has(String(rows[suffixStart - 1]?.id))) {
-    suffixStart -= 1;
-  }
-  return rows.slice(0, suffixStart);
+  // Recent-life protection may retain older messages outside the contiguous
+  // suffix. Stop before the earliest retained message so no raw context item
+  // is accidentally absorbed into the summary checkpoint or skipped forever.
+  const firstContextIndex = rows.findIndex(message => contextIds.has(String(message?.id)));
+  if (firstContextIndex < 0) return [];
+  return rows.slice(0, firstContextIndex);
 }
 
 function shouldSummarizeArchivedMessages(messages = [], options = {}) {
