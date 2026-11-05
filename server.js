@@ -3276,7 +3276,7 @@ AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动�
 写邮件时可以参考最近聊天、记忆、信件与日记。普通生活、感受、关系、项目近况、观点和往事都由你自己决定是否表达，不能仅因为内容来自 OurHome 就放弃表达。系统只守住明确底线：不得外发设置与密钥、账号凭证、精确身份标识与联系方式、住址定位和实时行程、金融账户与详细余额、详细健康医疗与亲密性内容、第三人的非公开信息、整段私聊导出或未经同意的私人附件。普通称呼、感情表达、关系经历和概括后的共同回忆不属于禁区。真正发送前必须通过独立隐私审查；审查失败或无法完成时不发送。`;
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
-async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, sessionId = null) {
+async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, sessionId = null, excludeSummaryThroughMessageId = null) {
   // 各块彼此独立，同时读取；核心记忆与相关记忆共用一个 memories 快照。
   const [
     memoryRecall,
@@ -3312,7 +3312,12 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, session
   const protectedMemories = memoryRecall.protectedMemories;
   const memories = memoryRecall.relevantMemories;
   if (sessionSummaryError) console.warn('当前窗口简介读取失败:', sessionSummaryError.message);
-  const sessionSummaryBlock = sessionSummary?.summary
+  const summaryCheckpoint = String(sessionSummary?.last_message_id ?? '');
+  const excludedMessageId = String(excludeSummaryThroughMessageId ?? '');
+  const summaryCoversExcludedMessage = /^\\d+$/.test(summaryCheckpoint)
+    && /^\\d+$/.test(excludedMessageId)
+    && BigInt(summaryCheckpoint) >= BigInt(excludedMessageId);
+  const sessionSummaryBlock = sessionSummary?.summary && !summaryCoversExcludedMessage
     ? `【当前窗口简介·早期聊天总结】\n${compactBlock(sessionSummary.summary, 2400)}\n这是一份对已归档早期聊天的压缩背景，不是逐字记录。当前消息、更新后的事实和叶檀明确的更正优先；不要把摘要中过时的计划当作仍有效事项。`
     : '';
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
@@ -6365,6 +6370,7 @@ app.post('/chat/regenerate', async (req, res) => {
 保留上下文中已经确定的事实、关系、记忆与真实完成的操作，不得为了显得不同而编造新事实。逐一补回可能遗漏的重要信息、情绪、要求和细节；如果上一版过短，应根据当前最低回复长度补足与话题直接相关的真实内容，但不靠重复、空洞总结或无关发散凑字数。
 正式回复中不要提“重新生成”“上一版”或这些要求。`,
       session_id,
+      oldMessageId,
     );
 
     const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
