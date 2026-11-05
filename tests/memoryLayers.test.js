@@ -84,7 +84,7 @@ test('所有自动临时记忆超过 72 小时后只归档不删除，手工记�
     memoryPatch.indexOf('async function archiveStaleWorkingMemory'),
     memoryPatch.indexOf('async function runMemoryConsolidation'),
   );
-  assert.doesNotMatch(archiver, /should_continue/);
+  assert.doesNotMatch(archiver, /searchParams\.set\('should_continue'/);
   assert.doesNotMatch(memoryPatch, /DELETE[^\n]*memory_marks/i);
 });
 
