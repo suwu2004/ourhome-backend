@@ -7,7 +7,7 @@ const MAX_VISION_MODEL_ATTEMPTS = 2;
 
 function isTransientVisionProviderError(error) {
   const raw = String(error?.message || error || '');
-  const status = Number(raw.match(/^\\s*\\[(\\d{3})\\]/)?.[1] || 0);
+  const status = Number(raw.match(/^\s*\[(\d{3})\]/)?.[1] || 0);
   return [408, 425, 429, 500, 502, 503, 504].includes(status)
     || /fetch failed|network error|timed? ?out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|aborted/i.test(raw);
 }
