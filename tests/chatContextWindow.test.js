@@ -4,12 +4,34 @@ const assert = require('node:assert/strict');
 const {
   estimateTextTokens,
   estimateMessageTokens,
+  findArchivedHistoryPrefix,
+  shouldSummarizeArchivedMessages,
   selectRecentHistory,
 } = require('../chatContextWindow');
 
 function row(id, content) {
   return { id, role: id % 2 ? 'user' : 'assistant', content };
 }
+
+
+test('窗口总结只覆盖当前原始上下文之外的连续历史前缀', () => {
+  const history = Array.from({ length: 30 }, (_, index) => ({
+    ...row(index + 1, `消息 ${index + 1}`),
+    created_at: new Date(Date.now() - (30 - index) * 60_000).toISOString(),
+  }));
+  const context = history.slice(-8);
+  assert.deepEqual(
+    findArchivedHistoryPrefix(history, context).map(item => item.id),
+    Array.from({ length: 22 }, (_, index) => index + 1),
+  );
+});
+
+test('窗口总结在已归档消息达到数量或 token 阈值时触发', () => {
+  const small = Array.from({ length: 11 }, (_, index) => row(index + 1, '短消息'));
+  assert.equal(shouldSummarizeArchivedMessages(small), false);
+  assert.equal(shouldSummarizeArchivedMessages([...small, row(12, '短消息')]), true);
+  assert.equal(shouldSummarizeArchivedMessages([row(1, '今天'.repeat(6000))]), true);
+});
 
 test('中英文采用保守的本地 token 估算', () => {
   assert.equal(estimateTextTokens('今天开心'), 4);
