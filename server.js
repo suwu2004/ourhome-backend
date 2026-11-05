@@ -43,6 +43,8 @@ const {
   isToolCompatibilityError,
   hasImageContent,
   listVisionModels,
+  MAX_VISION_MODEL_ATTEMPTS,
+  isTransientVisionProviderError,
   parseVisionReaderOutput,
   replaceImagesWithDescription,
 } = require('./modelCompatibility');
@@ -2483,7 +2485,7 @@ async function prepareVisualMessages(settings, modelName, messages) {
   } catch (error) {
     console.warn('拉取视觉代读模型失败:', error.message);
   }
-  const visionModels = listVisionModels(models, modelName).slice(0, 3);
+  const visionModels = listVisionModels(models, modelName).slice(0, MAX_VISION_MODEL_ATTEMPTS);
   if (!visionModels.length) throw visionUnavailableError('当前 API 站点里没有找到可确认看见图片的模型。请换成 Claude、Gemini、GPT-4o/5 或名称带 VL/Vision 的模型后重新生成。');
 
   const imageMessage = [...messages].reverse().find(message => Array.isArray(message?.content)
@@ -2510,6 +2512,10 @@ async function prepareVisualMessages(settings, modelName, messages) {
       };
     } catch (error) {
       console.warn(`视觉代读未通过 (${visionModel}):`, error.message);
+      // A provider outage/rate limit is not evidence that another model is
+      // needed. Stop immediately for transient upstream failures; only try the
+      // single backup for model-not-found or an explicit unreadable-image result.
+      if (isTransientVisionProviderError(error)) break;
     }
   }
   throw visionUnavailableError(`图片已经保存，但当前线路没有一个模型能确认读到图片像素。请换一个视觉模型后点“重新生成”；在成功识别前，陆泽不会猜。`);
