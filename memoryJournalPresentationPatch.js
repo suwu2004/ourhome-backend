@@ -33,7 +33,11 @@ function extractExistingSummary(body) {
   const start = prompt.indexOf('【今天已有摘要】');
   if (start < 0) return '';
   const rest = prompt.slice(start + '【今天已有摘要】'.length);
-  const end = rest.indexOf('【未收尾话题】');
+  const boundaries = [
+    rest.indexOf('【摘要来源】'),
+    rest.indexOf('【未收尾话题】'),
+  ].filter(index => index >= 0);
+  const end = boundaries.length ? Math.min(...boundaries) : -1;
   const value = (end >= 0 ? rest.slice(0, end) : rest).trim();
   return value && value !== '无' ? value.slice(0, 1200) : '';
 }
