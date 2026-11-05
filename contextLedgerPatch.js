@@ -139,7 +139,7 @@ function installExpressContextBridge() {
 async function loadLedgerWindow(sessionId, settings) {
   const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, {
     maxRounds: settings.maxContextRounds,
-    columns: 'id,role,content,attachment_summary,created_at',
+    columns: 'id,role,content,attachment_name,attachment_type,attachment_summary,created_at',
   });
   const recentKeep = selectRecentHistory(candidates, {
     maxRounds: settings.maxContextRounds,
@@ -154,7 +154,7 @@ async function loadLedgerWindow(sessionId, settings) {
 async function loadPendingOverflow(sessionId, { cursorId = null, cutoffId, descending = false, limit = LEDGER_PENDING_ROW_LIMIT } = {}) {
   if (!supabase || !sessionId || !cutoffId) return [];
   let query = supabase.from('messages')
-    .select('id,role,content,attachment_summary,created_at')
+    .select('id,role,content,attachment_name,attachment_type,attachment_summary,created_at')
     .eq('session_id', sessionId)
     .eq('visible', true)
     .lt('id', cutoffId);
@@ -368,7 +368,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function contextLedgerHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, context_ledger: 'rolling-summary-v4-threshold32-token6000' };
+      body = { ...body, context_ledger: 'rolling-summary-v5-semantic-fallback-attachments' };
     }
     return originalJson.call(this, body);
   };
