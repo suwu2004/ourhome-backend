@@ -94,10 +94,11 @@ function selectRecentHistory(history = [], options = {}) {
 
   let selected = list.slice(-maxMessages);
   const now = Date.now();
-  const recentFacts = list
+  const protectRecentFacts = options.protectRecentFacts !== false;
+  const recentFacts = protectRecentFacts ? list
     .filter(message => isWithinRecentHours(message?.created_at, now, RECENT_LIFE_CONTEXT_HOURS))
     .filter(isExplicitRecentLifeFact)
-    .slice(-RECENT_LIFE_FACT_MESSAGES);
+    .slice(-RECENT_LIFE_FACT_MESSAGES) : [];
   const ids = new Set(selected.map(message => message?.id).filter(Boolean));
   const lifeExtras = recentFacts.filter(message => message?.id && !ids.has(message.id));
   if (lifeExtras.length) {
