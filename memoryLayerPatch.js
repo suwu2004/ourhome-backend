@@ -178,7 +178,9 @@ async function archiveStaleWorkingMemory(now = new Date()) {
   const query = new URL(`${baseUrl}/rest/v1/memory_marks`);
   query.searchParams.set('select', 'id,metadata');
   query.searchParams.set('status', 'in.(active,continued)');
-  query.searchParams.set('should_continue', 'eq.true');
+  // All automatic journal marks are short-lived working context, not only open tasks.
+  // Archive should_continue=false near-state notes too, so they do not remain active
+  // after the 72-hour retrieval window. Manual notes are protected by metadata filter.
   query.searchParams.set('updated_at', `lt.${cutoff}`);
   query.searchParams.set('order', 'updated_at.asc');
   query.searchParams.set('limit', String(STALE_WORKING_MEMORY_LIMIT));
@@ -287,7 +289,7 @@ try {
         ...body,
         memory_layers: 'model-owned-working-memory-v4',
         working_memory_dedup: 'rolling-thread-v3-cross-session',
-        working_memory_lifecycle: 'auto-archive-after-72h-v1',
+        working_memory_lifecycle: 'auto-archive-all-journal-marks-after-72h-v2',
       };
     }
     return originalJson.call(this, body);
