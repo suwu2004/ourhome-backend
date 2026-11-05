@@ -144,14 +144,14 @@ function uniqueStrings(values, limit = 12) {
 const MEMORY_VERSION_HISTORY_LIMIT = 8;
 
 function memoryVersionSnapshot(mark) {
-  const summary = String(mark?.summary || '').replace(/\\s+/g, ' ').trim().slice(0, 240);
+  const summary = String(mark?.summary || '').replace(/\s+/g, ' ').trim().slice(0, 240);
   if (!summary) return null;
   const metadata = mark?.metadata && typeof mark.metadata === 'object' ? mark.metadata : {};
   return {
     message_id: String(mark?.message_id || metadata.last_message_id || '').trim() || null,
     assistant_message_id: String(metadata.assistant_message_id || '').trim() || null,
     session_id: String(mark?.session_id || '').trim() || null,
-    topic: String(mark?.topic || '').replace(/\\s+/g, ' ').trim().slice(0, 80) || null,
+    topic: String(mark?.topic || '').replace(/\s+/g, ' ').trim().slice(0, 80) || null,
     summary,
     recorded_at: String(mark?.updated_at || mark?.created_at || '').trim() || null,
   };
