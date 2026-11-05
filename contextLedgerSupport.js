@@ -47,12 +47,12 @@ function rowText(row = {}) {
   const attachmentName = compactText(stripInternalControls(row.attachment_name), 160);
   const attachmentType = compactText(stripInternalControls(row.attachment_type), 80);
   const attachmentInfo = attachment
-    ? \`附件摘要：\${attachment}\`
+    ? `附件摘要：${attachment}`
     : (attachmentName || attachmentType)
-      ? \`附件信息：\${[attachmentName, attachmentType].filter(Boolean).join('｜')}\`
+      ? `附件信息：${[attachmentName, attachmentType].filter(Boolean).join('｜')}`
       : '';
   const timestamp = formatLedgerTime(row.created_at);
-  const timePrefix = timestamp ? \`[历史时间：\${timestamp}] \` : '';
+  const timePrefix = timestamp ? `[历史时间：${timestamp}] ` : '';
   const parts = [content, attachmentInfo].filter(Boolean);
   return parts.length ? `${timePrefix}${role}：${parts.join('\n')}` : '';
 }
