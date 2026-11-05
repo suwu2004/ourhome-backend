@@ -124,7 +124,7 @@ test('模型自然语言摘要不会被本地兜底截断到前 900 字', () => 
     '接下来要核对同一早晨的上下文是否能跨越窗口裁剪，并验证新的滚动摘要。',
     '【后续决定】',
     '最终决定保留原始聊天记录，只对旧消息做摘要，不删除任何消息。',
-  ].join('\\n');
+  ].join('\n');
   const entries = parseLedgerEntries(legacy);
   assert.ok(entries.length >= 6);
   const summary = localLedgerSummary(legacy, [
