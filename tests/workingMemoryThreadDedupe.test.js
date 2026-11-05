@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   THREAD_WINDOW_MS,
   EXACT_THREAD_WINDOW_MS,
+  MEMORY_VERSION_HISTORY_LIMIT,
   workingMemoryThreadMatch,
   findWorkingMemoryThreadMatch,
   mergeWorkingMemoryThread,
@@ -151,6 +152,10 @@ test('滚动记忆保留最新状态并允许待续事项自然收尾', () => {
   });
   assert.equal(merged.message_id, '107');
   assert.equal(merged.summary, candidate.summary);
+  assert.equal(merged.metadata.memory_versions.length, 1);
+  assert.equal(merged.metadata.memory_versions[0].message_id, '100');
+  assert.equal(merged.metadata.memory_versions[0].summary, existing.summary);
+  assert.equal(merged.metadata.memory_versions[0].recorded_at, existing.updated_at);
   assert.equal(merged.should_continue, false);
   assert.equal(merged.should_remember, true);
   assert.equal(merged.importance, 4);
@@ -179,8 +184,39 @@ test('异步整理较旧消息晚到时不会倒退覆盖较新的临时状态',
   });
   assert.equal(merged.message_id, '110');
   assert.equal(merged.summary, existing.summary);
+  assert.equal(merged.metadata.memory_versions[0].message_id, '108');
+  assert.equal(merged.metadata.memory_versions[0].summary, lateOlderCandidate.summary);
   assert.equal(merged.should_continue, false);
   assert.match(merged.metadata.merge_reason, /stale-source/);
+});
+
+test('滚动合并保留最多八个带来源的旧摘要版本', () => {
+  let current = mark({
+    message_id: '200',
+    topic: '持续推进的项目进度',
+    summary: '初始摘要版本。',
+    metadata: { first_message_id: '200', last_message_id: '200' },
+  });
+
+  for (let index = 1; index <= 12; index += 1) {
+    const candidate = mark({
+      message_id: String(200 + index),
+      topic: current.topic,
+      summary: `第 ${index} 次更新的摘要。`,
+      updated_at: undefined,
+      metadata: { assistant_message_id: String(300 + index) },
+    });
+    const merged = mergeWorkingMemoryThread(current, candidate, {
+      reason: 'same-topic',
+      now: new Date(Date.parse('2026-08-15T09:00:00.000Z') + index * 60_000),
+    });
+    current = { ...current, ...merged };
+  }
+
+  assert.equal(current.metadata.memory_versions.length, MEMORY_VERSION_HISTORY_LIMIT);
+  assert.equal(current.metadata.memory_versions.at(-1).summary, '第 11 次更新的摘要。');
+  assert.ok(current.metadata.memory_versions.every(version => version.message_id && version.recorded_at));
+  assert.equal(new Set(current.metadata.memory_versions.map(version => version.message_id)).size, MEMORY_VERSION_HISTORY_LIMIT);
 });
 
 test('同一消息重试不会增加重复整理次数', () => {
@@ -194,6 +230,7 @@ test('同一消息重试不会增加重复整理次数', () => {
   const merged = mergeWorkingMemoryThread(existing, candidate, { reason: match.reason, now: new Date('2026-08-15T09:10:00.000Z') });
   assert.equal(merged.reinforcement_count, 2);
   assert.equal(merged.metadata.merged_turn_count, 1);
+  assert.deepEqual(merged.metadata.memory_versions, []);
 });
 
 test('运行时只对自动 memory-journal 写入做滚动整理，并跨会话检查精确重复', () => {
