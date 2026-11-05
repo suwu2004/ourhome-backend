@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { chatLocalToolNeeds, chatNeedsRemoteTools, selectChatTools } = require('../chatToolRouter');
 
 const names = [
-  'write_diary', 'save_memory', 'search_memories', 'search_chat_history', 'manage_memory',
+  'write_diary', 'write_whisper', 'save_memory', 'search_memories', 'search_chat_history', 'manage_memory',
   'read_cat_vault', 'record_cat_vault_transaction', 'delete_cat_vault_transaction',
   'read_music_room', 'search_music', 'add_music_track', 'control_music_room',
   'read_reading_room', 'write_reading_note', 'read_toybox_room', 'start_toybox_game',
@@ -13,49 +13,50 @@ const names = [
 ];
 const tools = names.map(name => ({ name, description: name, input_schema: { type: 'object', properties: {} } }));
 const selectedNames = text => selectChatTools(tools, text).map(tool => tool.name);
+const routedNames = text => selectedNames(text).filter(name => name !== 'write_whisper');
 
 test('普通聊天不再携带几十个无关工具定义', () => {
-  assert.deepEqual(selectedNames('宝贝抱抱，今天想你了'), []);
+  assert.deepEqual(selectedNames('宝贝抱抱，今天想你了'), ['write_whisper']);
 });
 
 test('只为明确房间意图开放对应工具组', () => {
-  const vault = selectedNames('帮我在猫の金库记一笔，咖啡 28 元');
+  const vault = routedNames('帮我在猫の金库记一笔，咖啡 28 元');
   assert.ok(vault.includes('record_cat_vault_transaction'));
   assert.ok(vault.includes('read_cat_vault'));
   assert.ok(!vault.includes('read_music_room'));
 
-  const music = selectedNames('去一起听给歌单加一首歌');
+  const music = routedNames('去一起听给歌单加一首歌');
   assert.ok(music.includes('add_music_track'));
   assert.ok(!music.includes('record_cat_vault_transaction'));
 });
 
 test('明确聊天记录搜索只开放原文搜索，不同时塞入整组记忆工具', () => {
-  assert.deepEqual(selectedNames('你不能搜索聊天记录嘛🥺'), ['search_chat_history']);
-  assert.deepEqual(selectedNames('搜一下聊天记录，我之前说过喜欢什么'), ['search_chat_history']);
-  assert.deepEqual(selectedNames('帮我找一下之前说过的那句话'), ['search_chat_history']);
+  assert.deepEqual(routedNames('你不能搜索聊天记录嘛🥺'), ['search_chat_history']);
+  assert.deepEqual(routedNames('搜一下聊天记录，我之前说过喜欢什么'), ['search_chat_history']);
+  assert.deepEqual(routedNames('帮我找一下之前说过的那句话'), ['search_chat_history']);
 });
 
 test('普通记忆确认只开放整理后的记忆搜索', () => {
-  assert.deepEqual(selectedNames('你记得我以前说过的偏好吗'), ['search_memories']);
-  assert.deepEqual(selectedNames('搜一下记忆，之前有没有存过这个'), ['search_memories']);
+  assert.deepEqual(routedNames('你记得我以前说过的偏好吗'), ['search_memories']);
+  assert.deepEqual(routedNames('搜一下记忆，之前有没有存过这个'), ['search_memories']);
 });
 
 test('明确保存或管理记忆才开放写工具', () => {
-  assert.deepEqual(selectedNames('把这个记下来，存进长期记忆'), ['save_memory']);
-  assert.deepEqual(selectedNames('把那条长期记忆删掉'), ['manage_memory']);
-  const reorganize = selectedNames('把刚才聊到的写法偏好整理进记忆');
+  assert.deepEqual(routedNames('把这个记下来，存进长期记忆'), ['save_memory']);
+  assert.deepEqual(routedNames('把那条长期记忆删掉'), ['manage_memory']);
+  const reorganize = routedNames('把刚才聊到的写法偏好整理进记忆');
   assert.ok(reorganize.includes('search_memories'));
   assert.ok(reorganize.includes('save_memory'));
   assert.ok(reorganize.includes('manage_memory'));
 });
 
 test('共读、玩具熊、画室和私人房间按关键词路由', () => {
-  assert.deepEqual(selectedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
-  assert.deepEqual(selectedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
-  assert.deepEqual(selectedNames('宝宝给我画一张月亮'), ['create_drawing']);
-  assert.deepEqual(selectedNames('最近画了什么'), ['read_drawing_room']);
-  assert.deepEqual(selectedNames('把刚才那张画删掉'), ['read_drawing_room', 'delete_drawing']);
-  assert.deepEqual(selectedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
+  assert.deepEqual(routedNames('看看共读小屋的批注'), ['read_reading_room', 'write_reading_note']);
+  assert.deepEqual(routedNames('我们开一局五子棋'), ['read_toybox_room', 'start_toybox_game']);
+  assert.deepEqual(routedNames('宝宝给我画一张月亮'), ['create_drawing']);
+  assert.deepEqual(routedNames('最近画了什么'), ['read_drawing_room']);
+  assert.deepEqual(routedNames('把刚才那张画删掉'), ['read_drawing_room', 'delete_drawing']);
+  assert.deepEqual(routedNames('去陆泽的房间看看学习笔记'), ['read_luze_private_room']);
   assert.deepEqual(chatLocalToolNeeds('看看共读小屋的批注'), { reading: true, toybox: false, drawing: false, privateRoom: false });
   assert.deepEqual(chatLocalToolNeeds('我们开一局五子棋'), { reading: false, toybox: true, drawing: false, privateRoom: false });
   assert.deepEqual(chatLocalToolNeeds('宝宝给我画一张月亮'), { reading: false, toybox: false, drawing: true, privateRoom: false });
@@ -63,18 +64,18 @@ test('共读、玩具熊、画室和私人房间按关键词路由', () => {
 });
 
 test('看小画册不会暴露付费生图工具', () => {
-  const selected = selectedNames('打开画室小画册，看看最近画过的');
+  const selected = routedNames('打开画室小画册，看看最近画过的');
   assert.deepEqual(selected, ['read_drawing_room']);
   assert.ok(!selected.includes('create_drawing'));
 });
 
 test('你画我猜仍只走玩具熊，不误开真正的生图画室', () => {
-  assert.deepEqual(selectedNames('我们玩你画我猜'), ['read_toybox_room', 'start_toybox_game']);
+  assert.deepEqual(routedNames('我们玩你画我猜'), ['read_toybox_room', 'start_toybox_game']);
 });
 
 test('实时信息才开放联网和 MCP 工具', () => {
-  assert.deepEqual(selectedNames('查一下今天最新天气'), ['web_search', 'mcp_12345678_weather']);
-  assert.ok(!selectedNames('查一下我的聊天记录').includes('web_search'));
+  assert.deepEqual(routedNames('查一下今天最新天气'), ['web_search', 'mcp_12345678_weather']);
+  assert.ok(!routedNames('查一下我的聊天记录').includes('web_search'));
   assert.equal(chatNeedsRemoteTools('查一下今天最新天气'), true);
   assert.equal(chatNeedsRemoteTools('查一下我的聊天记录'), false);
 });
