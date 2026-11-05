@@ -2782,7 +2782,8 @@ async function generateSessionSummary(sessionId) {
       .select('id, role, content, attachment_name, attachment_summary, created_at, input_tokens, output_tokens')
       .eq('session_id', sessionId)
       .eq('visible', true)
-      .order('created_at', { ascending: true }),
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true }),
   ]);
   if (sessionError) throw sessionError;
   if (!session) {
@@ -4533,6 +4534,10 @@ app.post('/messages/:id/rollback/undo', async (req, res) => {
       restoredIds.push(...(restoredMessages || []).map(message => message.id));
     }
 
+    if (restoredIds.length) {
+      const { error: summaryInvalidationError } = await supabase.from('session_summaries').delete().eq('session_id', target.session_id);
+      if (summaryInvalidationError) console.warn('撤销回溯后清除旧窗口简介失败:', summaryInvalidationError.message);
+    }
     res.json({ success: true, restoredIds, restoredCount: restoredIds.length });
   } catch (err) {
     console.error('撤销回溯错误:', err);
@@ -6409,6 +6414,22 @@ app.post('/chat/regenerate', async (req, res) => {
       const { data, error } = await supabase.from('messages').insert({ session_id, role: 'assistant', ...payload }).select().single();
       if (error) return res.status(500).json({ error: error.message });
       newMsg = data;
+    }
+
+    if (oldMessageId) {
+      const { data: storedSummary, error: storedSummaryError } = await supabase.from('session_summaries')
+        .select('last_message_id')
+        .eq('session_id', session_id)
+        .maybeSingle();
+      if (storedSummaryError) {
+        console.warn('重新生成后检查窗口简介版本失败:', storedSummaryError.message);
+      } else if (storedSummary?.last_message_id !== null && storedSummary?.last_message_id !== undefined
+        && /^\d+$/.test(String(oldMessageId))
+        && /^\d+$/.test(String(storedSummary.last_message_id))
+        && BigInt(oldMessageId) <= BigInt(storedSummary.last_message_id)) {
+        const { error: invalidateError } = await supabase.from('session_summaries').delete().eq('session_id', session_id);
+        if (invalidateError) console.warn('重新生成后清除旧窗口简介失败:', invalidateError.message);
+      }
     }
 
     res.json({ reply: replyText, thinking: thinkingText, id: newMsg.id, createdAt: newMsg.created_at, inputTokens: finalInputTokens, outputTokens: finalOutputTokens, actions: actionsPerformed, model: result?.model || modelNameRegen, requestedModel: modelNameRegen, visionFallbackModel: visual.visionFallbackModel });
