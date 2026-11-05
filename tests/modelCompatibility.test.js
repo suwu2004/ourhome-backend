@@ -65,11 +65,12 @@ test('纯文字模型可以选择视觉模型代读图片', () => {
   assert.match(bridged[0].content, /一只趴着的小猫/);
 });
 
-test('non-Claude models retain the text bridge for silent relay compatibility', () => {
+test('non-Claude models use one text-tool transport instead of duplicating native schemas', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
   assert.ok(server.includes('let textBridgeEnabled = Boolean(gemini || !/claude/i.test(String(modelName || \'\')));'));
-  assert.ok(server.includes('nativeToolsEnabled = false;\n      textBridgeEnabled = true;'));
+  assert.ok(server.includes('let nativeToolsEnabled = !textBridgeEnabled && Array.isArray(toolsParam) && toolsParam.length > 0;'));
+  assert.ok(server.includes('sending both representations duplicated the same tool definitions'));
   assert.ok(server.includes('rejected native tools; retrying once with the text protocol'));
 });
