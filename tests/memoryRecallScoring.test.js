@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   DEFAULT_VECTOR_RELEVANCE_THRESHOLD,
   DEFAULT_KEYWORD_RELEVANCE_THRESHOLD,
+  sampleQueryBigrams,
   isMemoryRecallRelevant,
 } = require('../memoryRecallScoring');
 
@@ -32,4 +33,14 @@ test('vector scores without an available embedding do not qualify on their own',
     keywordScore: 0,
     hasVector: false,
   }), false);
+});
+
+
+test('keyword sampling covers the start, middle and end of long messages', () => {
+  const text = 'abcdefghij'.repeat(8);
+  const sampled = sampleQueryBigrams(text, 6);
+  assert.equal(sampled.length, 6);
+  assert.ok(sampled.some(pair => text.indexOf(pair) < 5));
+  assert.ok(sampled.some(pair => text.indexOf(pair) > 40));
+  assert.ok(sampled.some(pair => text.indexOf(pair) > 70));
 });
