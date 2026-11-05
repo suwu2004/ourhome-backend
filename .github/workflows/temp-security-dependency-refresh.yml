@@ -23,7 +23,7 @@ jobs:
       - name: Refresh patched dependency versions and lockfile
         run: |
           npm install --save-exact multer@2.5.0
-          npm update body-parser proxy-addr
+          npm update body-parser proxy-addr @xmldom/xmldom qs
       - name: Run backend checks
         run: |
           npm run check
