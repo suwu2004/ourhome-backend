@@ -26,12 +26,12 @@ test('窗口总结只覆盖当前原始上下文之外的连续历史前缀', ()
   );
 });
 
-test('窗口总结不会提前吸收被额外保留在上下文里的近期事实', () => {
+test('窗口总结沿连续上下文尾部推进游标，不会跳过被额外保留事实之后的旧消息', () => {
   const history = Array.from({ length: 30 }, (_, index) => row(index + 1, `消息 ${index + 1}`));
   const context = [history[1], ...history.slice(-8)];
   assert.deepEqual(
     findArchivedHistoryPrefix(history, context).map(item => item.id),
-    [1],
+    Array.from({ length: 22 }, (_, index) => index + 1),
   );
 });
 
