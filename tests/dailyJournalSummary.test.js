@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   fallbackDiarySummary,
   parseScheduledDiaryResponse,
+  shouldReplaceDailySummary,
 } = require('../dailyJournalSummary');
 
 const server = fs.readFileSync(path.resolve(__dirname, '..', 'server.js'), 'utf8');
@@ -34,9 +35,18 @@ test('fallback summary is compact and never exposes internal per-turn markers', 
 
 test('nightly workflow persists a curated summary and includes it in completion', () => {
   assert.match(server, /async function upsertDailyDiarySummary/);
+  assert.match(server, /shouldReplaceDailySummary\(existing \|\| \{\}\)/);
   assert.match(server, /from\('daily_summaries'\)\.upsert/);
   assert.match(server, /const completed = Boolean\(diaryId && moodId && summaryReady\)/);
   assert.match(server, /摘要：<不超过260字的今日摘要>/);
   assert.match(server, /正文：<500到900字的日记正文>/);
   assert.match(server, /maxTokens: 2200/);
+});
+
+
+test('nightly diary replaces provisional chat summary but keeps an existing curated diary summary', () => {
+  assert.equal(shouldReplaceDailySummary({}), true);
+  assert.equal(shouldReplaceDailySummary({ summary: '临时摘要', metadata: { source: 'chat_turn' } }), true);
+  assert.equal(shouldReplaceDailySummary({ summary: '正式日记摘要', metadata: { source: 'daily_journal' } }), false);
+  assert.equal(shouldReplaceDailySummary({ summary: '来源未知的摘要', metadata: { source: 'manual' } }), false);
 });
