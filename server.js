@@ -2776,14 +2776,9 @@ async function summarizeSessionChunk(settings, model, chunk, index, total) {
 }
 
 async function generateSessionSummary(sessionId) {
-  const [{ data: session, error: sessionError }, { data: messages, error: messagesError }] = await Promise.all([
+  const [{ data: session, error: sessionError }, rows] = await Promise.all([
     supabase.from('sessions').select('id, name, created_at, updated_at').eq('id', sessionId).maybeSingle(),
-    supabase.from('messages')
-      .select('id, role, content, attachment_name, attachment_summary, created_at, input_tokens, output_tokens')
-      .eq('session_id', sessionId)
-      .eq('visible', true)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true }),
+    loadVisibleMessagesForRollingSummary(sessionId),
   ]);
   if (sessionError) throw sessionError;
   if (!session) {
@@ -2791,8 +2786,6 @@ async function generateSessionSummary(sessionId) {
     error.status = 404;
     throw error;
   }
-  if (messagesError) throw messagesError;
-  const rows = messages || [];
   if (!rows.length) {
     const error = new Error('这个窗口还没有聊天内容');
     error.status = 400;
