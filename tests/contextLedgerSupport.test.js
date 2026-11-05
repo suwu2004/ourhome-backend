@@ -115,6 +115,21 @@ test('滚动账本会把附件名称与类型保留为上下文线索，不携�
   assert.doesNotMatch(line, /private\.example|file-token/);
 });
 
+test('附件只有存储地址时也保留存在性线索，但不暴露地址', () => {
+  const { rowText } = require('../contextLedgerSupport');
+  const line = rowText({
+    id: 302,
+    role: 'user',
+    content: '',
+    attachment_url: 'https://private.example/signed-object-token',
+    attachment_name: null,
+    attachment_type: null,
+    attachment_summary: null,
+  });
+  assert.match(line, /存在附件/);
+  assert.doesNotMatch(line, /private\\.example|signed-object-token/);
+});
+
 test('模型自然语言摘要不会被本地兜底截断到前 900 字', () => {
   const legacy = [
     '【重要事实】',
