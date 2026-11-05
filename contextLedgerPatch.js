@@ -139,7 +139,7 @@ function installExpressContextBridge() {
 async function loadLedgerWindow(sessionId, settings) {
   const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, {
     maxRounds: settings.maxContextRounds,
-    columns: 'id,role,content,attachment_name,attachment_type,attachment_summary,created_at',
+    columns: 'id,role,content,attachment_url,attachment_name,attachment_type,attachment_summary,created_at',
   });
   const selectionOptions = {
     maxRounds: settings.maxContextRounds,
@@ -163,7 +163,7 @@ async function loadLedgerWindow(sessionId, settings) {
 async function loadPendingOverflow(sessionId, { cursorId = null, cutoffId, descending = false, limit = LEDGER_PENDING_ROW_LIMIT } = {}) {
   if (!supabase || !sessionId || !cutoffId) return [];
   let query = supabase.from('messages')
-    .select('id,role,content,attachment_name,attachment_type,attachment_summary,created_at')
+    .select('id,role,content,attachment_url,attachment_name,attachment_type,attachment_summary,created_at')
     .eq('session_id', sessionId)
     .eq('visible', true)
     .lt('id', cutoffId);
