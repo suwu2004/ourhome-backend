@@ -2817,8 +2817,10 @@ async function generateSessionSummary(sessionId) {
     ? parsed.open_threads.map(item => compactLine(item, 160)).filter(Boolean).slice(0, 6)
     : [];
   const handoff = compactLine(parsed.handoff, 320);
+  const summaryText = compactLine(parsed.summary, 1600);
+  if (!summaryText) throw new Error('窗口简介没有返回有效摘要，保留现有简介不变');
   const body = [
-    compactLine(parsed.summary, 1600) || chunkSummaries.join('\n'),
+    summaryText,
     openThreads.length ? `\n未完待续：\n${openThreads.map(item => `- ${item}`).join('\n')}` : '',
     handoff ? `\n接续提示：${handoff}` : '',
   ].filter(Boolean).join('\n');
@@ -2875,7 +2877,28 @@ async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
   // Once a summary exists, only fetch messages written after its exclusive
   // last_message_id checkpoint. The active context suffix remains in raw chat;
   // the rolling summary only absorbs the older prefix that has fallen out.
-  const rows = await loadVisibleMessagesForRollingSummary(sessionId, existingSummary?.last_message_id ?? null);
+  let rows;
+  if (existingSummary?.last_message_id !== null && existingSummary?.last_message_id !== undefined) {
+    rows = await loadVisibleMessagesForRollingSummary(sessionId, existingSummary.last_message_id);
+  } else {
+    // Before the first summary exists, inspect only the bounded candidate window
+    // on ordinary turns. Load the full visible history only after the archive
+    // threshold is crossed, so long-running chats do not repeatedly scan all rows.
+    const candidates = await loadVisibleHistoryCandidates(supabase, sessionId, {
+      maxRounds: options.maxRounds,
+      maxTokens: options.maxTokens,
+    });
+    const candidateContext = selectRecentHistory(candidates, {
+      maxRounds: options.maxRounds,
+      maxTokens: options.maxTokens,
+    });
+    const candidateArchive = findArchivedHistoryPrefix(candidates, candidateContext);
+    if (!shouldSummarizeArchivedMessages(candidateArchive, {
+      minMessages: SESSION_SUMMARY_AUTO_MIN_MESSAGES,
+      minTokens: SESSION_SUMMARY_AUTO_MIN_TOKENS,
+    })) return null;
+    rows = await loadVisibleMessagesForRollingSummary(sessionId);
+  }
   if (!rows.length) return null;
 
   const contextHistory = selectRecentHistory(rows, {
