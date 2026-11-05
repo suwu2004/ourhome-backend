@@ -26,6 +26,15 @@ test('窗口总结只覆盖当前原始上下文之外的连续历史前缀', ()
   );
 });
 
+test('窗口总结不会提前吸收被额外保留在上下文里的近期事实', () => {
+  const history = Array.from({ length: 30 }, (_, index) => row(index + 1, `消息 ${index + 1}`));
+  const context = [history[1], ...history.slice(-8)];
+  assert.deepEqual(
+    findArchivedHistoryPrefix(history, context).map(item => item.id),
+    [1],
+  );
+});
+
 test('窗口总结在已归档消息达到数量或 token 阈值时触发', () => {
   const small = Array.from({ length: 11 }, (_, index) => row(index + 1, '短消息'));
   assert.equal(shouldSummarizeArchivedMessages(small), false);
