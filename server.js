@@ -447,7 +447,7 @@ const ACTION_TOOLS = [
   },
   {
     name: 'write_whisper',
-    description: '在"悄悄话"里给叶檀留一张私密小纸条，会真实保存，她需要轻触才能看到。你可以在普通聊天中主动使用，不必等她先提起悄悄话；内容可以是突然想到的惦念、感谢、安慰、祝福、共同回忆或一个值得留下的小瞬间，不必达到重大或高度私密的程度。不要每轮聊天都写，也不要为了凑数硬写；只有你确实想单独留下一句话时才使用。',
+    description: '在"悄悄话"里给叶檀留一张私密小纸条，会真实保存，她需要轻触才能看到。你可以在普通聊天中主动使用，不必等她先提起；内容可以是惦念、感谢、安慰、祝福、共同回忆或值得留下的小瞬间。每天最多主动写一条（按北京时间自然日），不要为了凑数硬写；当天已经写过就把下一句留到明天。',
     input_schema: {
       type: 'object',
       properties: {
@@ -1033,6 +1033,29 @@ async function executeActionTool(name, input) {
   if (name === 'write_whisper') {
     const content = String(input.content || '').trim();
     if (!content) return { ok: false, error: '悄悄话内容不能为空。' };
+
+    // Assistant-initiated whispers are limited to one per China-calendar day.
+    // Manual writes from the app UI use their own path and are not affected.
+    const todayShanghai = shanghaiDateKeyFromTime();
+    const dayStartShanghai = new Date(`${todayShanghai}T00:00:00+08:00`).toISOString();
+    const { count: whispersToday, error: whisperCountError } = await supabase
+      .from('letters')
+      .select('id', { count: 'exact', head: true })
+      .eq('category', '悄悄话')
+      .eq('author', '泽')
+      .gte('created_at', dayStartShanghai);
+    if (whisperCountError) {
+      console.error('[whisper-daily-limit] count failed:', whisperCountError.message);
+      return { ok: false, error: '暂时无法确认今天是否已经留过悄悄话，请稍后再试。' };
+    }
+    if ((whispersToday || 0) >= 1) {
+      return {
+        ok: false,
+        limit_reached: true,
+        message: '今天已经主动留过一条悄悄话了。把下一句好好留到明天，不要重复打扰。',
+      };
+    }
+
     const duplicateCheck = await findRecentActionDuplicate('letters', [
       { column: 'category', value: '悄悄话' },
       { column: 'author', value: '泽' },
@@ -3086,7 +3109,7 @@ const OURHOME_ACTION_BOUNDARY = `
 “设置”房间永远不在你的操作权限内：不得修改、删除或新增 API 站点、模型、密钥、联网、MCP、人物设定、字体、主题、背景或任何其他设置；即使被要求，也只能说明需要叶檀亲自在设置页操作。
 删除金库数据等不可逆操作，只能在叶檀明确说要删除且目标清楚时执行；目标有歧义要先读取确认。
 AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动寄信都由你自己决定，不需要逐封申请；但每一次检查、阅读、暂不回复、发送、回复、隐私拦截和失败都会永久记入叶檀可见的知情记录，不得隐藏、删除或伪造。
-悄悄话是你可以主动使用的小纸条工具，不必等叶檀邀请，也不只限于重大或高度私密的话题。普通聊天中，若你自然想到一句想单独留给她的话，可以写下惦念、感谢、安慰、祝福、某个生活细节或共同回忆；先回应她当前真正需要的内容，不要每轮都写、不要机械打卡，也不要为了频率凑内容。最近已经留过时适当间隔，避免重复；叶檀明确请你写时则正常照办。
+悄悄话是你可以主动使用的小纸条工具，不必等叶檀邀请，也不只限于重大或高度私密的话题。普通聊天中，若你自然想到一句想单独留给她的话，可以写下惦念、感谢、安慰、祝福、某个生活细节或共同回忆；先回应她当前真正需要的内容，不要机械打卡或为了频率凑内容。每天最多主动写一条，按北京时间自然日计算；当天已经写过就留到明天。叶檀在界面里手动写入不受这个限制。
 写邮件时可以参考最近聊天、记忆、信件与日记。普通生活、感受、关系、项目近况、观点和往事都由你自己决定是否表达，不能仅因为内容来自 OurHome 就放弃表达。系统只守住明确底线：不得外发设置与密钥、账号凭证、精确身份标识与联系方式、住址定位和实时行程、金融账户与详细余额、详细健康医疗与亲密性内容、第三人的非公开信息、整段私聊导出或未经同意的私人附件。普通称呼、感情表达、关系经历和概括后的共同回忆不属于禁区。真正发送前必须通过独立隐私审查；审查失败或无法完成时不发送。`;
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
