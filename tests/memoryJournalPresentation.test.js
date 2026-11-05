@@ -4,6 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   extractExistingSummary,
+  isInternalTurnSummary,
+  chooseDailySummary,
   patchJournalResult,
 } = require('../memoryJournalPresentationPatch');
 
@@ -41,4 +43,21 @@ test('patchJournalResult keeps metadata but prevents per-turn text from replacin
 test('a day without curated summary stays blank instead of exposing 本轮 logs', () => {
   const next = patchJournalResult({ daily_summary: { summary: '本轮：内部记录' } }, '');
   assert.equal(next.daily_summary.summary, '');
+});
+
+test('a valid cumulative daily update is not overwritten by the previous summary', () => {
+  const next = patchJournalResult({
+    daily_summary: {
+      summary: '今天上午聊了课程安排，下午继续推进 OurHome 的记忆修复，尚有上下文回归测试待完成。',
+    },
+  }, '昨天的旧摘要。');
+  assert.match(next.daily_summary.summary, /今天上午聊了课程安排/);
+  assert.match(next.daily_summary.summary, /上下文回归测试/);
+});
+
+test('an internal per-turn diagnostic preserves the last curated summary', () => {
+  assert.equal(isInternalTurnSummary('本轮：讨论了一个临时问题。'), true);
+  assert.equal(isInternalTurnSummary('今天的重点是课程安排和 OurHome 项目进展。'), false);
+  assert.equal(chooseDailySummary('本轮：不应显示的日志', '已有的干净日摘要。'), '已有的干净日摘要。');
+  assert.equal(chooseDailySummary('', '已有的干净日摘要。'), '已有的干净日摘要。');
 });
