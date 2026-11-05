@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   buildTextToolBridge,
   parseTextToolCalls,
+  finalizeToolLoopResult,
   stripTextToolMarkup,
   isToolCompatibilityError,
   hasImageContent,
@@ -39,6 +40,31 @@ test('文字工具协议也会补全 MCP 缺失的参数类型', () => {
   assert.match(bridge, /"exact_match":\{"type":"boolean"/);
   assert.match(bridge, /"filters":\{"type":"object"/);
   assert.match(bridge, /"domain":\{"type":"string"/);
+});
+
+test('五轮工具循环触顶后移除未执行请求标记并明确告知', () => {
+  const pending = {
+    content: [{
+      type: 'text',
+      text: '<ourhome_tool>{"name":"read_home_memos","input":{}}</ourhome_tool>',
+    }],
+  };
+  const finalized = finalizeToolLoopResult(pending, {
+    rounds: 5,
+    maxRounds: 5,
+    actionsPerformed: [{ name: 'read_recent_diary' }, { name: 'read_wishes' }],
+  });
+  const text = finalized.content.map(block => block.text || '').join('\n');
+  assert.equal(parseTextToolCalls(finalized).length, 0);
+  assert.equal(text.includes('<ourhome_tool>'), false);
+  assert.match(text, /已完成 2 项操作/);
+  assert.match(text, /剩余步骤尚未执行/);
+  assert.equal(finalized.ourhome_tool_round_limit, true);
+});
+
+test('未达到工具轮数上限时不改写模型结果', () => {
+  const result = { content: [{ type: 'text', text: '操作完成。' }] };
+  assert.equal(finalizeToolLoopResult(result, { rounds: 4, maxRounds: 5 }), result);
 });
 
 test('工具格式不兼容错误可以安全降级到文字协议', () => {
