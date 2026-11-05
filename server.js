@@ -2883,6 +2883,7 @@ function buildPinnedFavoritesPromptBlock(favorites = []) {
 
 async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistantText, existingContext }) {
   const currentSummary = existingContext.summary?.summary || '无';
+  const summarySource = String(existingContext.summary?.metadata?.source || 'unknown');
   const openThreads = Array.isArray(existingContext.summary?.open_threads)
     ? existingContext.summary.open_threads.join('；')
     : '无';
@@ -2890,6 +2891,9 @@ async function analyzeMemoryJournalTurn({ settings, dateKey, userText, assistant
 
 【今天已有摘要】
 ${currentSummary}
+
+【摘要来源】
+${summarySource}
 
 【未收尾话题】
 ${openThreads}
