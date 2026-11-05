@@ -100,7 +100,7 @@ function finalizeToolLoopResult(result, { rounds = 0, maxRounds = 5, actionsPerf
   const notice = `本轮已达到 ${maxRounds} 轮工具操作上限，后续请求没有执行。前面已完成 ${completedCount} 项操作；剩余步骤尚未执行，请把它们单独发给我。`;
   return {
     ...result,
-    content: [{ type: 'text', text: [existingText, notice].filter(Boolean).join('\\n\\n') }],
+    content: [{ type: 'text', text: [existingText, notice].filter(Boolean).join('\n\n') }],
     stop_reason: 'end_turn',
     ourhome_tool_round_limit: true,
   };
