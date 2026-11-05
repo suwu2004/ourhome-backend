@@ -64,6 +64,7 @@ const {
 } = require('./attachmentContext');
 const { fallbackDiarySummary, parseScheduledDiaryResponse, shouldReplaceDailySummary } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
+const { isMemoryRecallRelevant } = require('./memoryRecallScoring');
 const {
   shouldAnalyzeMemoryJournalTurn,
   isMemoryContinuationCue,
@@ -2580,19 +2581,22 @@ async function loadChatMemoryRecall(message) {
       ? vectorScore * 0.55 + keywordScore * 0.25 + freshnessScore * 0.1 + Math.min((m.weight || 1) / 2, 1) * 0.1
       : keywordScore * 0.5 + freshnessScore * 0.25 + Math.min((m.weight || 1) / 2, 1) * 0.25;
 
-    return { ...m, _score: finalScore };
+    const hasVectorSignal = Boolean(queryEmbedding && m.embedding);
+    const isRelevant = isMemoryRecallRelevant({
+      vectorScore,
+      keywordScore,
+      hasVector: hasVectorSignal,
+    });
+    return { ...m, _score: finalScore, _isRelevant: isRelevant };
   });
 
-  // 取top8，过滤掉完全不相关的（向量+关键词都是0）
+  // Require an actual semantic or keyword signal before ranking by freshness and weight.
+  // Fresh but unrelated memories must not enter every prompt as a fallback.
   const result = scored
-    .filter(m => m._score > 0.01)
+    .filter(memory => memory._isRelevant)
     .sort((a, b) => b._score - a._score)
     .slice(0, 8);
-
-  // 如果向量+关键词都搜不出来东西，fallback到纯权重Top3
-  const finalResult = result.length > 0
-    ? result
-    : memories.slice(0, 3);
+  const finalResult = result.map(({ _score, _isRelevant, ...memory }) => memory);
 
   // 被命中的记忆权重回升（不阻塞主流程）
   if (finalResult.length > 0) {
