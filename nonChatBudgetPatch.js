@@ -13,6 +13,7 @@ const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const HEARTBEAT_BACKOFF_MS = 60 * 60 * 1000;
 const AUTOMATION_HEARTBEAT_PURPOSE = 'automation-heartbeat';
+const SESSION_SUMMARY_AUTO_PURPOSE = 'session-summary-auto';
 const modelCache = new Map();
 let heartbeatBackoffUntil = 0;
 const SMART_BACKGROUND_PURPOSES = new Set([
@@ -269,7 +270,7 @@ function inferPurpose(body) {
   if (/记忆日志/.test(text)) return 'memory-journal';
   if (/隐藏接续账本|滚动账本/.test(text)) return 'context-ledger';
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
-  if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return 'session-summary';
+  if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return SESSION_SUMMARY_AUTO_PURPOSE;
   if (isTheaterRequest(body)) return 'theater';
   if (/幸福日记/.test(text)) return 'happiness-diary';
   if (/心情日历/.test(text)) return 'daily-mood';
@@ -357,6 +358,7 @@ try {
 
 module.exports = {
   AUTOMATION_HEARTBEAT_PURPOSE,
+  SESSION_SUMMARY_AUTO_PURPOSE,
   budgetScore,
   isFlashModel,
   isGemini38FlashModel,
