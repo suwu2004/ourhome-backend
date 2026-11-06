@@ -289,13 +289,10 @@ if (typeof providerFetch === 'function') {
     const effectivePurpose = agentMailRead ? 'agentmail-read' : (explicitPurpose || inferPurpose(body));
     const heartbeat = isHeartbeatPurpose(effectivePurpose);
 
-    // Interactive Chat, Toy Bear, and Theater keep their own selected model.
-    // Theater memory is background maintenance and intentionally falls through
-    // to the cheapest-model selector below. The proactive heartbeat deliberately
-    // bypasses the Chat-shaped exemption: it is a background one-liner, not the
-    // foreground conversation, so it should never inherit Opus/Sonnet pricing.
-    // Happiness Diary and final learning-note synthesis deliberately keep the
-    // active Chat model; consent, planning and filtering stay behind the guard.
+    // Explicit task purpose is authoritative. Background jobs may reuse the
+    // same base persona prompt as Chat, so shared prompt markers must not grant
+    // them the foreground pricing exemption. Diary prose and final learning-note
+    // synthesis are the deliberate exceptions; other background work stays cheap.
     if (shouldPreserveRequestedModelForCall(effectivePurpose, body)) {
       return providerFetch(input, init);
     }
