@@ -64,7 +64,7 @@ require('./theaterReplyLengthGuardPatch');
 require('./theaterThinkingPatch');
 // Session-summary economy: a long window must not fan out into dozens of provider calls.
 require('./sessionSummaryEconomyPatch');
-// Final relay safety net: cap oversized foreground Chat requests before they reach the provider.
-require('./relayContextBudgetPatch');
+// Main Chat has one final payload-budget owner. It runs after historical ledger
+// injection and current-turn prioritization, so there is no earlier competing trim.
 
 module.exports = { renderFrontdoorPatch };
