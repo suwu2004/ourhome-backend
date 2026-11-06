@@ -81,7 +81,7 @@ const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./ch
 const { selectChatTools } = require('./chatToolRouter');
 const { normalizeExplicitMemorySummary, isExactMemoryDuplicate } = require('./explicitMemorySave');
 const { projectBackgroundPersona } = require('./backgroundPersona');
-const { cheapestModel } = require('./nonChatBudgetPatch');
+const { cheapestModel, AUTOMATION_HEARTBEAT_PURPOSE } = require('./nonChatBudgetPatch');
 const {
   extractThinkingText,
   stripThinkingMarkup,
@@ -6998,6 +6998,7 @@ async function maybeWriteDailyHomeMemo(settings, now) {
       system,
       messages: [{ role: 'user', content: prompt }],
       temperature: Math.min(1, Math.max(0.7, Number(settings?.temperature) || 0.8)),
+      purpose: 'home-memo',
     });
     content = cleanDailyHomeMemoContent(extractText(result));
   } catch (error) {
@@ -7049,6 +7050,7 @@ async function maybeAutoWriteLetter(settings, now) {
       system: projectBackgroundPersona(settings?.system_prompt, '自主幸福日记'),
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.9,
+      purpose: 'happiness-diary',
     });
     const replyText = extractText(result);
 
@@ -7112,7 +7114,7 @@ async function runHeartbeatAutomation() {
 
   let replyText = '';
   try {
-    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature });
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 400, system: systemPrompt, messages: [{ role: 'user', content: prompt }], temperature, purpose: AUTOMATION_HEARTBEAT_PURPOSE });
     replyText = extractText(result).trim();
   } catch (apiErr) {
     console.log('relay错误:', apiErr.message);
@@ -7184,7 +7186,7 @@ app.get('/dream', async (req, res) => {
 
     const reviewPrompt = `这是你（陆泽）和叶檀今天的完整聊天记录：\n${transcript}\n\n请像睡前整理档案柜一样，只挑出“长期档案级”的内容。默认不要新增。\n\n可以记：稳定偏好/不喜欢/界限/称呼/人设；明确说以后要记得的内容；OurHome 等长期项目的确定设置或权限决定；生日、纪念日、长期身份资料。\n不要记：今天发生了什么、一次性计划、普通心情、撒娇片段、聊天过程、临时待办、还没确定的想法、只是可爱或有趣的一句话。\n\n严格按格式输出，每条一行：\n记住：<内容，一句话，第三人称>\n\n如果没什么特别值得新增的，只输出一行：\n无新增`;
 
-    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 600, messages: [{ role: 'user', content: reviewPrompt }], temperature: 0.3 });
+    const result = await callClaude({ settings, model: settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking', maxTokens: 600, messages: [{ role: 'user', content: reviewPrompt }], temperature: 0.3, purpose: 'memory-dream-review' });
     const replyText = extractText(result);
 
     const newSummaries = replyText.split('\n')
