@@ -68,6 +68,8 @@ const {
 const { fallbackDiarySummary, parseScheduledDiaryResponse, shouldReplaceDailySummary } = require('./dailyJournalSummary');
 const { normalizeJournalMark, workingMemoryCutoff } = require('./memoryJournalPolicy');
 const { buildSessionSummaryPrompt, normalizeSessionSummaryResult } = require('./sessionSummarySinglePass');
+const { createKeyedSerialQueue } = require('./sessionSummaryQueue');
+const sessionSummaryQueue = createKeyedSerialQueue();
 const { isMemoryRecallRelevant, sampleQueryBigrams } = require('./memoryRecallScoring');
 const {
   shouldAnalyzeMemoryJournalTurn,
@@ -2789,6 +2791,10 @@ async function loadSessionSummaryMemoryContext(sessionId) {
 }
 
 async function generateSessionSummary(sessionId) {
+  return sessionSummaryQueue.run(sessionId, () => generateSessionSummaryExclusive(sessionId));
+}
+
+async function generateSessionSummaryExclusive(sessionId) {
   const [
     { data: session, error: sessionError },
     rows,
@@ -2896,6 +2902,10 @@ async function loadVisibleMessagesForRollingSummary(sessionId, afterMessageId = 
 }
 
 async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
+  return sessionSummaryQueue.run(sessionId, () => maybeGenerateAutomaticSessionSummaryExclusive(sessionId, options));
+}
+
+async function maybeGenerateAutomaticSessionSummaryExclusive(sessionId, options = {}) {
   const { data: existingSummary, error: summaryError } = await supabase.from('session_summaries')
     .select('*')
     .eq('session_id', sessionId)
