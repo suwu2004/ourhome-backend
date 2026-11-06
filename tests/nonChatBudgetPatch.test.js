@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   inferPurpose,
+  pickBudgetModel,
   isTheaterMemoryRequest,
   isTheaterRequest,
   preservesRequestedModel,
@@ -117,7 +118,7 @@ test('vision background selector only returns vision-capable Flash models', () =
     'gemini-3.1-flash-lite',
     'gemini-3.1-flash',
     'gemini-3.1-pro-vision',
-  ], { vision: true }), 'gemini-3.1-flash');
+  ], { vision: true }), 'gemini-3.1-flash-lite');
 });
 
 test('rewritten non-Chat calls carry the effective task purpose into usage logs', () => {
