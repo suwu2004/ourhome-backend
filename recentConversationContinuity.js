@@ -8,11 +8,11 @@ const DEFAULT_OPTIONS = Object.freeze({
 
 function compact(value) {
   return String(value ?? '')
-    .replace(/<intimacy_control\\b[^<>]*\\/?>/gi, '')
-    .replace(/<scheduler_control\\b[^<>]*\\/?>/gi, '')
-    .replace(/<external_flow_control\\b[^<>]*\\/?>/gi, '')
-    .replace(/^\\[历史时间[：:]\\s*[^\\]]+\\]\\s*/u, '')
-    .replace(/\\s+/g, ' ')
+    .replace(/<intimacy_control\b[^<>]*\/?>/gi, '')
+    .replace(/<scheduler_control\b[^<>]*\/?>/gi, '')
+    .replace(/<external_flow_control\b[^<>]*\/?>/gi, '')
+    .replace(/^\[历史时间[：:]\s*[^\]]+\]\s*/u, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -34,7 +34,7 @@ function timeLabel(value) {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
-  }).format(date).replace(/\\//g, '-');
+  }).format(date).replace(/\//g, '-');
 }
 
 function buildRecentConversationContinuityBlock(history = [], options = {}) {
@@ -73,7 +73,7 @@ function buildRecentConversationContinuityBlock(history = [], options = {}) {
     '3. 区分用户明确说过的事实与陆泽自己的猜测；用户后续澄清优先于陆泽先前的推测。',
     '4. 只有摘录确实没有答案时，才询问缺失的信息；不要用宽泛问题让用户重复刚讲过的内容。',
     ...rendered,
-  ].join('\\n');
+  ].join('\n');
 }
 
 module.exports = { buildRecentConversationContinuityBlock, clipText };
