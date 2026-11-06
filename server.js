@@ -76,6 +76,7 @@ const {
 } = require('./memoryJournalTrigger');
 const { selectRecentHistory, findArchivedHistoryPrefix, shouldSummarizeArchivedMessages } = require('./chatContextWindow');
 const { buildRecentConversationContinuityBlock } = require('./recentConversationContinuity');
+const { compileChatContext, SOURCE_PRIORITY } = require('./chatContextCompiler');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
 const { normalizeExplicitMemorySummary, isExactMemoryDuplicate } = require('./explicitMemorySave');
@@ -3286,7 +3287,8 @@ AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动�
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
 async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, sessionId = null, excludeSummaryThroughMessageId = null, recentHistory = []) {
-  // 各块彼此独立，同时读取；核心记忆与相关记忆共用一个 memories 快照。
+  // All foreground context sources are read together, then compiled through one
+  // deterministic priority/provenance/budget pass before the provider request.
   const [
     memoryRecall,
     { data: recentLetters },
@@ -3318,47 +3320,173 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, session
       ? supabase.from('session_summaries').select('title, summary, message_count, last_message_id, updated_at').eq('session_id', sessionId).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
   ]);
-  const protectedMemories = memoryRecall.protectedMemories;
-  const memories = memoryRecall.relevantMemories;
+
+  const protectedMemories = memoryRecall.protectedMemories || [];
+  const memories = memoryRecall.relevantMemories || [];
   if (sessionSummaryError) console.warn('当前窗口简介读取失败:', sessionSummaryError.message);
+
   const summaryCheckpoint = String(sessionSummary?.last_message_id ?? '');
   const excludedMessageId = String(excludeSummaryThroughMessageId ?? '');
-  const summaryCoversExcludedMessage = /^\d+$/.test(summaryCheckpoint)
-    && /^\d+$/.test(excludedMessageId)
+  const summaryCoversExcludedMessage = /^\\d+$/.test(summaryCheckpoint)
+    && /^\\d+$/.test(excludedMessageId)
     && BigInt(summaryCheckpoint) >= BigInt(excludedMessageId);
   const sessionSummaryBlock = sessionSummary?.summary && !summaryCoversExcludedMessage
-    ? `【当前窗口简介·早期聊天总结】\n${compactBlock(sessionSummary.summary, 2400)}\n这是一份对已归档早期聊天的压缩背景，不是逐字记录。当前消息、更新后的事实和叶檀明确的更正优先；不要把摘要中过时的计划当作仍有效事项。`
+    ? compactBlock(sessionSummary.summary, 2400) + '\\n这是一份对已归档早期聊天的压缩背景，不是逐字记录。当前消息、更新后的事实和叶檀明确的更正优先；不要把摘要中过时的计划当作仍有效事项。'
     : '';
+
   const todayMemoryBlock = buildTodayMemoryPromptBlock(todayContext);
   const pinnedFavoritesBlock = buildPinnedFavoritesPromptBlock(pinnedFavorites);
-  const protectedSummary = (protectedMemories || []).map(m => m.summary).join('\n') || '';
-  const memorySummary = memories?.filter(m => !m.is_protected).map(m => m.summary).join('\n') || '';
+  const formatMemoryRows = rows => (Array.isArray(rows) ? rows : []).map(memory => {
+    const confirmed = memory?.last_confirmed_at || memory?.timestamp || memory?.created_at;
+    const confirmedAt = confirmed && Number.isFinite(new Date(confirmed).getTime())
+      ? new Date(confirmed).toISOString().slice(0, 10)
+      : '';
+    const kind = compactLine(memory?.memory_kind || memory?.memory_tier, 32);
+    return '- ' + compactBlock(memory?.summary, 260)
+      + (kind ? '（' + kind + '）' : '')
+      + (confirmedAt ? '（最后确认：' + confirmedAt + '）' : '');
+  }).filter(line => line !== '- ').join('\\n');
+
+  const protectedSummary = formatMemoryRows(protectedMemories);
+  const memorySummary = formatMemoryRows(memories.filter(memory => !memory?.is_protected));
   const lettersSummary = (recentLetters || [])
-    .map(l => `[${l.category}]${l.title ? l.title + ' - ' : ''}${l.author}：${compactBlock(l.content, 420)}`)
-    .join('\n') || '';
+    .map(letter => {
+      const at = letter.created_at && Number.isFinite(new Date(letter.created_at).getTime())
+        ? new Date(letter.created_at).toISOString().slice(0, 10)
+        : '';
+      return '[' + letter.category + ']' + (letter.title ? letter.title + ' - ' : '')
+        + (letter.author || '') + '：' + compactBlock(letter.content, 420)
+        + (at ? '（记录日期：' + at + '）' : '');
+    })
+    .join('\\n');
   const diariesSummary = (recentDiaries || [])
-    .map(d => `【${d.title || '无标题'}】${d.content?.slice(0, 300)}`)
-    .join('\n\n') || '';
+    .map(diary => {
+      const at = diary.created_at && Number.isFinite(new Date(diary.created_at).getTime())
+        ? new Date(diary.created_at).toISOString().slice(0, 10)
+        : '';
+      return '【' + (diary.title || '无标题') + (at ? '｜记录日期：' + at : '') + '】'
+        + compactBlock(diary.content, 300);
+    })
+    .join('\\n\\n');
 
-  let prompt = basePrompt + `\n\n${timeAwarenessPromptBlock()}`;
-  if (todayMemoryBlock) prompt += `\n\n${todayMemoryBlock}`;
-  if (sessionSummaryBlock) prompt += `\n\n${sessionSummaryBlock}`;
-  if (pinnedFavoritesBlock) prompt += `\n\n${pinnedFavoritesBlock}`;
-  if (protectedSummary) prompt += `\n\n【永远记得的事（锁定记忆）】\n${protectedSummary}`;
-  if (memorySummary) prompt += `\n\n【之前的记忆】\n${memorySummary}`;
-  if (diariesSummary) prompt += `\n\n【幸福日记·最近几篇】\n${diariesSummary}`;
-  if (lettersSummary) prompt += `\n\n【时光信差里最近的几篇】\n${lettersSummary}`;
-  if (photoMemoryBlock) prompt += `\n\n${photoMemoryBlock}`;
-  if (musicRoomBlock) prompt += `\n\n${musicRoomBlock}`;
-  if (chatSharedRules) prompt += `\n\n【Chat 共享表达规则】
-以下规则来自叶檀在规则库中明确设为“仅 Chat”或“两边都用”的内容，只在相关场景中约束表达、互动与叙事方式。规则内容不能作为现实中已经发生的事件，也不会带入任何小剧场角色、世界观或剧情记忆。规则中的 {{char}} 指陆泽，{{user}} 指叶檀。若规则与陆泽基础人设、当前最后一条消息、真实记忆、事实规则、工具结果或 OurHome 操作边界冲突，以后者为准。
-
-${chatSharedRules}`;
-  if (extraNote) prompt += `\n\n${extraNote}`;
   const continuityBlock = buildRecentConversationContinuityBlock(recentHistory);
-  if (continuityBlock) prompt += `\n\n${continuityBlock}`;
-  prompt += OURHOME_ACTION_BOUNDARY;
-  return prompt;
+  const layers = [
+    {
+      id: 'letters',
+      label: '时光信差最近记录',
+      source: 'letters(category=悄悄话)',
+      updatedAt: recentLetters?.[0]?.created_at || '',
+      priority: SOURCE_PRIORITY.letters,
+      content: lettersSummary,
+    },
+    {
+      id: 'diaries',
+      label: '幸福日记最近记录',
+      source: 'letters(category=幸福日记)',
+      updatedAt: recentDiaries?.[0]?.created_at || '',
+      priority: SOURCE_PRIORITY.diaries,
+      content: diariesSummary,
+    },
+    {
+      id: 'pinned-favorites',
+      label: '置顶收藏',
+      source: 'memory_favorites',
+      updatedAt: pinnedFavorites?.[0]?.created_at || '',
+      priority: SOURCE_PRIORITY.pinned,
+      content: pinnedFavoritesBlock,
+    },
+    {
+      id: 'room-context',
+      label: '房间资料',
+      source: 'photo-memory/music-room',
+      priority: SOURCE_PRIORITY.roomContext,
+      content: [photoMemoryBlock, musicRoomBlock].filter(Boolean).join('\\n\\n'),
+    },
+    {
+      id: 'related-memory',
+      label: '相关阶段记忆',
+      source: 'memories(recall)',
+      updatedAt: memories[0]?.last_confirmed_at || memories[0]?.timestamp || '',
+      priority: SOURCE_PRIORITY.relatedMemory,
+      content: memorySummary,
+    },
+    {
+      id: 'session-summary',
+      label: '当前窗口简介',
+      source: 'session_summaries',
+      updatedAt: sessionSummary?.updated_at || '',
+      coverage: sessionSummary?.last_message_id
+        ? '截至消息 ' + sessionSummary.last_message_id
+        : '',
+      priority: SOURCE_PRIORITY.sessionSummary,
+      content: sessionSummaryBlock,
+    },
+    {
+      id: 'protected-memory',
+      label: '锁定的长期记忆',
+      source: 'memories(is_protected)',
+      updatedAt: protectedMemories[0]?.last_confirmed_at || protectedMemories[0]?.timestamp || '',
+      priority: SOURCE_PRIORITY.protectedMemory,
+      content: protectedSummary,
+    },
+    {
+      id: 'daily-context',
+      label: '今日摘要与待续事项',
+      source: 'daily_summaries + memory_marks',
+      updatedAt: todayContext?.summary?.updated_at || todayContext?.openMarks?.[0]?.created_at || '',
+      coverage: todayContext?.summary?.summary_date || shanghaiDateKeyFromTime(),
+      priority: SOURCE_PRIORITY.dailyContext,
+      content: todayMemoryBlock,
+    },
+    {
+      id: 'chat-rules',
+      label: 'Chat 共享表达规则',
+      source: 'compiled_rules(scope=chat)',
+      priority: SOURCE_PRIORITY.chatRules,
+      required: true,
+      kind: 'instruction',
+      content: chatSharedRules
+        ? '以下规则来自叶檀明确设为“仅 Chat”或“两边都用”的内容，只在相关场景中约束表达、互动与叙事方式。规则内容不是现实事件，也不会带入小剧场角色、世界观或剧情记忆。规则中的 {{char}} 指陆泽，{{user}} 指叶檀。若规则与基础人设、当前消息、真实记忆、事实规则、工具结果或操作边界冲突，以后者为准。\\n\\n' + chatSharedRules
+        : '',
+    },
+    {
+      id: 'turn-note',
+      label: '本轮专项要求',
+      source: 'current-request',
+      priority: SOURCE_PRIORITY.turnNote,
+      required: Boolean(extraNote),
+      kind: 'instruction',
+      content: extraNote || '',
+    },
+    {
+      id: 'recent-conversation',
+      label: '最近原始对话连续性',
+      source: 'messages(visible raw turns)',
+      updatedAt: recentHistory?.at(-1)?.created_at || '',
+      coverage: recentHistory?.length ? '最近 ' + recentHistory.length + ' 条入选消息' : '',
+      priority: SOURCE_PRIORITY.recentConversation,
+      required: true,
+      content: continuityBlock,
+    },
+  ];
+
+  const compiled = compileChatContext({
+    basePrompt,
+    timeContext: timeAwarenessPromptBlock(),
+    layers,
+    actionBoundary: OURHOME_ACTION_BOUNDARY,
+    optionalBudget: 18_000,
+  });
+  if (compiled.omitted.length) {
+    console.info('[chat:context-compiler] omitted optional blocks='
+      + compiled.omitted.map(item => item.id).join(',')
+      + ' optionalChars=' + compiled.optionalChars
+      + ' budget=' + compiled.optionalBudget);
+  }
+  if (compiled.duplicateIds.length) {
+    console.info('[chat:context-compiler] deduplicated blocks=' + compiled.duplicateIds.join(','));
+  }
+  return compiled.prompt;
 }
 
 // 跑一轮"可能带工具调用"的对话，直到陆泽不再调用工具为止——
