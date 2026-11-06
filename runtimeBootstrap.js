@@ -28,10 +28,13 @@ require('./luzeLearningResiliencePatch');
 require('./runtimeTimeoutGuardPatch');
 require('./photoRetentionPatch');
 require('./photoMemoryVisionPatch');
-// Load before contextLedgerPatch so its wrapper sees the final post-ledger payload.
+// The fetch wrappers are nested: the context ledger must be injected first,
+// then the current-turn guard must be appended after it, immediately before the
+// final provider payload budget. This keeps historical context from outranking
+// the live dialogue simply because it was appended later.
 require('./mainChatPayloadBudgetPatch');
-require('./contextLedgerPatch');
 require('./chatCurrentTurnGuardPatch');
+require('./contextLedgerPatch');
 require('./lorebookPatch');
 require('./intimacyFlowAutonomyPatch');
 require('./chatPromptCleanupPatch');
