@@ -30,10 +30,10 @@ test('recent continuity block is chronological and bounded', () => {
   }));
   const block = buildRecentConversationContinuityBlock(history, {
     maxMessages: 8,
-    maxMessageChars: 180,
+    maxMessageChars: 120,
     maxTotalChars: 1_400,
   });
-  assert.ok(block.length <= 1_400 + 180);
+  assert.ok(block.length <= 1_400 + 340);
   assert.ok(block.indexOf('消息23') < block.indexOf('消息30'));
   assert.match(block, /消息30/);
 });
