@@ -74,14 +74,20 @@ const {
   isMemoryContinuationCue,
   shouldAnalyzeMemoryJournalContinuation,
 } = require('./memoryJournalTrigger');
-const { selectRecentHistory, findArchivedHistoryPrefix, shouldSummarizeArchivedMessages } = require('./chatContextWindow');
+const {
+  selectRecentHistory,
+  findArchivedHistoryPrefix,
+  shouldSummarizeArchivedMessages,
+  DEFAULT_ARCHIVED_SUMMARY_MIN_MESSAGES: SESSION_SUMMARY_AUTO_MIN_MESSAGES,
+  DEFAULT_ARCHIVED_SUMMARY_MIN_TOKENS: SESSION_SUMMARY_AUTO_MIN_TOKENS,
+} = require('./chatContextWindow');
 const { buildRecentConversationContinuityBlock } = require('./recentConversationContinuity');
 const { compileChatContext, SOURCE_PRIORITY } = require('./chatContextCompiler');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
 const { normalizeExplicitMemorySummary, isExactMemoryDuplicate } = require('./explicitMemorySave');
 const { projectBackgroundPersona } = require('./backgroundPersona');
-const { cheapestModel, AUTOMATION_HEARTBEAT_PURPOSE } = require('./nonChatBudgetPatch');
+const { cheapestModel, AUTOMATION_HEARTBEAT_PURPOSE, SESSION_SUMMARY_AUTO_PURPOSE } = require('./nonChatBudgetPatch');
 const {
   extractThinkingText,
   stripThinkingMarkup,
@@ -123,8 +129,6 @@ const WEATHER_REQUEST_TIMEOUT_MS = 8000;
 const WEATHER_REQUEST_ATTEMPTS = 2;
 const HOME_MEMO_CONTENT_LIMIT = 50;
 const DAILY_HOME_MEMO_DUE_MINUTES = 8 * 60;
-const SESSION_SUMMARY_AUTO_MIN_MESSAGES = 12;
-const SESSION_SUMMARY_AUTO_MIN_TOKENS = 6000;
 const activeSessionSummaryJobs = new Set();
 let uploadBucketReady = false;
 
@@ -2966,7 +2970,7 @@ async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
     maxTokens: 2400,
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.25,
-    purpose: 'session-summary-single-pass',
+    purpose: SESSION_SUMMARY_AUTO_PURPOSE,
   });
   if (result?.stop_reason === 'max_tokens') {
     throw new Error('窗口简介模型输出达到上限，保留上一份简介；本次不会重试或推进游标');
@@ -2996,7 +3000,7 @@ async function maybeGenerateAutomaticSessionSummary(sessionId, options = {}) {
     .select('*')
     .single();
   if (error) throw error;
-  console.log('[memory:session-summary] incremental update provider_calls=1 session=' + sessionId + ' archived=' + archivedRows.length + ' total=' + payload.message_count);
+  console.log('[memory:session-summary:auto] incremental update provider_calls=1 session=' + sessionId + ' archived=' + archivedRows.length + ' total=' + payload.message_count);
   return data;
 }
 

@@ -6,6 +6,8 @@ const RECENT_LIFE_FACT_RE = /(?:我|今天|昨天|前天|刚才|刚刚|早上|�
 const RECENT_LIFE_PLAN_RE = /(?:明天|后天|以后|下周|周末|准备|打算|想要|计划|可能会|应该会)/u;
 const RECENT_LIFE_CONTEXT_HOURS = 72;
 const RECENT_LIFE_FACT_MESSAGES = 8;
+const DEFAULT_ARCHIVED_SUMMARY_MIN_MESSAGES = 30;
+const DEFAULT_ARCHIVED_SUMMARY_MIN_TOKENS = 12_000;
 
 function normalizePositiveInteger(value, fallback, max) {
   const parsed = Number.parseInt(value, 10);
@@ -48,8 +50,8 @@ function findArchivedHistoryPrefix(history = [], contextHistory = []) {
 function shouldSummarizeArchivedMessages(messages = [], options = {}) {
   const rows = Array.isArray(messages) ? messages : [];
   if (!rows.length) return false;
-  const minMessages = normalizePositiveInteger(options.minMessages, 12, 1000);
-  const minTokens = normalizePositiveInteger(options.minTokens, 6000, 1_000_000);
+  const minMessages = normalizePositiveInteger(options.minMessages, DEFAULT_ARCHIVED_SUMMARY_MIN_MESSAGES, 1000);
+  const minTokens = normalizePositiveInteger(options.minTokens, DEFAULT_ARCHIVED_SUMMARY_MIN_TOKENS, 1_000_000);
   const estimatedTokens = rows.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   return rows.length >= minMessages || estimatedTokens >= minTokens;
 }
@@ -164,6 +166,8 @@ module.exports = {
   estimateTextTokens,
   estimateMessageTokens,
   findArchivedHistoryPrefix,
+  DEFAULT_ARCHIVED_SUMMARY_MIN_MESSAGES,
+  DEFAULT_ARCHIVED_SUMMARY_MIN_TOKENS,
   shouldSummarizeArchivedMessages,
   formatTimelineStamp,
   stripHistoryTimelineAnnotations,

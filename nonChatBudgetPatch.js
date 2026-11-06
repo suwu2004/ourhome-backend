@@ -13,6 +13,7 @@ const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
 const HEARTBEAT_BACKOFF_MS = 60 * 60 * 1000;
 const AUTOMATION_HEARTBEAT_PURPOSE = 'automation-heartbeat';
+const SESSION_SUMMARY_AUTO_PURPOSE = 'session-summary-auto';
 const modelCache = new Map();
 let heartbeatBackoffUntil = 0;
 const SMART_BACKGROUND_PURPOSES = new Set([
@@ -159,11 +160,26 @@ function budgetScore(model) {
   return score;
 }
 
+function isFlashModel(model) {
+  return /flash/i.test(String(model || ''));
+}
+
+function isGemini38FlashModel(model) {
+  // Provider/router prefixes are allowed; match the Gemini 3.8 Flash model
+  // identity anywhere in the exposed model ID.
+  return /gemini[-_.]?3[._-]8.*flash/i.test(String(model || ''));
+}
+
 function pickBudgetModel(models, { vision = false } = {}) {
   return [...new Set((Array.isArray(models) ? models : []).map(String).filter(Boolean))]
     .filter(isCandidate)
+    .filter(isFlashModel)
     .filter(model => !vision || isLikelyVisionModel(model))
-    .sort((a, b) => budgetScore(a) - budgetScore(b) || String(a).localeCompare(String(b)))[0] || '';
+    .sort((a, b) =>
+      Number(isGemini38FlashModel(b)) - Number(isGemini38FlashModel(a))
+      || budgetScore(a) - budgetScore(b)
+      || String(a).localeCompare(String(b))
+    )[0] || '';
 }
 
 function parseModels(payload) {
@@ -218,7 +234,9 @@ async function fetchAvailableModels(runtime) {
 
 async function cheapestModel({ vision = false } = {}) {
   const forced = String(process.env.NON_CHAT_MODEL || '').trim();
-  if (forced && (!vision || isLikelyVisionModel(forced))) return forced;
+  // Background routing is intentionally Flash-only. Even an explicit override
+  // must not silently reintroduce a premium non-Flash model.
+  if (forced && isFlashModel(forced) && (!vision || isLikelyVisionModel(forced))) return forced;
 
   const runtime = await activeProfileRuntime();
   if (!runtime) return '';
@@ -237,7 +255,7 @@ async function cheapestModel({ vision = false } = {}) {
     // Never silently fall back to an expensive active Chat model. A model that is
     // already clearly in the low-cost family may still be used as a safe fallback.
     const selected = String(runtime.selected_model || '').trim();
-    if (selected && budgetScore(selected) <= 3.8 && (!vision || isLikelyVisionModel(selected))) return selected;
+    if (selected && isFlashModel(selected) && budgetScore(selected) <= 3.8 && (!vision || isLikelyVisionModel(selected))) return selected;
     return '';
   }
 }
@@ -252,7 +270,7 @@ function inferPurpose(body) {
   if (/记忆日志/.test(text)) return 'memory-journal';
   if (/隐藏接续账本|滚动账本/.test(text)) return 'context-ledger';
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
-  if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return 'session-summary';
+  if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return SESSION_SUMMARY_AUTO_PURPOSE;
   if (isTheaterRequest(body)) return 'theater';
   if (/幸福日记/.test(text)) return 'happiness-diary';
   if (/心情日历/.test(text)) return 'daily-mood';
@@ -340,7 +358,10 @@ try {
 
 module.exports = {
   AUTOMATION_HEARTBEAT_PURPOSE,
+  SESSION_SUMMARY_AUTO_PURPOSE,
   budgetScore,
+  isFlashModel,
+  isGemini38FlashModel,
   pickBudgetModel,
   isToyboxRequest,
   isTheaterMemoryRequest,

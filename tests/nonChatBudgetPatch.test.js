@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   inferPurpose,
+  pickBudgetModel,
   isTheaterMemoryRequest,
   isTheaterRequest,
   preservesRequestedModel,
@@ -40,6 +41,15 @@ test('heartbeat is explicitly recognized and stays on the cheap background path'
   };
   assert.equal(inferPurpose(body), 'automation-heartbeat');
   assert.equal(shouldPreserveRequestedModelForCall('automation-heartbeat', body), false);
+});
+
+test('automatic session summaries have a distinct cheap-background task purpose', () => {
+  const body = {
+    system: '请根据旧聊天内容生成窗口简介。',
+    messages: [{ role: 'user', content: '增量整理归档消息并更新窗口简介。' }],
+  };
+  assert.equal(inferPurpose(body), 'session-summary-auto');
+  assert.equal(shouldPreserveRequestedModelForCall('session-summary-auto', body), false);
 });
 
 test('Happiness Diary and final learning synthesis retain the intended Chat model', () => {
@@ -99,6 +109,34 @@ test('unavailable low-cost models are blocked instead of falling back to a costl
   assert.match(source, /Never silently fall back to an expensive active Chat model/);
   assert.match(source, /ourhome_budget_model_unavailable/);
   assert.match(source, /blocked paid non-chat call/);
+});
+
+test('background selector prefers every Gemini 3.8 Flash alias regardless of provider prefix', () => {
+  assert.equal(pickBudgetModel([
+    'claude-haiku-4-5',
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+    'openrouter/google/gemini-3.8-flash-preview',
+    'vendor-prefix/gemini-3.8-flash',
+    'claude-opus-4-6',
+  ]), 'openrouter/google/gemini-3.8-flash-preview');
+  assert.equal(pickBudgetModel([
+    'gemini-3.1-flash-lite',
+    'vendor-prefix/gemini-3.8-flash',
+  ]), 'vendor-prefix/gemini-3.8-flash');
+  assert.equal(pickBudgetModel(['claude-haiku-4-5', 'gemini-3.1-pro-preview']), '');
+});
+
+test('model-list failure fallback cannot reintroduce a non-Flash selected model', () => {
+  assert.match(source, /selected && isFlashModel\(selected\)/);
+});
+
+test('vision background selector only returns vision-capable Flash models', () => {
+  assert.equal(pickBudgetModel([
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+    'gemini-3.1-pro-vision',
+  ], { vision: true }), 'gemini-3.1-flash-lite');
 });
 
 test('rewritten non-Chat calls carry the effective task purpose into usage logs', () => {

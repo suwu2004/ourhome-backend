@@ -35,10 +35,17 @@ test('窗口总结沿连续上下文尾部推进游标，不会跳过被额外�
   );
 });
 
-test('窗口总结在已归档消息达到数量或 token 阈值时触发', () => {
-  const small = Array.from({ length: 11 }, (_, index) => row(index + 1, '短消息'));
-  assert.equal(shouldSummarizeArchivedMessages(small), false);
-  assert.equal(shouldSummarizeArchivedMessages([...small, row(12, '短消息')]), true);
+test('自动窗口简介按30条消息或12000估算 tokens 批量触发', () => {
+  const belowMessageThreshold = Array.from({ length: 29 }, (_, index) => row(index + 1, '短消息'));
+  assert.equal(shouldSummarizeArchivedMessages(belowMessageThreshold), false);
+  assert.equal(shouldSummarizeArchivedMessages([...belowMessageThreshold, row(30, '短消息')]), true);
+
+  // 14 archived messages were enough to trigger the previous 12-message / 6000-token policy.
+  const belowTokenThreshold = Array.from({ length: 14 }, (_, index) => row(index + 1, '今'.repeat(700)));
+  assert.equal(shouldSummarizeArchivedMessages(belowTokenThreshold), false);
+
+  const aboveTokenThreshold = Array.from({ length: 18 }, (_, index) => row(index + 1, '今'.repeat(700)));
+  assert.equal(shouldSummarizeArchivedMessages(aboveTokenThreshold), true);
   assert.equal(shouldSummarizeArchivedMessages([row(1, '今天'.repeat(6000))]), true);
 });
 
