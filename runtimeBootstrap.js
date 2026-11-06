@@ -28,10 +28,13 @@ require('./luzeLearningResiliencePatch');
 require('./runtimeTimeoutGuardPatch');
 require('./photoRetentionPatch');
 require('./photoMemoryVisionPatch');
-// Load before contextLedgerPatch so its wrapper sees the final post-ledger payload.
+// The fetch wrappers are nested: the context ledger must be injected first,
+// then the current-turn guard must be appended after it, immediately before the
+// final provider payload budget. This keeps historical context from outranking
+// the live dialogue simply because it was appended later.
 require('./mainChatPayloadBudgetPatch');
-require('./contextLedgerPatch');
 require('./chatCurrentTurnGuardPatch');
+require('./contextLedgerPatch');
 require('./lorebookPatch');
 require('./intimacyFlowAutonomyPatch');
 require('./chatPromptCleanupPatch');
@@ -61,7 +64,7 @@ require('./theaterReplyLengthGuardPatch');
 require('./theaterThinkingPatch');
 // Session-summary economy: a long window must not fan out into dozens of provider calls.
 require('./sessionSummaryEconomyPatch');
-// Final relay safety net: cap oversized foreground Chat requests before they reach the provider.
-require('./relayContextBudgetPatch');
+// Main Chat has one final payload-budget owner. It runs after historical ledger
+// injection and current-turn prioritization, so there is no earlier competing trim.
 
 module.exports = { renderFrontdoorPatch };

@@ -8,7 +8,15 @@ const { isMainChatRequest } = require('./intimacyFlowSupport');
 
 const previousFetch = globalThis.fetch;
 const MARKER = '<ourhome_current_turn_guard>';
-const GUARD = `${MARKER}\n【当前轮优先级】\nmessages 数组里最后一条 user 消息（或工具回传）才是这一轮正在处理的当前输入。系统提示中的“今日摘要”“今日重点”“未完待续”、长期记忆、隐藏接续账本和其他历史材料都只是背景资料，绝不能当成叶檀刚刚又发了一遍的话，也不能因为历史材料重复出现就去回复上一轮。若背景与当前最后一条 user 消息在话题或时序上冲突，始终以当前最后一条 user 消息为准；只有当前消息明确接续旧话题时，才自然调用对应背景。\n</ourhome_current_turn_guard>`;
+const GUARD = `${MARKER}\n【当前轮与接话连续性优先级】\nmessages 数组里最后一条 user 消息才是这一轮正在处理的输入。当前对话原文优先于窗口简介、今日摘要、临时记忆、长期记忆和隐藏接续账本；这些资料只能补充背景，不能覆盖或重写刚发生的对话。\n当叶檀说“吃饱了、吃完了、喝完了、到家了、下课了、弄好了、继续”等承接句时，必须先回看 messages 中紧邻的原始对话，沿用已经明确出现的对象、事实和进度，不要再次询问她刚刚已经回答过的信息。若前文已经说明吃了什么、做了什么、去了哪里或正在处理什么，应直接自然承接。\n用户明确纠正过的事实优先于陆泽先前的猜测；新确认的事实优先于旧摘要中的过时描述。助手自己的猜测不得升级成用户事实。只有原始对话确实没有提供答案时，才询问缺失信息。\n不要因为历史材料重复出现就回复上一轮，也不要把摘要里的旧计划误认为当前正在执行。\n</ourhome_current_turn_guard>`;
+
+function requestPurpose(init = {}) {
+  try {
+    return String(new Headers(init?.headers || undefined).get('X-OurHome-Call-Purpose') || '').trim();
+  } catch {
+    return '';
+  }
+}
 
 function appendGuard(system) {
   if (typeof system === 'string') {
@@ -31,6 +39,8 @@ function guardCurrentTurn(body = {}) {
 if (typeof previousFetch === 'function') {
   globalThis.fetch = async function currentTurnGuardFetch(input, init = {}) {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
+    // Ledger summarization is a maintenance request, not a live user turn.
+    if (requestPurpose(init) === 'context-ledger') return previousFetch(input, init);
     if (typeof init?.body !== 'string') return previousFetch(input, init);
     try {
       const body = JSON.parse(init.body);
@@ -49,7 +59,7 @@ try {
   const originalJson = express.response.json;
   express.response.json = function currentTurnGuardHealthJson(body) {
     if (body?.message === '在云端漫步' && body?.status === 'ok') {
-      body = { ...body, chat_current_turn: 'latest-user-wins-v1' };
+      body = { ...body, chat_current_turn: 'latest-user-continuity-v2' };
     }
     return originalJson.call(this, body);
   };
