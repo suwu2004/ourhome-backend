@@ -34,8 +34,8 @@ test('higher-priority corrections are selected first and rendered after older su
     ],
   });
 
-  assert.ok(result.prompt.indexOf('旧窗口简介') < result.prompt.indexOf('今日摘要'));
-  assert.ok(result.prompt.indexOf('今日摘要') < result.prompt.indexOf('最近纠正'));
+  assert.ok(result.prompt.indexOf('【旧窗口简介｜') < result.prompt.indexOf('【今日摘要｜'));
+  assert.ok(result.prompt.indexOf('【今日摘要｜') < result.prompt.indexOf('【最近纠正｜'));
   assert.match(result.prompt, /用户明确更正优先于助手猜测/);
 });
 
@@ -62,7 +62,7 @@ test('required context cannot be replaced by a higher-priority optional duplicat
   });
 
   assert.match(result.prompt, /明确更正/);
-  assert.doesNotMatch(result.prompt, /旧摘要/);
+  assert.doesNotMatch(result.prompt, /【旧摘要｜/);
   assert.deepEqual(result.duplicateIds, ['optional']);
 });
 
@@ -95,6 +95,6 @@ test('layer metadata preserves provenance, update time, and coverage checkpoint'
   });
 
   assert.match(result.prompt, /来源：session_summaries/);
-  assert.match(result.prompt, /更新时间：2026-11-06T08:30:00+08:00/);
+  assert.match(result.prompt, /更新时间：2026-11-06T08:30:00\\+08:00/);
   assert.match(result.prompt, /覆盖：截至消息 19501/);
 });
