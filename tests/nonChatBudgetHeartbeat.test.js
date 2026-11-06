@@ -42,10 +42,11 @@ test('主动心跳沿用现有最低成本模型选择器', () => {
   assert.match(source, /selected && isFlashModel\(selected\)/);
 });
 
-test('后台调用按显式 purpose 路由，且 5xx 心跳进入本地冷却', () => {
-  assert.match(source, /shouldPreserveRequestedModelForCall\(effectivePurpose, body\)/);
-  assert.match(source, /heartbeatBackoffUntil > Date\.now\(\)/);
-  assert.match(source, /response\.status >= 500/);
-  assert.match(source, /HEARTBEAT_BACKOFF_MS = 60 \* 60 \* 1000/);
+test('后台调用按显式 purpose 路由，且 5xx 与网络异常心跳都进入本地冷却', () => {
+  assert.match(source, /shouldPreserveRequestedModelForCall\\(effectivePurpose, body\\)/);
+  assert.match(source, /heartbeatBackoffUntil > Date\\.now\\(\\)/);
+  assert.match(source, /response\\.status >= 500/);
+  assert.match(source, /catch \\(error\\) \\{[\\s\\S]*?if \\(heartbeat\\) heartbeatBackoffUntil = Date\\.now\\(\\) \\+ HEARTBEAT_BACKOFF_MS/);
+  assert.match(source, /HEARTBEAT_BACKOFF_MS = 60 \\* 60 \\* 1000/);
   assert.match(source, /chat-writing-v6-cheap-heartbeat-theater-memory/);
 });
