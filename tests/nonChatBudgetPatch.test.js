@@ -1,20 +1,54 @@
+'use strict';
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const {
   inferPurpose,
   isTheaterMemoryRequest,
   isTheaterRequest,
   preservesRequestedModel,
+  shouldPreserveRequestedModelForCall,
 } = require('../nonChatBudgetPatch');
 
-const source = fs.readFileSync(path.resolve(__dirname, '..', 'nonChatBudgetPatch.js'), 'utf8');
+const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'nonChatBudgetPatch.js'), 'utf8');
+const sharedChatPersona = [
+  '【回复长度】普通聊天的回复长度规则',
+  '【OurHome 房间与入口认知（事实规则）】聊天上下文说明',
+];
 
-test('main Chat, Toy Bear, and interactive Theater are exempt from the global non-Chat budget rewrite', () => {
-  assert.match(source, /!heartbeat && isMainChatRequest\(url, body\)/);
-  assert.match(source, /isToyboxRequest\(body\) \|\| isTheaterRequest\(body\)/);
-  assert.match(source, /Interactive Chat, Toy Bear, and Theater keep their own selected model/);
+test('foreground Chat pricing requires an explicit purpose, not inherited system-prompt markers', () => {
+  const body = { system: sharedChatPersona.join('\n'), messages: [{ role: 'user', content: '早上好' }] };
+  assert.equal(shouldPreserveRequestedModelForCall('chat', body), true);
+  assert.equal(shouldPreserveRequestedModelForCall('non-chat-budget', body), false);
+  assert.doesNotMatch(source, /isMainChatRequest\(url, body\)/);
+});
+
+test('background diary and mood tasks remain cheap even when they reuse the Chat persona', () => {
+  const body = {
+    system: [...sharedChatPersona, '【心情日历边界】后台记录任务'].join('\n'),
+    messages: [{ role: 'user', content: '给今天留一段心情' }],
+  };
+  assert.equal(shouldPreserveRequestedModelForCall('daily-mood', body), false);
+  assert.equal(shouldPreserveRequestedModelForCall('home-memo', body), false);
+  assert.equal(shouldPreserveRequestedModelForCall('memory-dream-review', body), false);
+});
+
+test('heartbeat is explicitly recognized and stays on the cheap background path', () => {
+  const body = {
+    system: sharedChatPersona.join('\n'),
+    messages: [{ role: 'user', content: '这不是叶檀刚发来的消息，而是自动心跳提醒你' }],
+  };
+  assert.equal(inferPurpose(body), 'automation-heartbeat');
+  assert.equal(shouldPreserveRequestedModelForCall('automation-heartbeat', body), false);
+});
+
+test('Happiness Diary and final learning synthesis retain the intended Chat model', () => {
+  const body = { system: sharedChatPersona.join('\n'), messages: [{ role: 'user', content: '写日记' }] };
+  assert.equal(preservesRequestedModel('happiness-diary'), true);
+  assert.equal(preservesRequestedModel('luze-learning-synthesis'), true);
+  assert.equal(shouldPreserveRequestedModelForCall('happiness-diary', body), true);
+  assert.equal(shouldPreserveRequestedModelForCall('luze-learning-synthesis', body), true);
+  assert.equal(shouldPreserveRequestedModelForCall('luze-learning-plan', body), false);
 });
 
 test('interactive Theater stays user-selected while Theater memory is cheap background work', () => {
@@ -31,40 +65,42 @@ test('interactive Theater stays user-selected while Theater memory is cheap back
   assert.equal(isTheaterMemoryRequest(memory), true);
   assert.equal(isTheaterRequest(memory), false);
   assert.equal(inferPurpose(memory), 'theater-memory');
-  assert.match(source, /Theater memory is background maintenance/);
+  assert.equal(shouldPreserveRequestedModelForCall('theater-memory', memory), false);
+  assert.equal(shouldPreserveRequestedModelForCall('theater', interactive), true);
+  assert.match(source, /Theater memory is deliberately/);
 });
 
-test('Happiness Diary and finished learning notes keep the active Chat model', () => {
-  assert.equal(preservesRequestedModel('happiness-diary'), true);
-  assert.equal(preservesRequestedModel('luze-learning-synthesis'), true);
-  assert.equal(preservesRequestedModel('daily-mood'), false);
-  assert.equal(preservesRequestedModel('luze-learning-plan'), false);
-  assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请写今天的幸福日记' }] }), 'happiness-diary');
-  assert.equal(inferPurpose({ messages: [{ role: 'user', content: '请给心情日历留一句话' }] }), 'daily-mood');
-  assert.match(source, /non_chat_model_policy: 'chat-writing-v6-cheap-heartbeat-theater-memory'/);
+test('Toy Bear remains a model-preserving exception', () => {
+  assert.equal(shouldPreserveRequestedModelForCall('non-chat-budget', {
+    system: '【玩具熊】互动模式',
+    messages: [],
+  }), true);
 });
 
-test('budget selector prefers explicit cheap hints and low-cost model families', () => {
+test('AgentMail inbox reading is excluded from the foreground Chat pricing exemption', () => {
+  const body = {
+    system: sharedChatPersona.join('\n'),
+    tools: [{ name: 'check_agentmail_inbox', description: '读取收件箱' }],
+    messages: [{ role: 'user', content: '查看收件箱里的邮件' }],
+  };
+  assert.equal(shouldPreserveRequestedModelForCall('chat', body), false);
+});
+
+test('budget selector retains its low-cost and vision safety filters', () => {
   assert.match(source, /explicitPriceHint/);
   assert.match(source, /flash\[-_ \]\?lite\|nano/);
   assert.match(source, /haiku\|mini\|lite\|small/);
   assert.match(source, /opus\|pro\|max/);
   assert.match(source, /thinking\|reasoning/);
-});
-
-test('vision helpers only choose a cheap model that is actually vision-capable', () => {
   assert.match(source, /!vision \|\| isLikelyVisionModel\(model\)/);
-  assert.match(source, /vision-reader/);
 });
 
-test('non-Chat work is blocked rather than silently falling back to an expensive active Chat model', () => {
+test('unavailable low-cost models are blocked instead of falling back to a costly Chat model', () => {
   assert.match(source, /Never silently fall back to an expensive active Chat model/);
   assert.match(source, /ourhome_budget_model_unavailable/);
   assert.match(source, /blocked paid non-chat call/);
 });
 
-test('rewritten non-Chat calls are purpose-labelled for the API audit log', () => {
-  assert.match(source, /X-OurHome-Call-Purpose/);
-  assert.match(source, /non_chat_model_policy/);
-  assert.match(source, /cheapest-except-chat-toybear-theater-v2/);
+test('rewritten non-Chat calls carry the effective task purpose into usage logs', () => {
+  assert.match(source, /headers\.set\('X-OurHome-Call-Purpose', effectivePurpose\)/);
 });
