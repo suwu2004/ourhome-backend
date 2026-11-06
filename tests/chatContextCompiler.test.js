@@ -48,8 +48,22 @@ test('exact duplicate blocks are included once with the strongest source', () =>
   });
 
   assert.equal((result.prompt.match(/用户喜欢雨天/g) || []).length, 1);
-  assert.deepEqual(result.duplicateIds, ['strong']);
+  assert.deepEqual(result.duplicateIds, ['weak']);
   assert.match(result.prompt, /来源：memories/);
+});
+
+test('required context cannot be replaced by a higher-priority optional duplicate', () => {
+  const result = compileChatContext({
+    layers: [
+      { id: 'required', label: '明确更正', source: 'messages', content: '早餐是九个小煎包。', priority: 60, required: true },
+      { id: 'optional', label: '旧摘要', source: 'session_summaries', content: '早餐是九个小煎包。', priority: 120 },
+    ],
+    optionalBudget: 0,
+  });
+
+  assert.match(result.prompt, /明确更正/);
+  assert.doesNotMatch(result.prompt, /旧摘要/);
+  assert.deepEqual(result.duplicateIds, ['optional']);
 });
 
 test('optional budget omits lower-priority background without clipping selected facts', () => {
