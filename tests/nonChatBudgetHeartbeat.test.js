@@ -35,6 +35,11 @@ test('主动心跳沿用现有最低成本模型选择器', () => {
     pickBudgetModel(['claude-haiku-4-5', 'gemini-3.1-pro-preview']),
     '',
   );
+  assert.equal(
+    pickBudgetModel(['gemini-3.1-flash', 'router/google/gemini-3.8-flash']),
+    'router/google/gemini-3.8-flash',
+  );
+  assert.match(source, /selected && isFlashModel\(selected\)/);
 });
 
 test('后台调用按显式 purpose 路由，且 5xx 心跳进入本地冷却', () => {
