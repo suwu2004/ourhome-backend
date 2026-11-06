@@ -2,6 +2,7 @@
 
 const { isMainChatRequest } = require('./intimacyFlowSupport');
 const { MAX_MAIN_CHAT_PAYLOAD_CHARS, serializedLength, payloadComponentChars, trimOldHistory } = require('./mainChatPayloadBudget');
+const { buildChatContextDiagnostics, formatChatContextDiagnostics } = require('./chatContextDiagnostics');
 
 const previousFetch = globalThis.fetch;
 const CHAT_PURPOSES = new Set(['chat', 'chat-empty-recovery']);
@@ -35,6 +36,10 @@ if (typeof previousFetch === 'function') {
       if (!body?.model || !isMainChatRequest(url, body)) return previousFetch(input, init);
 
       const nextBody = trimOldHistory(body, MAX_MAIN_CHAT_PAYLOAD_CHARS);
+      // Log only structure and character counts. Never log prompt/message content,
+      // attachments, credentials, or user facts.
+      const audit = buildChatContextDiagnostics(nextBody, purpose);
+      console.info(formatChatContextDiagnostics(audit));
       const finalChars = serializedLength(nextBody);
       if (finalChars > MAX_MAIN_CHAT_PAYLOAD_CHARS) {
         const parts = payloadComponentChars(nextBody);
