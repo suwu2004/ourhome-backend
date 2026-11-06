@@ -31,6 +31,10 @@ test('主动心跳沿用现有最低成本模型选择器', () => {
     pickBudgetModel(['claude-opus-4-6', 'claude-sonnet-4-6', 'gemini-3-flash']),
     'gemini-3-flash',
   );
+  assert.equal(
+    pickBudgetModel(['claude-haiku-4-5', 'gemini-3.1-pro-preview']),
+    '',
+  );
 });
 
 test('后台调用按显式 purpose 路由，且 5xx 心跳进入本地冷却', () => {
