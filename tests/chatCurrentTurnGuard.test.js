@@ -23,7 +23,10 @@ test('current-turn guard preserves provider messages unchanged', () => {
   };
   const next = guardCurrentTurn(body);
   assert.deepEqual(next.messages, body.messages);
-  assert.match(next.system, /绝不能当成叶檀刚刚又发了一遍的话/);
+  assert.match(next.system, /当前对话原文优先于窗口简介/);
+  assert.match(next.system, /不要再次询问她刚刚已经回答过的信息/);
+  assert.match(next.system, /用户明确纠正过的事实优先/);
+  assert.match(next.system, /只有原始对话确实没有提供答案时/);
   assert.equal(next.messages.at(-1).content, '这一条才是现在的问题');
 });
 
