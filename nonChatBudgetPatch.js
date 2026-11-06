@@ -159,9 +159,14 @@ function budgetScore(model) {
   return score;
 }
 
+function isFlashModel(model) {
+  return /flash/i.test(String(model || ''));
+}
+
 function pickBudgetModel(models, { vision = false } = {}) {
   return [...new Set((Array.isArray(models) ? models : []).map(String).filter(Boolean))]
     .filter(isCandidate)
+    .filter(isFlashModel)
     .filter(model => !vision || isLikelyVisionModel(model))
     .sort((a, b) => budgetScore(a) - budgetScore(b) || String(a).localeCompare(String(b)))[0] || '';
 }
@@ -218,7 +223,9 @@ async function fetchAvailableModels(runtime) {
 
 async function cheapestModel({ vision = false } = {}) {
   const forced = String(process.env.NON_CHAT_MODEL || '').trim();
-  if (forced && (!vision || isLikelyVisionModel(forced))) return forced;
+  // Background routing is intentionally Flash-only. Even an explicit override
+  // must not silently reintroduce a premium non-Flash model.
+  if (forced && isFlashModel(forced) && (!vision || isLikelyVisionModel(forced))) return forced;
 
   const runtime = await activeProfileRuntime();
   if (!runtime) return '';
