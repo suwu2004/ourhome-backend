@@ -92,11 +92,10 @@ function compileChatContext({
       byContent.set(layer.canonical, layer);
       continue;
     }
-    duplicateIds.push(layer.id);
-    if (layer.priority > existing.priority
-      || (layer.priority === existing.priority && layer.index > existing.index)) {
-      byContent.set(layer.canonical, layer);
-    }
+    const candidateWins = layer.priority > existing.priority
+      || (layer.priority === existing.priority && layer.index > existing.index);
+    duplicateIds.push(candidateWins ? existing.id : layer.id);
+    if (candidateWins) byContent.set(layer.canonical, layer);
   }
 
   const uniqueLayers = [...byContent.values()];
