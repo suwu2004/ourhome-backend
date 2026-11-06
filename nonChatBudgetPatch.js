@@ -163,12 +163,22 @@ function isFlashModel(model) {
   return /flash/i.test(String(model || ''));
 }
 
+function isGemini38FlashModel(model) {
+  // Provider/router prefixes are allowed; match the Gemini 3.8 Flash model
+  // identity anywhere in the exposed model ID.
+  return /gemini[-_.]?3[._-]8.*flash/i.test(String(model || ''));
+}
+
 function pickBudgetModel(models, { vision = false } = {}) {
   return [...new Set((Array.isArray(models) ? models : []).map(String).filter(Boolean))]
     .filter(isCandidate)
     .filter(isFlashModel)
     .filter(model => !vision || isLikelyVisionModel(model))
-    .sort((a, b) => budgetScore(a) - budgetScore(b) || String(a).localeCompare(String(b)))[0] || '';
+    .sort((a, b) =>
+      Number(isGemini38FlashModel(b)) - Number(isGemini38FlashModel(a))
+      || budgetScore(a) - budgetScore(b)
+      || String(a).localeCompare(String(b))
+    )[0] || '';
 }
 
 function parseModels(payload) {
@@ -244,7 +254,7 @@ async function cheapestModel({ vision = false } = {}) {
     // Never silently fall back to an expensive active Chat model. A model that is
     // already clearly in the low-cost family may still be used as a safe fallback.
     const selected = String(runtime.selected_model || '').trim();
-    if (selected && budgetScore(selected) <= 3.8 && (!vision || isLikelyVisionModel(selected))) return selected;
+    if (selected && isFlashModel(selected) && budgetScore(selected) <= 3.8 && (!vision || isLikelyVisionModel(selected))) return selected;
     return '';
   }
 }
@@ -348,6 +358,8 @@ try {
 module.exports = {
   AUTOMATION_HEARTBEAT_PURPOSE,
   budgetScore,
+  isFlashModel,
+  isGemini38FlashModel,
   pickBudgetModel,
   isToyboxRequest,
   isTheaterMemoryRequest,
