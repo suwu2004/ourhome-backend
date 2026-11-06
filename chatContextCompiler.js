@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULT_OPTIONAL_BUDGET = 18_000;
+const DEFAULT_OPTIONAL_BUDGET = 12_000;
 const SOURCE_PRIORITY = Object.freeze({
   letters: 10,
   diaries: 20,
@@ -92,8 +92,11 @@ function compileChatContext({
       byContent.set(layer.canonical, layer);
       continue;
     }
-    const candidateWins = layer.priority > existing.priority
-      || (layer.priority === existing.priority && layer.index > existing.index);
+    const candidateWins = (layer.required && !existing.required)
+      || (layer.required === existing.required && (
+        layer.priority > existing.priority
+        || (layer.priority === existing.priority && layer.index > existing.index)
+      ));
     duplicateIds.push(candidateWins ? existing.id : layer.id);
     if (candidateWins) byContent.set(layer.canonical, layer);
   }
