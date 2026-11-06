@@ -101,6 +101,25 @@ test('unavailable low-cost models are blocked instead of falling back to a costl
   assert.match(source, /blocked paid non-chat call/);
 });
 
+test('background selector only returns Flash-family models, preferring Flash Lite', () => {
+  assert.equal(pickBudgetModel([
+    'claude-haiku-4-5',
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-flash',
+    'gemini-3.1-flash-lite',
+    'claude-opus-4-6',
+  ]), 'gemini-3.1-flash-lite');
+  assert.equal(pickBudgetModel(['claude-haiku-4-5', 'gemini-3.1-pro-preview']), '');
+});
+
+test('vision background selector only returns vision-capable Flash models', () => {
+  assert.equal(pickBudgetModel([
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+    'gemini-3.1-pro-vision',
+  ], { vision: true }), 'gemini-3.1-flash');
+});
+
 test('rewritten non-Chat calls carry the effective task purpose into usage logs', () => {
   assert.match(source, /headers\.set\('X-OurHome-Call-Purpose', effectivePurpose\)/);
 });
