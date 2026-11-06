@@ -43,6 +43,15 @@ test('heartbeat is explicitly recognized and stays on the cheap background path'
   assert.equal(shouldPreserveRequestedModelForCall('automation-heartbeat', body), false);
 });
 
+test('automatic session summaries have a distinct cheap-background task purpose', () => {
+  const body = {
+    system: '请根据旧聊天内容生成窗口简介。',
+    messages: [{ role: 'user', content: '增量整理归档消息并更新窗口简介。' }],
+  };
+  assert.equal(inferPurpose(body), 'session-summary-auto');
+  assert.equal(shouldPreserveRequestedModelForCall('session-summary-auto', body), false);
+});
+
 test('Happiness Diary and final learning synthesis retain the intended Chat model', () => {
   const body = { system: sharedChatPersona.join('\n'), messages: [{ role: 'user', content: '写日记' }] };
   assert.equal(preservesRequestedModel('happiness-diary'), true);
