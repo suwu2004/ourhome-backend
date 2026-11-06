@@ -14,6 +14,7 @@ test('operations sharing a key run one at a time and preserve submission order',
   const queue = createKeyedSerialQueue();
   const firstGate = deferred();
   const order = [];
+  const firstStarted = deferred();
   let active = 0;
   let maxActive = 0;
 
@@ -21,6 +22,7 @@ test('operations sharing a key run one at a time and preserve submission order',
     active += 1;
     maxActive = Math.max(maxActive, active);
     order.push('first:start');
+    firstStarted.resolve();
     await firstGate.promise;
     order.push('first:end');
     active -= 1;
@@ -34,7 +36,7 @@ test('operations sharing a key run one at a time and preserve submission order',
     return 'second';
   });
 
-  await Promise.resolve();
+  await firstStarted.promise;
   assert.deepEqual(order, ['first:start']);
   assert.equal(queue.pendingCount, 1);
   firstGate.resolve();
