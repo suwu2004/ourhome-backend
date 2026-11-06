@@ -10,20 +10,6 @@ function systemText(system) {
   }).filter(Boolean).join('\n');
 }
 
-function contentChars(content) {
-  if (typeof content === 'string') return content.length;
-  if (Array.isArray(content)) {
-    return content.reduce((sum, block) => {
-      if (!block || typeof block !== 'object') return sum;
-      if (typeof block.text === 'string') return sum + block.text.length;
-      // Count multimodal payload size without logging or materializing its content.
-      if (typeof block.data === 'string') return sum + block.data.length;
-      return sum;
-    }, 0);
-  }
-  return content == null ? 0 : String(content).length;
-}
-
 function serializedChars(value) {
   try {
     return JSON.stringify(value).length;
