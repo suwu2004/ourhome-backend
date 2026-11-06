@@ -75,6 +75,7 @@ const {
   shouldAnalyzeMemoryJournalContinuation,
 } = require('./memoryJournalTrigger');
 const { selectRecentHistory, findArchivedHistoryPrefix, shouldSummarizeArchivedMessages } = require('./chatContextWindow');
+const { buildRecentConversationContinuityBlock } = require('./recentConversationContinuity');
 const { loadVisibleHistoryCandidates, loadRecentVisibleHistory } = require('./chatRecentHistory');
 const { selectChatTools } = require('./chatToolRouter');
 const { normalizeExplicitMemorySummary, isExactMemoryDuplicate } = require('./explicitMemorySave');
@@ -3284,7 +3285,7 @@ AgentMail 是你自己的公开邮箱：检查、阅读、是否回复、主动�
 写邮件时可以参考最近聊天、记忆、信件与日记。普通生活、感受、关系、项目近况、观点和往事都由你自己决定是否表达，不能仅因为内容来自 OurHome 就放弃表达。系统只守住明确底线：不得外发设置与密钥、账号凭证、精确身份标识与联系方式、住址定位和实时行程、金融账户与详细余额、详细健康医疗与亲密性内容、第三人的非公开信息、整段私聊导出或未经同意的私人附件。普通称呼、感情表达、关系经历和概括后的共同回忆不属于禁区。真正发送前必须通过独立隐私审查；审查失败或无法完成时不发送。`;
 
 // 拼装聊天用的完整system prompt（带记忆、信件、思考规范）
-async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, sessionId = null, excludeSummaryThroughMessageId = null) {
+async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, sessionId = null, excludeSummaryThroughMessageId = null, recentHistory = []) {
   // 各块彼此独立，同时读取；核心记忆与相关记忆共用一个 memories 快照。
   const [
     memoryRecall,
@@ -3354,6 +3355,8 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, session
 
 ${chatSharedRules}`;
   if (extraNote) prompt += `\n\n${extraNote}`;
+  const continuityBlock = buildRecentConversationContinuityBlock(recentHistory);
+  if (continuityBlock) prompt += `\n\n${continuityBlock}`;
   prompt += OURHOME_ACTION_BOUNDARY;
   return prompt;
 }
@@ -3763,14 +3766,18 @@ async function handleAgentMailWebhook(req, res) {
 
 // 根据"到某条消息为止"的历史，让陆泽生成一句新的回复——编辑重发、回溯重发都靠这个
 async function generateReplyForHistory({ settings, model, historyMessages, latestUserMessage }) {
-  const fullSystemPrompt = await buildFullSystemPrompt(
-    settings?.system_prompt || '你是陆泽，叶檀的伴侣。',
-    latestUserMessage || '',
-  );
   const recentHistory = selectRecentHistory(historyMessages, {
     maxRounds: settings?.max_context_rounds,
     maxTokens: settings?.max_context_tokens,
   });
+  const fullSystemPrompt = await buildFullSystemPrompt(
+    settings?.system_prompt || '你是陆泽，叶檀的伴侣。',
+    latestUserMessage || '',
+    undefined,
+    null,
+    null,
+    recentHistory,
+  );
   const messages = await buildApiMessages(recentHistory);
 
   const maxReplyTokens = calculateChatReplyTokenBudget(settings?.min_reply_chars, settings?.max_reply_tokens);
@@ -6269,7 +6276,7 @@ app.post('/chat', async (req, res) => {
     });
     const messages = await buildApiMessages(recentHistory);
     const latestUserMessage = cleanMessage || `[发送了附件：${attachment_name || '文件'}]`;
-    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage, undefined, session_id);
+    const fullSystemPrompt = await buildFullSystemPrompt(systemPrompt, latestUserMessage, undefined, session_id, null, recentHistory);
 
     const thinkingBudget = 3000;
     const modelName = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
@@ -6388,6 +6395,7 @@ app.post('/chat/regenerate', async (req, res) => {
 正式回复中不要提“重新生成”“上一版”或这些要求。`,
       session_id,
       oldMessageId,
+      recentHistory,
     );
 
     const modelNameRegen = model || settings?.selected_model || 'claude-sonnet-4-5-20250929-thinking';
