@@ -95,6 +95,6 @@ test('layer metadata preserves provenance, update time, and coverage checkpoint'
   });
 
   assert.match(result.prompt, /来源：session_summaries/);
-  assert.match(result.prompt, /更新时间：2026-11-06T08:30:00\\+08:00/);
+  assert.ok(result.prompt.includes('更新时间：2026-11-06T08:30:00+08:00'));
   assert.match(result.prompt, /覆盖：截至消息 19501/);
 });
