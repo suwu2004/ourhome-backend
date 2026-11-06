@@ -102,15 +102,24 @@ test('unavailable low-cost models are blocked instead of falling back to a costl
   assert.match(source, /blocked paid non-chat call/);
 });
 
-test('background selector only returns Flash-family models, preferring Flash Lite', () => {
+test('background selector prefers every Gemini 3.8 Flash alias regardless of provider prefix', () => {
   assert.equal(pickBudgetModel([
     'claude-haiku-4-5',
-    'gemini-3.1-pro-preview',
-    'gemini-3.1-flash',
     'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+    'openrouter/google/gemini-3.8-flash-preview',
+    'vendor-prefix/gemini-3.8-flash',
     'claude-opus-4-6',
-  ]), 'gemini-3.1-flash-lite');
+  ]), 'openrouter/google/gemini-3.8-flash-preview');
+  assert.equal(pickBudgetModel([
+    'gemini-3.1-flash-lite',
+    'vendor-prefix/gemini-3.8-flash',
+  ]), 'vendor-prefix/gemini-3.8-flash');
   assert.equal(pickBudgetModel(['claude-haiku-4-5', 'gemini-3.1-pro-preview']), '');
+});
+
+test('model-list failure fallback cannot reintroduce a non-Flash selected model', () => {
+  assert.match(source, /selected && isFlashModel\(selected\)/);
 });
 
 test('vision background selector only returns vision-capable Flash models', () => {
