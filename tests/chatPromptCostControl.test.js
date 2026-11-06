@@ -23,7 +23,9 @@ test('Chat 与滚动账本共享 max_context_tokens 窗口', () => {
 
 test('Chat 最近信件只注入短悄悄话，剧场规则不再误入', () => {
   assert.match(server, /\.eq\('category', '悄悄话'\)[\s\S]*?\.is\('parent_id', null\)/);
-  assert.match(server, /compactBlock\(l\.content, 420\)/);
+  assert.match(server, /compactBlock\(letter\.content, 420\)/);
+  assert.match(server, /compileChatContext\(/);
+  assert.match(server, /SOURCE_PRIORITY\.recentConversation/);
 });
 
 test('小剧场生成直接读取启用中的范围化规则', () => {
