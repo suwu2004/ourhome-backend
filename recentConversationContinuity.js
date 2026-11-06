@@ -57,7 +57,7 @@ function isRecentUserFact(row, now) {
   return Number.isFinite(stamp) && stamp <= now && stamp >= now - RECENT_FACT_WINDOW_MS;
 }
 
-function renderLine(row, maxChars, factAnchor = false) {
+function renderLine(row, maxChars) {
   const role = row.role === 'user' ? '叶檀' : '陆泽';
   const time = timeLabel(row.created_at);
   const id = row.id === undefined || row.id === null ? '' : '消息 #' + String(row.id).slice(0, 32);
@@ -65,7 +65,7 @@ function renderLine(row, maxChars, factAnchor = false) {
   const content = clipText(row.content, maxChars);
   const attachment = compact(row.attachment_summary || row.attachment_name);
   const detail = [content, attachment ? '【附件信息】' + clipText(attachment, 180) : ''].filter(Boolean).join(' ');
-  const correction = factAnchor && CORRECTION_RE.test(content) ? '【用户明确更正，优先于此前冲突说法】' : '';
+  const correction = row.role === 'user' && CORRECTION_RE.test(content) ? '【用户明确更正，优先于此前冲突说法】' : '';
   return '- ' + (metadata ? '[' + metadata + '] ' : '') + correction + role + '：' + detail;
 }
 
@@ -98,7 +98,7 @@ function buildRecentConversationContinuityBlock(history = [], options = {}) {
   const factLines = [];
   let usedFacts = 0;
   for (let index = factCandidates.length - 1; index >= 0; index -= 1) {
-    const line = renderLine(factCandidates[index], maxFactMessageChars, true);
+    const line = renderLine(factCandidates[index], maxFactMessageChars);
     if (usedFacts + line.length + 1 > maxFactTotalChars) continue;
     factLines.push(line);
     usedFacts += line.length + 1;
