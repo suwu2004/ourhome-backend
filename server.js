@@ -3475,7 +3475,7 @@ async function buildFullSystemPrompt(basePrompt, userMessage, extraNote, session
     timeContext: timeAwarenessPromptBlock(),
     layers,
     actionBoundary: OURHOME_ACTION_BOUNDARY,
-    optionalBudget: 18_000,
+    optionalBudget: 12_000,
   });
   if (compiled.omitted.length) {
     console.info('[chat:context-compiler] omitted optional blocks='
