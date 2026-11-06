@@ -1,7 +1,6 @@
 'use strict';
 
 const { createClient } = require('@supabase/supabase-js');
-const { isMainChatRequest } = require('./intimacyFlowSupport');
 const { isLikelyVisionModel } = require('./modelCompatibility');
 
 // Loaded after apiUsageAuditPatch and before backgroundAiCostGuardPatch.
@@ -67,6 +66,17 @@ function requestPurpose(init = {}) {
 
 function preservesRequestedModel(purpose) {
   return SMART_BACKGROUND_PURPOSES.has(String(purpose || '').trim());
+}
+
+function shouldPreserveRequestedModelForCall(purpose, body = {}) {
+  const task = String(purpose || '').trim();
+  // Only an explicitly labelled foreground Chat turn keeps the selected model.
+  // Background jobs can share the same persona/system prompt, so prompt markers
+  // alone must never grant them the foreground pricing exemption.
+  return (task === 'chat' && !isAgentMailReadRequest(body))
+    || isToyboxRequest(body)
+    || isTheaterRequest(body)
+    || preservesRequestedModel(task);
 }
 
 function isModelRequest(url, body) {
@@ -275,7 +285,8 @@ if (typeof providerFetch === 'function') {
     if (!isModelRequest(url, body)) return providerFetch(input, init);
 
     const explicitPurpose = requestPurpose(init);
-    const effectivePurpose = explicitPurpose || inferPurpose(body);
+    const agentMailRead = isAgentMailReadRequest(body);
+    const effectivePurpose = agentMailRead ? 'agentmail-read' : (explicitPurpose || inferPurpose(body));
     const heartbeat = isHeartbeatPurpose(effectivePurpose);
 
     // Interactive Chat, Toy Bear, and Theater keep their own selected model.
@@ -285,7 +296,7 @@ if (typeof providerFetch === 'function') {
     // foreground conversation, so it should never inherit Opus/Sonnet pricing.
     // Happiness Diary and final learning-note synthesis deliberately keep the
     // active Chat model; consent, planning and filtering stay behind the guard.
-    if ((!heartbeat && isMainChatRequest(url, body) && !isAgentMailReadRequest(body)) || isToyboxRequest(body) || isTheaterRequest(body) || preservesRequestedModel(explicitPurpose)) {
+    if (shouldPreserveRequestedModelForCall(effectivePurpose, body)) {
       return providerFetch(input, init);
     }
 
@@ -302,7 +313,7 @@ if (typeof providerFetch === 'function') {
     }
 
     const headers = new Headers(init.headers || undefined);
-    if (!headers.has('X-OurHome-Call-Purpose')) headers.set('X-OurHome-Call-Purpose', effectivePurpose);
+    headers.set('X-OurHome-Call-Purpose', effectivePurpose);
     const originalModel = String(body.model || '');
     const nextBody = { ...body, model };
     if (originalModel !== model) console.log(`[budget-model] ${effectivePurpose} ${originalModel} -> ${model}`);
@@ -344,5 +355,6 @@ module.exports = {
   isHeartbeatPurpose,
   requestPurpose,
   preservesRequestedModel,
+  shouldPreserveRequestedModelForCall,
   cheapestModel,
 };
