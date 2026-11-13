@@ -132,7 +132,7 @@ function uniqueThinking(candidates) {
 
 function hasChineseThinkingText(value) {
   const text = String(value || '');
-  const chineseChars = (text.match(/[\\u3400-\\u9fff]/gu) || []).length;
+  const chineseChars = (text.match(/[\u3400-\u9fff]/gu) || []).length;
   const latinChars = (text.match(/[A-Za-z]/gu) || []).length;
   return chineseChars >= 3 && chineseChars >= latinChars * 0.15;
 }
