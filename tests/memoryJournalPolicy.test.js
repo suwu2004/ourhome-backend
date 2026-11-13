@@ -25,6 +25,7 @@ test('working memory requires a real summary and an explicit model store decisio
 test('journal model schema includes the explicit store decision consumed by persistence', () => {
   assert.match(server, /"should_store": true或false/);
   assert.match(server, /should_store 与 should_continue 分开判断/);
+  assert.match(server, /具体生活细节.*刚吃\/喝了什么/);
 });
 
 test('journal persistence checks database write results instead of equating provider success with saved memory', () => {
