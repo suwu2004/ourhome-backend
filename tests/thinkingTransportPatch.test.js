@@ -44,6 +44,18 @@ test('relay 可保留原生 thinking body 但不会携带 Anthropic 专属 beta 
   assert.equal(prepared.headers.has('anthropic-beta'), false);
 });
 
+test('Anthropic 原生 thinking 请求也会收到中文可见摘要指令', () => {
+  const thinking = { type: 'enabled', budget_tokens: 3000 };
+  const prepared = prepareMainChatRequest(
+    'https://api.anthropic.com/v1/messages',
+    { model: 'claude-sonnet-thinking', thinking, system: '基础 system' },
+    {},
+  );
+  assert.deepEqual(prepared.body.thinking, thinking);
+  assert.match(prepared.body.system, /【思考摘要开始】/);
+  assert.match(prepared.body.system, /中文思考摘要/);
+});
+
 test('旧的要不要想判断仍由本地拦截条件识别', () => {
   assert.equal(isThinkingDecisionRequest('https://relay.example.com/v1/messages', {
     max_tokens: 8,
