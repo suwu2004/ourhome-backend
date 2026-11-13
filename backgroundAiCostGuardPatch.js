@@ -111,6 +111,13 @@ function extractJournalTurn(body) {
   };
 }
 
+function isShortEphemeralLifeUpdate(value) {
+  const user = stripMemoryNoise(value, 900);
+  if (!user || semanticLength(user) > 36) return false;
+  return /^(?:我)?(?:最近|刚刚|刚才|刚|今天|现在|这会儿)?(?:吃了|吃过|吃完|吃饱|喝了|喝过|买了|买到|点了|到家了?|回家了?|出门了?|醒来了?|睡觉了?|洗澡了?|做饭了?|吃饭了?)/i.test(user)
+    && !/(?:然后|但是|不过|准备|打算|计划|因为|已经开始|连续几天|最近一直)/i.test(user);
+}
+
 function shouldSpendMemoryJournalCall(body) {
   const { userText } = extractJournalTurn(body);
   const user = stripMemoryNoise(userText, 900);
@@ -127,8 +134,11 @@ function shouldSpendMemoryJournalCall(body) {
   if (/(我.{0,8}(?:喜欢|不喜欢|讨厌|介意)|(?:喜欢|不喜欢).{0,10}(?:风格|画风|颜色|语气|功能|模型|设置|称呼|方式))/i.test(user)) return true;
   if (/(换工作|换了工作|入职|离职|失业|毕业|搬家|结婚|分手|订婚|怀孕|确诊|住院|手术|过敏|长期用药|开始吃药|停药)/i.test(user)) return true;
 
-  // Meaningful recent-life updates deserve model judgement even without a task verb.
-  if (isRecentLifeUpdate(user)) return true;
+  // Larger life changes deserve model judgement even without a task verb.
+  // Very short, concrete day-to-day facts (such as a meal, drink, or arriving home)
+  // are captured by the deterministic local fallback instead of spending a second
+  // provider call just to decide whether they matter.
+  if (isRecentLifeUpdate(user) && !isShortEphemeralLifeUpdate(user)) return true;
 
   const hasFutureTime = /(明天|后天|下周|下个月|月底|年底|待会|稍后|之后|下次|截止|DDL|到时候)/i.test(user);
   const hasFutureCommitment = /(计划|决定|约定|预约|面试|考试|出发|提交|提醒|待办|要去|要做|准备去|准备做|必须|不能忘)/i.test(user);
