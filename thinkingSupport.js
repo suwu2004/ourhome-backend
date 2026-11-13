@@ -14,6 +14,7 @@ const USER_VISIBLE_SUMMARY_FIELD_NAMES = [
 ];
 const MAX_THINKING_CHARS = 24_000;
 const MAX_VISIBLE_SUMMARY_CHARS = 1_600;
+const STORED_VISIBLE_SUMMARY_PREFIX = '【OurHome可见思考摘要v1】\\n';
 const BRACKETED_THINKING_LABEL = '(?:思考摘要|思考链|思考过程|思考记录|可见思考|想了想|thinking|reasoning|analysis)';
 const BRACKETED_THINKING_PATTERNS = [
   new RegExp(`\\[\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*\\]`, 'gi'),
@@ -231,8 +232,15 @@ function extractThinkingText(result = {}) {
   return hasChineseThinkingText(summary) ? summary : '';
 }
 
+function encodeVisibleThinkingSummary(value) {
+  const summary = normalizeThinkingText(value).slice(0, MAX_VISIBLE_SUMMARY_CHARS);
+  return hasChineseThinkingText(summary) ? `${STORED_VISIBLE_SUMMARY_PREFIX}${summary}` : null;
+}
+
 module.exports = {
   MAX_THINKING_CHARS,
+  STORED_VISIBLE_SUMMARY_PREFIX,
+  encodeVisibleThinkingSummary,
   normalizeThinkingText,
   extractTaggedThinking,
   extractBracketedThinking,
