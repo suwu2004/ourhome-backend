@@ -131,6 +131,10 @@ function uniqueThinking(candidates) {
   return unique.join('\n').slice(0, MAX_THINKING_CHARS);
 }
 
+function hasChineseThinkingText(value) {
+  return /[\u3400-\u9fff]/u.test(String(value || ''));
+}
+
 function extractThinkingText(result = {}) {
   const nativeCandidates = [];
   const taggedCandidates = [];
@@ -218,11 +222,16 @@ function extractThinkingText(result = {}) {
     scanBlocks(candidate?.content?.parts);
   }
 
-  // Prefer the explicitly delimited, user-facing Chinese summary when the provider
-  // supplies one. Raw native reasoning is a fallback because many providers emit it
-  // in English even when the conversation and the user's preferred language are Chinese.
-  // Ordinary answer prose still does not become thinking unless it is explicitly marked.
-  return uniqueThinking(visibleSummaryCandidates) || uniqueThinking(nativeCandidates) || uniqueThinking(taggedCandidates);
+  // Prefer a marked, user-facing Chinese summary. Some providers return raw native
+  // reasoning in English; never expose that untranslated text in the user's panel.
+  // If a provider ignores the Chinese-summary instruction, omit the panel instead.
+  // This is still a summary display, not a full private chain-of-thought transcript.
+  const visibleSummary = uniqueThinking(visibleSummaryCandidates);
+  if (hasChineseThinkingText(visibleSummary)) return visibleSummary;
+  const native = uniqueThinking(nativeCandidates);
+  if (hasChineseThinkingText(native)) return native;
+  const tagged = uniqueThinking(taggedCandidates);
+  return hasChineseThinkingText(tagged) ? tagged : '';
 }
 
 module.exports = {
