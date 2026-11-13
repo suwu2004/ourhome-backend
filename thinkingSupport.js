@@ -218,10 +218,11 @@ function extractThinkingText(result = {}) {
     scanBlocks(candidate?.content?.parts);
   }
 
-  // Prefer provider-native reasoning metadata. When it is absent, fall back to the
-  // controlled <thinking> compatibility protocol used by relay mode. Ordinary answer
-  // prose still does not become thinking unless it is explicitly wrapped in that tag.
-  return uniqueThinking(nativeCandidates) || uniqueThinking(taggedCandidates) || uniqueThinking(visibleSummaryCandidates);
+  // Prefer the explicitly delimited, user-facing Chinese summary when the provider
+  // supplies one. Raw native reasoning is a fallback because many providers emit it
+  // in English even when the conversation and the user's preferred language are Chinese.
+  // Ordinary answer prose still does not become thinking unless it is explicitly marked.
+  return uniqueThinking(visibleSummaryCandidates) || uniqueThinking(nativeCandidates) || uniqueThinking(taggedCandidates);
 }
 
 module.exports = {
