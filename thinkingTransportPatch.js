@@ -100,10 +100,10 @@ function prepareMainChatRequest(url, body, headersInit) {
   nextBody.system = sanitizeChatSystem(nextBody.system);
   const headers = new Headers(headersInit || undefined);
   const thinkingModel = modelRequestsNativeThinking(nextBody.model);
-  if (thinkingModel && !isOfficialAnthropicUrl(url)) {
-    // Relay mode previously returned here with no thinking parameter and no prompt
-    // fallback, so the provider had no reason to produce any visible thinking at all.
-    // Keep relay compatibility prompt-based and let thinkingSupport.js extract it.
+  if (thinkingModel) {
+    // Ask every thinking-capable route, including native-thinking providers, for a
+    // short Simplified-Chinese summary inside explicit markers. This stays in the
+    // original completion; it does not add a translation request or expose full CoT.
     nextBody.system = appendRelayThinkingInstruction(nextBody.system);
   }
   if (isOfficialAnthropicUrl(url) && !nextBody.thinking && thinkingModel) {
