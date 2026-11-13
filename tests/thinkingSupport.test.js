@@ -30,6 +30,10 @@ test('原生 thinking 存在时忽略正文里的模拟 thinking', () => {
   assert.equal(extractThinkingText(result), '这是原生思考。');
 });
 
+test('没有中文摘要时不把英文原生 reasoning 展示给用户', () => {
+  assert.equal(extractThinkingText({ reasoning_content: 'I should identify the request and respond clearly.' }), '');
+});
+
 test('同时返回英文原生 reasoning 和中文可见摘要时优先显示中文摘要', () => {
   const summary = '我先确认她这句话的重点，再用中文简要回应。';
   const result = {
