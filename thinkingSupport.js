@@ -1,21 +1,20 @@
-const NATIVE_THINKING_BLOCK_TYPES = new Set([
-  'thinking',
-  'reasoning',
-  'analysis',
-  'thinking_summary',
-  'reasoning_summary',
-]);
-const NATIVE_THINKING_FIELD_NAMES = [
-  'reasoning_content',
-  'reasoning',
-  'reasoning_details',
-  'thinking',
-  'analysis',
+const USER_VISIBLE_SUMMARY_BLOCK_TYPES = new Set([
   'thinking_summary',
   'reasoning_summary',
   'summary_text',
+  'thought_summary',
+  'thoughts_summary',
+]);
+const USER_VISIBLE_SUMMARY_FIELD_NAMES = [
+  'thinking_summary',
+  'reasoning_summary',
+  'summary_text',
+  'thought_summary',
+  'thoughts_summary',
 ];
 const MAX_THINKING_CHARS = 24_000;
+const MAX_VISIBLE_SUMMARY_CHARS = 1_600;
+const STORED_VISIBLE_SUMMARY_PREFIX = '【OurHome可见思考摘要v1】: ';
 const BRACKETED_THINKING_LABEL = '(?:思考摘要|思考链|思考过程|思考记录|可见思考|想了想|thinking|reasoning|analysis)';
 const BRACKETED_THINKING_PATTERNS = [
   new RegExp(`\\[\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*\\]`, 'gi'),
@@ -72,7 +71,7 @@ function normalizeThinkingText(value) {
 function extractTaggedThinking(value) {
   const text = String(value || '');
   const results = [];
-  const pattern = /<(thinking_summary|reasoning_summary|thinking|think|analysis)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  const pattern = /<(thinking_summary|reasoning_summary|thought_summary|thoughts_summary)\b[^>]*>([\s\S]*?)<\/\1>/gi;
   for (const match of text.matchAll(pattern)) {
     const candidate = normalizeThinkingText(match[2]);
     if (candidate) results.push(candidate);
@@ -132,16 +131,40 @@ function uniqueThinking(candidates) {
 }
 
 function hasChineseThinkingText(value) {
-  return /[\u3400-\u9fff]/u.test(String(value || ''));
+  const text = String(value || '');
+  const chineseChars = (text.match(/[\u3400-\u9fff]/gu) || []).length;
+  const latinChars = (text.match(/[A-Za-z]/gu) || []).length;
+  return chineseChars >= 3 && chineseChars >= latinChars * 0.15;
+}
+
+function safeSummaryText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return normalizeThinkingText(value);
+  if (Array.isArray(value)) return value.map(safeSummaryText).filter(Boolean).join('\n');
+  if (typeof value !== 'object') return '';
+
+  for (const field of USER_VISIBLE_SUMMARY_FIELD_NAMES) {
+    if (value[field] != null) {
+      const nested = safeSummaryText(value[field]);
+      if (nested) return nested;
+    }
+  }
+  const type = String(value.type || '').toLowerCase();
+  if (USER_VISIBLE_SUMMARY_BLOCK_TYPES.has(type)) {
+    if (typeof value.text === 'string') return normalizeThinkingText(value.text);
+    if (typeof value.content === 'string') return normalizeThinkingText(value.content);
+    if (Array.isArray(value.summary)) return safeSummaryText(value.summary);
+  }
+  return '';
 }
 
 function extractThinkingText(result = {}) {
-  const nativeCandidates = [];
+  const providerSummaryCandidates = [];
   const taggedCandidates = [];
   const visibleSummaryCandidates = [];
-  const addNative = value => {
-    const text = normalizeThinkingText(value);
-    if (text) nativeCandidates.push(text);
+  const addSummary = value => {
+    const text = safeSummaryText(value);
+    if (text) providerSummaryCandidates.push(text);
   };
   const addTagged = value => {
     const tagged = extractTaggedThinking(value);
@@ -149,56 +172,35 @@ function extractThinkingText(result = {}) {
     const visible = extractVisibleSummaryMarkers(value);
     if (visible.length) visibleSummaryCandidates.push(...visible);
   };
-  const addNativeFields = value => {
+  const addSummaryFields = value => {
     if (!value || typeof value !== 'object') return;
-    for (const field of NATIVE_THINKING_FIELD_NAMES) addNative(value[field]);
+    for (const field of USER_VISIBLE_SUMMARY_FIELD_NAMES) {
+      if (value[field] != null) addSummary(value[field]);
+    }
   };
   const scanBlocks = blocks => {
     for (const block of Array.isArray(blocks) ? blocks : []) {
       if (!block || typeof block !== 'object') continue;
       const type = String(block.type || '').toLowerCase();
-      if (
-        NATIVE_THINKING_BLOCK_TYPES.has(type)
-        || block.thought === true
-        || block.is_thought === true
-        || block.isThinking === true
-      ) {
-        addNative(block);
+      // Raw reasoning_content, analysis, thinking blocks and thought=true parts are private.
+      if (USER_VISIBLE_SUMMARY_BLOCK_TYPES.has(type)) addSummary(block);
+      for (const field of USER_VISIBLE_SUMMARY_FIELD_NAMES) {
+        if (block[field] != null) addSummary(block[field]);
       }
-
-      // Some providers put the actual thought/summary under a field rather than
-      // marking the container with a dedicated block type.
-      for (const field of [
-        'reasoning_content',
-        'reasoning',
-        'reasoning_details',
-        'thinking',
-        'analysis',
-        'thinking_summary',
-        'reasoning_summary',
-        'thought',
-        'thoughts',
-        'thought_summary',
-        'thoughts_summary',
-      ]) {
-        if (block[field] != null) addNative(block[field]);
-      }
-
-      // Ordinary answer text is not trusted as provider-native thinking. Relay
-      // compatibility currently uses explicit 【思考摘要开始】...【思考摘要结束】
-      // markers, while native providers use dedicated fields/blocks above.
+      // Responses APIs may wrap a safe summary_text block inside a raw reasoning envelope.
+      // Walk only its summary member, never its raw content.
+      if (type === 'reasoning' && Array.isArray(block.summary)) scanBlocks(block.summary);
       if (type === 'text' || type === 'output_text') {
         const visible = extractVisibleSummaryMarkers(block.text);
         if (visible.length) visibleSummaryCandidates.push(...visible);
       }
       if (Array.isArray(block.content)) scanBlocks(block.content);
       if (Array.isArray(block.parts)) scanBlocks(block.parts);
-      if (Array.isArray(block.summary) && NATIVE_THINKING_BLOCK_TYPES.has(type)) addNative(block.summary);
     }
   };
 
-  addNativeFields(result);
-  addNativeFields(result.message);
+  addSummaryFields(result);
+  addSummaryFields(result.message);
   addTagged(result.content);
   addTagged(result.message?.content);
   scanBlocks(result.content);
@@ -207,35 +209,38 @@ function extractThinkingText(result = {}) {
 
   for (const choice of Array.isArray(result.choices) ? result.choices : []) {
     const message = choice?.message || choice?.delta || {};
-    addNativeFields(choice);
-    addNativeFields(message);
+    addSummaryFields(choice);
+    addSummaryFields(message);
     addTagged(choice?.text);
     addTagged(message.content);
     scanBlocks(message.content);
   }
-
   for (const candidate of Array.isArray(result.candidates) ? result.candidates : []) {
-    addNativeFields(candidate);
-    addNativeFields(candidate?.content);
+    addSummaryFields(candidate);
+    addSummaryFields(candidate?.content);
     addTagged(candidate?.text);
     addTagged(candidate?.content);
     scanBlocks(candidate?.content?.parts);
   }
 
-  // Prefer a marked, user-facing Chinese summary. Some providers return raw native
-  // reasoning in English; never expose that untranslated text in the user's panel.
-  // If a provider ignores the Chinese-summary instruction, omit the panel instead.
-  // This is still a summary display, not a full private chain-of-thought transcript.
-  const visibleSummary = uniqueThinking(visibleSummaryCandidates);
-  if (hasChineseThinkingText(visibleSummary)) return visibleSummary;
-  const native = uniqueThinking(nativeCandidates);
-  if (hasChineseThinkingText(native)) return native;
-  const tagged = uniqueThinking(taggedCandidates);
-  return hasChineseThinkingText(tagged) ? tagged : '';
+  // Only marked user-facing summaries may enter the UI; raw native reasoning stays private.
+  const summary = uniqueThinking([
+    ...visibleSummaryCandidates,
+    ...providerSummaryCandidates,
+    ...taggedCandidates,
+  ]).slice(0, MAX_VISIBLE_SUMMARY_CHARS);
+  return hasChineseThinkingText(summary) ? summary : '';
+}
+
+function encodeVisibleThinkingSummary(value) {
+  const summary = normalizeThinkingText(value).slice(0, MAX_VISIBLE_SUMMARY_CHARS);
+  return hasChineseThinkingText(summary) ? `${STORED_VISIBLE_SUMMARY_PREFIX}${summary}` : null;
 }
 
 module.exports = {
   MAX_THINKING_CHARS,
+  STORED_VISIBLE_SUMMARY_PREFIX,
+  encodeVisibleThinkingSummary,
   normalizeThinkingText,
   extractTaggedThinking,
   extractBracketedThinking,
