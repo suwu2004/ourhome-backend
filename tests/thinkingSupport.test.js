@@ -65,9 +65,9 @@ test('Gemini thought part 不作为可见摘要展示', () => {
 
 test('兼容 Responses 风格 reasoning output', () => {
   const result = {
-    output: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: '原生 reasoning summary。' }] }],
+    output: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: '这是原生推理摘要。' }] }],
   };
-  assert.equal(extractThinkingText(result), '原生 reasoning summary。');
+  assert.equal(extractThinkingText(result), '这是原生推理摘要。');
 });
 
 test('persisted thinking summaries carry an allowlisted marker and raw/empty text cannot be stored', () => {
