@@ -1,4 +1,4 @@
-// 回归测试：只展示 provider 明确返回的原生 reasoning/thinking。
+// 回归测试：只展示模型明确标记为面向用户的简体中文思考摘要。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -12,22 +12,22 @@ test('正文里的模拟 thinking 不进入想一想', () => {
   assert.equal(extractThinkingText(result), '');
 });
 
-test('提取 API 返回的 reasoning_content', () => {
+test('中文 reasoning_content 仍视为原始内部推理，不直接展示', () => {
   const result = { reasoning_content: '先核对事实，再给出判断。', content: [{ type: 'text', text: '正式回复。' }] };
-  assert.equal(extractThinkingText(result), '先核对事实，再给出判断。');
+  assert.equal(extractThinkingText(result), '');
 });
 
-test('提取 Anthropic 原生 thinking block', () => {
+test('Anthropic 原生 thinking block 不直接进入可见思考摘要', () => {
   const result = { content: [{ type: 'thinking', thinking: '这里是模型原生思考。' }, { type: 'text', text: '正式回复。' }] };
-  assert.equal(extractThinkingText(result), '这里是模型原生思考。');
+  assert.equal(extractThinkingText(result), '');
 });
 
-test('原生 thinking 存在时忽略正文里的模拟 thinking', () => {
+test('原始 reasoning 与正文模拟标签都不会进入可见摘要', () => {
   const result = {
-    reasoning_content: '这是原生思考。',
-    content: [{ type: 'text', text: '<thinking>这是模拟思考。</thinking>\n正式回复。' }],
+    reasoning_content: '这是原始推理。',
+    content: [{ type: 'text', text: '<thinking>这是模拟思考。</thinking>\\n正式回复。' }],
   };
-  assert.equal(extractThinkingText(result), '这是原生思考。');
+  assert.equal(extractThinkingText(result), '');
 });
 
 test('没有中文摘要时不把英文原生 reasoning 展示给用户', () => {
@@ -43,23 +43,23 @@ test('同时返回英文原生 reasoning 和中文可见摘要时优先显示中
   assert.equal(extractThinkingText(result), summary);
 });
 
-test('兼容 OpenAI choices 中的 reasoning 字段', () => {
+test('OpenAI choices 中的 raw reasoning 字段不会被展示', () => {
   const result = { choices: [{ message: { content: '正式回复。', reasoning: '我正在权衡两种做法。' } }] };
-  assert.equal(extractThinkingText(result), '我正在权衡两种做法。');
+  assert.equal(extractThinkingText(result), '');
 });
 
-test('兼容 reasoning_details 原生字段', () => {
+test('reasoning_details 原始字段不会被展示', () => {
   const result = {
     choices: [{ message: { content: '正式回复。', reasoning_details: [{ type: 'reasoning.text', text: '原生 reasoning details。' }] } }],
   };
-  assert.equal(extractThinkingText(result), '原生 reasoning details。');
+  assert.equal(extractThinkingText(result), '');
 });
 
-test('兼容 Gemini thought part', () => {
+test('Gemini thought part 不作为可见摘要展示', () => {
   const result = {
     candidates: [{ content: { parts: [{ thought: true, text: 'Gemini 原生 thought。' }, { text: '正式回复。' }] } }],
   };
-  assert.equal(extractThinkingText(result), 'Gemini 原生 thought。');
+  assert.equal(extractThinkingText(result), '');
 });
 
 test('兼容 Responses 风格 reasoning output', () => {
@@ -67,6 +67,41 @@ test('兼容 Responses 风格 reasoning output', () => {
     output: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: '原生 reasoning summary。' }] }],
   };
   assert.equal(extractThinkingText(result), '原生 reasoning summary。');
+});
+
+test('显式 thinking_summary 字段作为可见摘要展示', () => {
+  const result = {
+    reasoning_content: 'private raw reasoning that should stay hidden',
+    thinking_summary: '我先确认当前问题的重点，再简要说明判断依据。',
+    content: [{ type: 'text', text: '正式回复。' }],
+  };
+  assert.equal(extractThinkingText(result), '我先确认当前问题的重点，再简要说明判断依据。');
+});
+
+test('显式 reasoning_summary block 作为可见摘要展示', () => {
+  const result = {
+    content: [
+      { type: 'reasoning', text: 'private raw reasoning' },
+      { type: 'reasoning_summary', text: '我先核对上下文，再给出清楚的答复。' },
+      { type: 'text', text: '正式回复。' },
+    ],
+  };
+  assert.equal(extractThinkingText(result), '我先核对上下文，再给出清楚的答复。');
+});
+
+test('Responses reasoning envelope 只读取 summary_text，不读取 raw reasoning', () => {
+  const result = {
+    output: [{
+      type: 'reasoning',
+      content: [{ type: 'reasoning_text', text: 'private raw reasoning' }],
+      summary: [{ type: 'summary_text', text: '我会先说明最重要的结论。' }],
+    }],
+  };
+  assert.equal(extractThinkingText(result), '我会先说明最重要的结论。');
+});
+
+test('英文摘要或只有零星中文字符的混合原文不会进入可见面板', () => {
+  assert.equal(extractThinkingText({ thinking_summary: 'I should check the request. 好' }), '');
 });
 
 test('模拟 thinking 标签仍会从正式回复剥离但绝不展示为 thinking', () => {
