@@ -93,6 +93,7 @@ const { cheapestModel, AUTOMATION_HEARTBEAT_PURPOSE, SESSION_SUMMARY_AUTO_PURPOS
 const {
   extractThinkingText,
   stripThinkingMarkup,
+  encodeVisibleThinkingSummary,
 } = require('./thinkingSupport');
 
 let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
@@ -4601,7 +4602,7 @@ app.post('/messages/:id/edit-and-regenerate', async (req, res) => {
 
       const { data: insertedMessage, error: insertErr } = await supabase.from('messages').insert({
         session_id: target.session_id, role: 'assistant', content: replyText,
-        reasoning_content: thinkingText || null,
+        reasoning_content: encodeVisibleThinkingSummary(thinkingText),
         input_tokens: totalInputTokens || null, output_tokens: totalOutputTokens || null,
       }).select().single();
       if (insertErr) throw insertErr;
@@ -6449,7 +6450,7 @@ app.post('/chat', async (req, res) => {
     const finalOutputTokens = totalOutputTokens;
 
     const { data: assistantMessage, error: assistantInsertError } = await supabase.from('messages').insert({
-      session_id, role: 'assistant', content: replyText, reasoning_content: thinkingText || null,
+      session_id, role: 'assistant', content: replyText, reasoning_content: encodeVisibleThinkingSummary(thinkingText),
       input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
     }).select('id, created_at').single();
     if (assistantInsertError) {
@@ -6568,7 +6569,7 @@ app.post('/chat/regenerate', async (req, res) => {
     const finalInputTokens = totalInputTokens;
     const finalOutputTokens = totalOutputTokens;
     const payload = {
-      content: replyText, reasoning_content: thinkingText || null,
+      content: replyText, reasoning_content: encodeVisibleThinkingSummary(thinkingText),
       input_tokens: finalInputTokens || null, output_tokens: finalOutputTokens || null,
     };
 
