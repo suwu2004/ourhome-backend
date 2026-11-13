@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   extractThinkingText,
+  encodeVisibleThinkingSummary,
   extractBracketedThinking,
   stripThinkingMarkup,
 } = require('../thinkingSupport');
@@ -67,6 +68,15 @@ test('兼容 Responses 风格 reasoning output', () => {
     output: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: '原生 reasoning summary。' }] }],
   };
   assert.equal(extractThinkingText(result), '原生 reasoning summary。');
+});
+
+test('persisted thinking summaries carry an allowlisted marker and raw/empty text cannot be stored', () => {
+  assert.equal(
+    encodeVisibleThinkingSummary('我先核对问题重点，再给出简短判断。'),
+    '【OurHome可见思考摘要v1】\\n我先核对问题重点，再给出简短判断。',
+  );
+  assert.equal(encodeVisibleThinkingSummary('I should reason step by step.'), null);
+  assert.equal(encodeVisibleThinkingSummary(''), null);
 });
 
 test('显式 thinking_summary 字段作为可见摘要展示', () => {
