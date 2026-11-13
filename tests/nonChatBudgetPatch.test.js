@@ -34,9 +34,9 @@ test('background diary and mood tasks remain cheap even when they reuse the Chat
   assert.equal(shouldPreserveRequestedModelForCall('memory-dream-review', body), false);
 });
 
-test('heartbeat is explicitly recognized and stays on the cheap background path', () => {
+test('heartbeat remains cheap even when the reused persona mentions Toy Bear and Theater', () => {
   const body = {
-    system: sharedChatPersona.join('\n'),
+    system: [...sharedChatPersona, '【小剧场】互动写作引擎', '【玩具熊】互动模式'].join('\\n'),
     messages: [{ role: 'user', content: '这不是叶檀刚发来的消息，而是自动心跳提醒你' }],
   };
   assert.equal(inferPurpose(body), 'automation-heartbeat');
@@ -80,11 +80,11 @@ test('interactive Theater stays user-selected while Theater memory is cheap back
   assert.match(source, /Theater memory is deliberately/);
 });
 
-test('Toy Bear remains a model-preserving exception', () => {
-  assert.equal(shouldPreserveRequestedModelForCall('non-chat-budget', {
-    system: '【玩具熊】互动模式',
-    messages: [],
-  }), true);
+test('Toy Bear is inferred as an interactive purpose without overriding explicit background purposes', () => {
+  const body = { system: '【玩具熊】互动模式', messages: [] };
+  assert.equal(inferPurpose(body), 'toybox');
+  assert.equal(shouldPreserveRequestedModelForCall('toybox', body), true);
+  assert.equal(shouldPreserveRequestedModelForCall('automation-heartbeat', body), false);
 });
 
 test('AgentMail inbox reading is excluded from the foreground Chat pricing exemption', () => {

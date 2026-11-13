@@ -71,13 +71,12 @@ function preservesRequestedModel(purpose) {
 
 function shouldPreserveRequestedModelForCall(purpose, body = {}) {
   const task = String(purpose || '').trim();
-  // Only an explicitly labelled foreground Chat turn keeps the selected model.
-  // Background jobs can share the same persona/system prompt, so prompt markers
-  // alone must never grant them the foreground pricing exemption.
-  return (task === 'chat' && !isAgentMailReadRequest(body))
-    || isToyboxRequest(body)
-    || isTheaterRequest(body)
-    || preservesRequestedModel(task);
+  // Explicit task purpose is authoritative. Background jobs often reuse the full
+  // personal system prompt, which may mention Toy Bear or Theater without being
+  // an interactive request. Never let those incidental words bypass the budget.
+  if (task === 'chat') return !isAgentMailReadRequest(body);
+  if (task === 'toybox' || task === 'theater') return true;
+  return preservesRequestedModel(task);
 }
 
 function isModelRequest(url, body) {
@@ -271,6 +270,7 @@ function inferPurpose(body) {
   if (/隐藏接续账本|滚动账本/.test(text)) return 'context-ledger';
   if (/公开邮箱|收到的邮件|邮件隐私/.test(text)) return 'agentmail';
   if (/窗口简介|分段压缩后的摘要|窗口已经分段/.test(text)) return SESSION_SUMMARY_AUTO_PURPOSE;
+  if (isToyboxRequest(body)) return 'toybox';
   if (isTheaterRequest(body)) return 'theater';
   if (/幸福日记/.test(text)) return 'happiness-diary';
   if (/心情日历/.test(text)) return 'daily-mood';
@@ -332,7 +332,15 @@ if (typeof providerFetch === 'function') {
     const originalModel = String(body.model || '');
     const nextBody = { ...body, model };
     if (originalModel !== model) console.log(`[budget-model] ${effectivePurpose} ${originalModel} -> ${model}`);
-    const response = await providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+    let response;
+    try {
+      response = await providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+    } catch (error) {
+      // Network timeouts throw instead of returning a 5xx response. They must
+      // enter the same cooldown or the next heartbeat can repeat the same slow call.
+      if (heartbeat) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
+      throw error;
+    }
     if (heartbeat) {
       if (response.status >= 500) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
       else if (response.ok) heartbeatBackoffUntil = 0;
