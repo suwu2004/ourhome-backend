@@ -140,7 +140,7 @@ function hasChineseThinkingText(value) {
 function safeSummaryText(value) {
   if (value == null) return '';
   if (typeof value === 'string' || typeof value === 'number') return normalizeThinkingText(value);
-  if (Array.isArray(value)) return value.map(safeSummaryText).filter(Boolean).join('\\n');
+  if (Array.isArray(value)) return value.map(safeSummaryText).filter(Boolean).join('\n');
   if (typeof value !== 'object') return '';
 
   for (const field of USER_VISIBLE_SUMMARY_FIELD_NAMES) {
