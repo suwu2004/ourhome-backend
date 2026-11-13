@@ -107,6 +107,9 @@ test('recent life updates reach model judgement even when they are not tasks', (
   }
   assert.equal(shouldSpendMemoryJournalCall(journalBody('我今天有点困', '先休息一下。')), false);
   assert.equal(shouldSpendMemoryJournalCall(journalBody('我刚买了杯拿铁', '听起来不错。')), false);
+  const captured = resolveSkippedMemoryJournal(journalBody('我刚买了杯拿铁', '听起来不错。'));
+  assert.equal(captured.mark.should_store, true);
+  assert.match(captured.mark.summary, /拿铁/);
 });
 
 test('zero-cost fallback preserves meaningful recent status without calling it unfinished work', () => {
