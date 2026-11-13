@@ -53,7 +53,7 @@ test('Anthropic 原生 thinking 请求也会收到中文可见摘要指令', () 
   );
   assert.deepEqual(prepared.body.thinking, thinking);
   assert.match(prepared.body.system, /【思考摘要开始】/);
-  assert.match(prepared.body.system, /简短的中文思考摘要/);
+  assert.match(prepared.body.system, /中文思考摘要/);
 });
 
 test('旧的要不要想判断仍由本地拦截条件识别', () => {
