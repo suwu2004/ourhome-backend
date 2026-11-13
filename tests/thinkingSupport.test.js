@@ -73,7 +73,7 @@ test('兼容 Responses 风格 reasoning output', () => {
 test('persisted thinking summaries carry an allowlisted marker and raw/empty text cannot be stored', () => {
   assert.equal(
     encodeVisibleThinkingSummary('我先核对问题重点，再给出简短判断。'),
-    '【OurHome可见思考摘要v1】\\n我先核对问题重点，再给出简短判断。',
+    '【OurHome可见思考摘要v1】: 我先核对问题重点，再给出简短判断。',
   );
   assert.equal(encodeVisibleThinkingSummary('I should reason step by step.'), null);
   assert.equal(encodeVisibleThinkingSummary(''), null);
