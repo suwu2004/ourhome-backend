@@ -50,7 +50,17 @@ test('meaningful recent life updates trigger capture without a task verb', () =>
     assert.equal(isRecentLifeUpdate(userText), true, userText);
     assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), true, userText);
   }
-  for (const userText of ['我今天有点困', '我刚买了杯拿铁', '今天的天气不错', '我刚刚想你了']) {
+  for (const userText of [
+    '我刚刚吃完早饭了。',
+    '我今天吃了一个三明治。',
+    '我刚买了杯拿铁。',
+    '我现在到家了。',
+    '今天喝了杯咖啡。',
+  ]) {
+    assert.equal(isRecentLifeUpdate(userText), true, userText);
+    assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), true, userText);
+  }
+  for (const userText of ['我今天有点困', '今天的天气不错', '我刚刚想你了']) {
     assert.equal(isRecentLifeUpdate(userText), false, userText);
     assert.equal(shouldAnalyzeMemoryJournalTurn({ userText }), false, userText);
   }
