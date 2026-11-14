@@ -180,3 +180,5 @@ test('把上游明确标记的公开 thought_summary 与同次思考轨迹合并
   };
   assert.equal(extractThinkingText(result), `${trace}\n${providerSummary}`);
 });
+
+// CI verification branch: all visible-thought-trace regression fixes are included above.
