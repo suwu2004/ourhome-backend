@@ -10,6 +10,7 @@ const {
   buildSqlReadPlan,
   claimDailyJournal,
   commitContextLedger,
+  createNeonFailoverFetch,
   createVaultTransaction,
   deleteVaultTransaction,
   deleteApiProfile,
@@ -644,12 +645,10 @@ test('Supabase network failures do not fall back for other hosts or aborted read
   });
 
   await assert.rejects(makeFetch()('https://example.com/rest/v1/messages'), error => error === networkError);
-  const abort = new DOMException('The operation was aborted', 'AbortError');
   await assert.rejects(makeFetch()('https://project.supabase.co/rest/v1/messages', {
     signal: AbortSignal.abort(),
   }), error => error === networkError);
   assert.equal(fallbackCalls, 0);
-  assert.equal(abort.name, 'AbortError');
 });
 
 test('HTTP 402 keeps the existing Neon failover behavior for writes', async () => {
