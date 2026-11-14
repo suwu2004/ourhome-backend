@@ -2377,10 +2377,13 @@ function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, us
   // 普通模型默认不思考：不再额外调用一次模型判断，也不追加思考提示词。
   // 只有模型自身明确标记为 thinking/reasoning（或由调用方显式识别为 thinkingBuiltIn）
   // 时，才进入思考传输链。
-  const shouldThink = Boolean(thinkingBuiltIn || /(?:thinking|reasoning)/i.test(String(modelName || '')));
+  const normalizedModelName = String(modelName || '');
+  const hybridModel = /hybrid/i.test(normalizedModelName);
+  const nativeThinkingModel = Boolean(thinkingBuiltIn || /(?:thinking|reasoning)/i.test(normalizedModelName));
+  const shouldThink = nativeThinkingModel || hybridModel;
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
-  if (isOfficialAnthropicApi(settings)) {
+  if (isOfficialAnthropicApi(settings) && !hybridModel) {
     // 保留官方原生 thinking 参数，但原生 thinking block 不会直接展示给用户。
     // 同时要求模型在普通文本输出中给出中文高层次摘要，再由统一解析层提取。
     return {
