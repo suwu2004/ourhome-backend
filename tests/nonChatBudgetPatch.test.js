@@ -6,6 +6,8 @@ const {
   inferPurpose,
   pickBudgetModel,
   pickBudgetModels,
+  isHybridModel,
+  isBudgetModel,
   isRetryableBudgetModelFailure,
   requestWithModelFallback,
   isTheaterMemoryRequest,
@@ -106,6 +108,30 @@ test('budget selector retains its low-cost and vision safety filters', () => {
   assert.match(source, /opus\|pro\|max/);
   assert.match(source, /thinking\|reasoning/);
   assert.match(source, /!vision \|\| isLikelyVisionModel\(model\)/);
+});
+
+
+test('Hybrid models are eligible only as a secondary budget fallback after Flash', () => {
+  const ordered = pickBudgetModels([
+    'hybrid-lite-v2',
+    'gemini-3.8-flash',
+    'hybrid-pro',
+    'gemini-3.1-flash-lite',
+    'claude-opus-4',
+  ]);
+  assert.deepEqual(ordered, [
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+    'hybrid-lite-v2',
+    'hybrid-pro',
+  ]);
+  assert.equal(isHybridModel('provider/hybrid-lite-v2'), true);
+  assert.equal(isBudgetModel('provider/hybrid-lite-v2'), true);
+  assert.equal(isBudgetModel('claude-opus-4'), false);
+  assert.deepEqual(pickBudgetModels([
+    'gemini-3.8-flash',
+    'hybrid-vision-lite',
+  ], { vision: true }), ['gemini-3.8-flash', 'hybrid-vision-lite']);
 });
 
 test('unavailable low-cost models are blocked instead of falling back to a costly Chat model', () => {
