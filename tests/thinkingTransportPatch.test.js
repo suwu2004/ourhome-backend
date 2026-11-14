@@ -103,7 +103,7 @@ test('Gemini main Chat 型号即使没有 thinking 后缀，也会收到中文�
 
 
 test('旧版摘要提示会被替换为更具体的思考轨迹协议，而不是重复追加', () => {
-  const oldSystem = '基础人设\\n【回复长度】自然回复\\n【OurHome 房间与入口认知（事实规则）】在家\\n\\n【可见思考摘要】\\n用1—3句话概括用户问题。';
+  const oldSystem = '基础人设\n【回复长度】自然回复\n【OurHome 房间与入口认知（事实规则）】在家\n\n【可见思考摘要】\n用1—3句话概括用户问题。';
   const prepared = prepareMainChatRequest(
     'https://api.anthropic.com/v1/messages',
     { model: 'claude-sonnet-thinking', system: oldSystem },
@@ -121,7 +121,7 @@ test('Anthropic system content blocks 也能替换旧版思考提示', () => {
     {
       model: 'claude-sonnet-thinking',
       system: [
-        { type: 'text', text: '基础人设\\n【可见思考摘要】\\n旧版摘要提示' },
+        { type: 'text', text: '基础人设\n【可见思考摘要】\n旧版摘要提示' },
       ],
     },
     {},
