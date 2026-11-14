@@ -6,7 +6,7 @@ const { MARKER, appendGuard, guardCurrentTurn } = require('../chatCurrentTurnGua
 
 test('current-turn guard is appended once to string systems', () => {
   const first = appendGuard('base system');
-  assert.match(first, /最后一条 user 消息/);
+  assert.match(first, /最后一条非空 user 消息/);
   assert.equal((first.match(new RegExp(MARKER, 'g')) || []).length, 1);
   const second = appendGuard(first);
   assert.equal((second.match(new RegExp(MARKER, 'g')) || []).length, 1);
@@ -23,7 +23,7 @@ test('current-turn guard preserves provider messages unchanged', () => {
   };
   const next = guardCurrentTurn(body);
   assert.deepEqual(next.messages, body.messages);
-  assert.match(next.system, /当前对话原文优先于窗口简介/);
+  assert.match(next.system, /最近原始对话是承接上下文的第一手材料/);
   assert.match(next.system, /不要再次询问她刚刚已经回答过的信息/);
   assert.match(next.system, /用户明确纠正过的事实优先/);
   assert.match(next.system, /只有原始对话确实没有提供答案时/);
