@@ -5,6 +5,9 @@ const assert = require('node:assert/strict');
 const {
   inferPurpose,
   pickBudgetModel,
+  pickBudgetModels,
+  isRetryableBudgetModelFailure,
+  requestWithModelFallback,
   isTheaterMemoryRequest,
   isTheaterRequest,
   preservesRequestedModel,
@@ -125,6 +128,77 @@ test('background selector prefers every Gemini 3.8 Flash alias regardless of pro
     'vendor-prefix/gemini-3.8-flash',
   ]), 'vendor-prefix/gemini-3.8-flash');
   assert.equal(pickBudgetModel(['claude-haiku-4-5', 'gemini-3.1-pro-preview']), '');
+});
+
+
+test('budget selector keeps an ordered list of safe Flash fallbacks', () => {
+  assert.deepEqual(pickBudgetModels([
+    'claude-haiku-4-5',
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+    'openrouter/google/gemini-3.8-flash-preview',
+    'vendor-prefix/gemini-3.8-flash',
+    'claude-opus-4-6',
+  ]), [
+    'openrouter/google/gemini-3.8-flash-preview',
+    'vendor-prefix/gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+  ]);
+  assert.deepEqual(pickBudgetModels([
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash',
+    'gemini-3.1-pro-vision',
+  ], { vision: true }), ['gemini-3.1-flash-lite', 'gemini-3.1-flash']);
+});
+
+test('model route failures trigger fallback without treating unrelated permission errors as model failures', () => {
+  assert.equal(isRetryableBudgetModelFailure(503, '请求模型无可用账号'), true);
+  assert.equal(isRetryableBudgetModelFailure(429, ''), true);
+  assert.equal(isRetryableBudgetModelFailure(403, 'risk-control blocked this model'), true);
+  assert.equal(isRetryableBudgetModelFailure(404, 'model_not_found'), true);
+  assert.equal(isRetryableBudgetModelFailure(403, 'invalid API key'), false);
+  assert.equal(isRetryableBudgetModelFailure(400, 'temperature is out of range'), false);
+});
+
+test('budget requests retry a failed low-cost route on the next Flash candidate', async () => {
+  const attempted = [];
+  const retried = [];
+  const response = status => ({
+    status,
+    ok: status >= 200 && status < 300,
+    clone() { return { text: async () => '' }; },
+  });
+  const outcome = await requestWithModelFallback(
+    ['[A]gemini-3.8-flash', '[B]gemini-3.8-flash', 'gemini-3.1-flash-lite'],
+    async model => {
+      attempted.push(model);
+      return response(model.startsWith('[A]') ? 503 : 200);
+    },
+    {
+      maxAttempts: 3,
+      shouldRetry: async result => isRetryableBudgetModelFailure(result.status) ? `HTTP ${result.status}` : '',
+      onRetry: event => retried.push(event),
+    },
+  );
+  assert.deepEqual(attempted, ['[A]gemini-3.8-flash', '[B]gemini-3.8-flash']);
+  assert.equal(retried.length, 1);
+  assert.equal(retried[0].nextModel, '[B]gemini-3.8-flash');
+  assert.equal(outcome.model, '[B]gemini-3.8-flash');
+  assert.equal(outcome.attempts, 2);
+  assert.equal(outcome.response.ok, true);
+});
+
+test('budget fallback does not fan out on ordinary malformed-request responses', async () => {
+  const attempted = [];
+  const response = { status: 400, ok: false, clone() { return { text: async () => 'invalid max_tokens' }; } };
+  const outcome = await requestWithModelFallback(
+    ['gemini-3.8-flash', 'gemini-3.1-flash-lite'],
+    async model => { attempted.push(model); return response; },
+  );
+  assert.deepEqual(attempted, ['gemini-3.8-flash']);
+  assert.equal(outcome.response, response);
+  assert.equal(outcome.model, 'gemini-3.8-flash');
 });
 
 test('model-list failure fallback cannot reintroduce a non-Flash selected model', () => {
