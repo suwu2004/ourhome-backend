@@ -10,6 +10,7 @@ const {
   buildSqlReadPlan,
   claimDailyJournal,
   commitContextLedger,
+  createNeonFailoverFetch,
   createVaultTransaction,
   deleteVaultTransaction,
   deleteApiProfile,
@@ -590,4 +591,82 @@ test('Neon object spool keeps image bytes and metadata together', async () => {
   assert.equal(inserted[0], 'photo-a.jpg');
   assert.equal(inserted[2], 'image/jpeg');
   assert.deepEqual(inserted[5], Buffer.from('image-bytes'));
+});
+
+
+test('Supabase network failures fall back to Neon for GET reads', async () => {
+  const originalError = new TypeError('fetch failed');
+  const events = [];
+  const wrappedFetch = createNeonFailoverFetch({
+    upstreamFetch: async () => { throw originalError; },
+    fallbackFetch: async (input, init) => {
+      events.push({ url: String(input), method: init.method || 'GET' });
+      return new Response('[{"id":42}]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    isSupabaseRest: url => url.startsWith('https://project.supabase.co/rest/v1/'),
+    logger: { warn: message => events.push(message), error: () => {} },
+  });
+
+  const response = await wrappedFetch('https://project.supabase.co/rest/v1/messages?limit=1');
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), [{ id: 42 }]);
+  assert.equal(events[0].method, 'GET');
+  assert.match(events[1], /network GET \/rest\/v1\/messages/);
+});
+
+test('Supabase network failures never replay mutations through Neon', async () => {
+  const originalError = new TypeError('socket hang up');
+  let fallbackCalls = 0;
+  const wrappedFetch = createNeonFailoverFetch({
+    upstreamFetch: async () => { throw originalError; },
+    fallbackFetch: async () => { fallbackCalls += 1; return new Response('[]'); },
+    isSupabaseRest: () => true,
+    logger: { warn: () => {}, error: () => {} },
+  });
+
+  await assert.rejects(
+    wrappedFetch('https://project.supabase.co/rest/v1/messages', { method: 'POST', body: '{"content":"once"}' }),
+    error => error === originalError,
+  );
+  assert.equal(fallbackCalls, 0);
+});
+
+test('Supabase network failures do not fall back for other hosts or aborted reads', async () => {
+  const networkError = new TypeError('fetch failed');
+  let fallbackCalls = 0;
+  const makeFetch = () => createNeonFailoverFetch({
+    upstreamFetch: async () => { throw networkError; },
+    fallbackFetch: async () => { fallbackCalls += 1; return new Response('[]'); },
+    isSupabaseRest: url => url.startsWith('https://project.supabase.co/'),
+    logger: { warn: () => {}, error: () => {} },
+  });
+
+  await assert.rejects(makeFetch()('https://example.com/rest/v1/messages'), error => error === networkError);
+  await assert.rejects(makeFetch()('https://project.supabase.co/rest/v1/messages', {
+    signal: AbortSignal.abort(),
+  }), error => error === networkError);
+  assert.equal(fallbackCalls, 0);
+});
+
+test('HTTP 402 keeps the existing Neon failover behavior for writes', async () => {
+  let fallbackCalls = 0;
+  const wrappedFetch = createNeonFailoverFetch({
+    upstreamFetch: async () => new Response('{"message":"quota"}', { status: 402 }),
+    fallbackFetch: async () => {
+      fallbackCalls += 1;
+      return new Response('', { status: 201 });
+    },
+    isSupabaseRest: () => true,
+    logger: { warn: () => {}, error: () => {} },
+  });
+
+  const response = await wrappedFetch('https://project.supabase.co/rest/v1/home_memos', {
+    method: 'POST',
+    body: '{"content":"existing 402 behavior"}',
+  });
+  assert.equal(response.status, 201);
+  assert.equal(fallbackCalls, 1);
 });
