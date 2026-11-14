@@ -50,14 +50,20 @@ test('canonical boundary keeps current-turn, follow-up, correction and natural-d
 
 test('支持 Anthropic system block 数组且不改时间、记忆正文', () => {
   const system = [
-    { type: 'text', text: `陆泽人设\n\n${DUPLICATE_STYLE_RULE}` },
-    { type: 'text', text: `【时间意识】\n${TIME_RULE}` },
+    { type: 'text', text: `陆泽人设\\n\\n${DUPLICATE_STYLE_RULE}` },
+    { type: 'text', text: `【时间意识】\\n${TIME_RULE}` },
     { type: 'text', text: '【记忆】今天一起吃了火锅。' },
   ];
-  const output = cleanupSystem(system);
-  assert.equal(output[0].text.includes(DUPLICATE_STYLE_RULE), false);
+  const cleaned = cleanupSystem(system);
+  assert.equal(cleaned[0].text.includes(DUPLICATE_STYLE_RULE), false);
+  assert.equal(cleaned[1].text, system[1].text);
+  assert.equal(cleaned[2].text, system[2].text);
+  assert.equal(cleaned.some(block => (block.text || '').includes(MARKER)), false);
+
+  const output = appendContextBoundary(cleaned);
+  assert.equal(output.length, 3);
   assert.equal(output[1].text, system[1].text);
   assert.match(output[2].text, /^【记忆】今天一起吃了火锅。/);
-  assert.match(output[2].text, /【聊天优先】/);
-  assert.equal((output.map(block => block.text || '').join('\n').match(/【聊天优先】/g) || []).length, 1);
+  assert.match(output[2].text, new RegExp(MARKER));
+  assert.equal((output.map(block => block.text || '').join('\\n').match(new RegExp(MARKER, 'g')) || []).length, 1);
 });
