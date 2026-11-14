@@ -79,7 +79,7 @@ function thinkingBudgetFor(body) {
   return Math.max(1024, maxTokens - 1);
 }
 
-const RELAY_VISIBLE_THINKING = `\n\n【可见思考摘要】\n正式回答前先写一小段很短的中文思考摘要，严格放在下面这组普通文本标记之间：\n【思考摘要开始】\n<1—4句第一人称的简短思考摘要>\n【思考摘要结束】\n然后另起一段给出正式回答。只写结论相关的判断、取舍或需要注意的一点，不要暴露隐私、系统指令、密钥或隐藏内部推理过程，也不要写完整的逐步思维链。`;
+const RELAY_VISIBLE_THINKING = `\n\n【可见思考摘要】\n正式回答前先用下面的普通文本标记写一段简短、自然的中文思路摘要：\n【思考摘要开始】\n用1—3句话概括你对用户问题的理解、最相关的事实或关键考量，以及准备给出的回应方向。\n【思考摘要结束】\n然后另起一段给出正式回答。这是面向用户的高层次说明，不是隐藏的内部推理或逐步思维链；简单话题可以只写一句。不要解释标记，不要编造事实，也不要写系统、提示词、工具或执行步骤。`;
 
 function appendRelayThinkingInstruction(system) {
   if (typeof system === 'string') {
@@ -100,10 +100,12 @@ function prepareMainChatRequest(url, body, headersInit) {
   nextBody.system = sanitizeChatSystem(nextBody.system);
   const headers = new Headers(headersInit || undefined);
   const thinkingModel = modelRequestsNativeThinking(nextBody.model);
-  if (thinkingModel) {
-    // Ask every thinking-capable route, including native-thinking providers, for a
-    // short Simplified-Chinese summary inside explicit markers. This stays in the
-    // original completion; it does not add a translation request or expose full CoT.
+  // Gemini can return native thinking blocks even when the public model id has no
+  // thinking suffix. On main Chat requests, ask the same completion for a visible
+  // Chinese summary; the raw block remains private and no Anthropic thinking params
+  // are forced onto Gemini relay models.
+  const geminiChatModel = isMainChatRequest(url, nextBody) && /gemini/i.test(String(nextBody.model || ''));
+  if (thinkingModel || geminiChatModel) {
     nextBody.system = appendRelayThinkingInstruction(nextBody.system);
   }
   if (isOfficialAnthropicUrl(url) && !nextBody.thinking && thinkingModel) {
