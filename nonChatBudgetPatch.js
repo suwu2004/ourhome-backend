@@ -223,18 +223,18 @@ async function requestWithModelFallback(models, request, {
     try {
       response = await request(model, index);
     } catch (error) {
-      if (index >= candidates.length - 1) throw error;
       if (typeof onRetry === 'function') {
-        await onRetry({ model, nextModel: candidates[index + 1], error, attempt: index + 1 });
+        await onRetry({ model, nextModel: candidates[index + 1] || null, error, reason: error?.message || 'network error', attempt: index + 1 });
       }
+      if (index >= candidates.length - 1) throw error;
       continue;
     }
     const reason = await shouldRetry(response);
+    if (reason && typeof onRetry === 'function') {
+      await onRetry({ model, nextModel: candidates[index + 1] || null, response, reason, attempt: index + 1 });
+    }
     if (!reason || index >= candidates.length - 1) {
       return { response, model, attempts: index + 1, retryReason: reason || '' };
-    }
-    if (typeof onRetry === 'function') {
-      await onRetry({ model, nextModel: candidates[index + 1], response, reason, attempt: index + 1 });
     }
   }
   return null;
@@ -460,7 +460,7 @@ if (typeof providerFetch === 'function') {
         onRetry: ({ model: failedModel, nextModel, response, error, reason }) => {
           const status = Number(response?.status || error?.status || 0);
           coolDownBudgetModel(cacheKey, failedModel, status);
-          console.warn(`[budget-model] ${effectivePurpose} model=${failedModel} failed${status ? ` status=${status}` : ' network-error'}; ${reason || error?.message || 'trying alternate low-cost model'}; next=${nextModel}`);
+          console.warn(`[budget-model] ${effectivePurpose} model=${failedModel} failed${status ? ` status=${status}` : ' network-error'}; ${reason || error?.message || 'trying alternate low-cost model'}; next=${nextModel || 'none'}`);
         },
       });
     } catch (error) {
