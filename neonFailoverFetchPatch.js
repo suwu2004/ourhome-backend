@@ -1351,7 +1351,6 @@ module.exports = {
   buildSqlReadPlan,
   claimDailyJournal,
   commitContextLedger,
-  createNeonFailoverFetch,
   createVaultTransaction,
   deleteVaultTransaction,
   deleteApiProfile,
