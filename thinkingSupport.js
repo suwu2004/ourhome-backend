@@ -17,9 +17,9 @@ const MAX_VISIBLE_SUMMARY_CHARS = 1_600;
 const STORED_VISIBLE_SUMMARY_PREFIX = '【OurHome可见思考摘要v1】: ';
 const BRACKETED_THINKING_LABEL = '(?:思考摘要|思考链|思考过程|思考记录|可见思考|想了想|thinking|reasoning|analysis)';
 const BRACKETED_THINKING_PATTERNS = [
-  new RegExp(`\\[\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*\\]`, 'gi'),
-  new RegExp(`［\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*］`, 'gi'),
-  new RegExp(`【\\s*${BRACKETED_THINKING_LABEL}\\s*[:：]\\s*([\\s\\S]*?)\\s*】`, 'gi'),
+  new RegExp(`\\[\s*${BRACKETED_THINKING_LABEL}\s*[:：]\s*([\s\S]*?)\s*\\]`, 'gi'),
+  new RegExp(`［\s*${BRACKETED_THINKING_LABEL}\s*[:：]\s*([\s\S]*?)\s*］`, 'gi'),
+  new RegExp(`【\s*${BRACKETED_THINKING_LABEL}\s*[:：]\s*([\s\S]*?)\s*】`, 'gi'),
 ];
 
 function normalizeThinkingText(value) {
@@ -96,9 +96,9 @@ function extractVisibleSummaryMarkers(value) {
   const text = String(value || '');
   const results = [];
   const patterns = [
-    /【思考摘要开始】([\\s\\S]*?)【思考摘要结束】/g,
-    /【思考记录开始】([\\s\\S]*?)【思考记录结束】/g,
-    /【思考轨迹开始】([\\s\\S]*?)【思考轨迹结束】/g,
+    /【思考摘要开始】([\s\S]*?)【思考摘要结束】/g,
+    /【思考记录开始】([\s\S]*?)【思考记录结束】/g,
+    /【思考轨迹开始】([\s\S]*?)【思考轨迹结束】/g,
   ];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
@@ -118,9 +118,9 @@ function stripThinkingMarkup(value) {
     text = text.replace(pattern, '');
   }
   text = text
-    .replace(/【(?:思考摘要|思考记录|思考轨迹)开始】[\\s\\S]*?【(?:思考摘要|思考记录|思考轨迹)结束】/g, '')
-    .replace(/【思考链开始】[\\s\\S]*?【思考链结束】/g, '')
-    .replace(/【思考过程开始】[\\s\\S]*?【思考过程结束】/g, '');
+    .replace(/【(?:思考摘要|思考记录|思考轨迹)开始】[\s\S]*?【(?:思考摘要|思考记录|思考轨迹)结束】/g, '')
+    .replace(/【思考链开始】[\s\S]*?【思考链结束】/g, '')
+    .replace(/【思考过程开始】[\s\S]*?【思考过程结束】/g, '');
   return text.replace(/^\s+/, '').trim();
 }
 
