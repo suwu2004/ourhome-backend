@@ -95,10 +95,16 @@ function extractBracketedThinking(value) {
 function extractVisibleSummaryMarkers(value) {
   const text = String(value || '');
   const results = [];
-  const pattern = /【思考摘要开始】([\s\S]*?)【思考摘要结束】/g;
-  for (const match of text.matchAll(pattern)) {
-    const candidate = normalizeThinkingText(match[1]);
-    if (candidate) results.push(candidate);
+  const patterns = [
+    /【思考摘要开始】([\\s\\S]*?)【思考摘要结束】/g,
+    /【思考记录开始】([\\s\\S]*?)【思考记录结束】/g,
+    /【思考轨迹开始】([\\s\\S]*?)【思考轨迹结束】/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const candidate = normalizeThinkingText(match[1]);
+      if (candidate) results.push(candidate);
+    }
   }
   return results;
 }
@@ -112,9 +118,9 @@ function stripThinkingMarkup(value) {
     text = text.replace(pattern, '');
   }
   text = text
-    .replace(/【思考摘要开始】[\s\S]*?【思考摘要结束】/g, '')
-    .replace(/【思考链开始】[\s\S]*?【思考链结束】/g, '')
-    .replace(/【思考过程开始】[\s\S]*?【思考过程结束】/g, '');
+    .replace(/【(?:思考摘要|思考记录|思考轨迹)开始】[\\s\\S]*?【(?:思考摘要|思考记录|思考轨迹)结束】/g, '')
+    .replace(/【思考链开始】[\\s\\S]*?【思考链结束】/g, '')
+    .replace(/【思考过程开始】[\\s\\S]*?【思考过程结束】/g, '');
   return text.replace(/^\s+/, '').trim();
 }
 
