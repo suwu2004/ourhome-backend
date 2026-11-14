@@ -168,3 +168,15 @@ test('思考轨迹和摘要标记均可兼容解析并从正式回复中剥离',
   assert.equal(extractThinkingText({ content: [{ type: 'text', text }] }), '我先确认上下文，再说明当前判断。\n我会接着处理。');
   assert.equal(stripThinkingMarkup(text), '正式回复。');
 });
+
+
+test('把上游明确标记的公开 thought_summary 与同次思考轨迹合并', () => {
+  const providerSummary = '我先识别核心诉求，再核对相关上下文。';
+  const trace = '这次重点是让回复前的判断更连贯，同时不增加额外请求。';
+  const result = {
+    thought_summary: providerSummary,
+    reasoning_content: 'private raw reasoning stays hidden',
+    content: [{ type: 'text', text: `【思考轨迹开始】${trace}【思考轨迹结束】` }],
+  };
+  assert.equal(extractThinkingText(result), `${trace}\\n${providerSummary}`);
+});
