@@ -11,10 +11,15 @@ const { isLikelyVisionModel } = require('./modelCompatibility');
 // model; planning, search and other rough work stay cheap.
 const providerFetch = globalThis.fetch;
 const MODEL_CACHE_MS = 5 * 60 * 1000;
+const MODEL_STALE_MAX_MS = 30 * 60 * 1000;
+const MODEL_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+const MODEL_PERMISSION_COOLDOWN_MS = 20 * 60 * 1000;
+const MAX_BUDGET_MODEL_ATTEMPTS = 3;
 const HEARTBEAT_BACKOFF_MS = 60 * 60 * 1000;
 const AUTOMATION_HEARTBEAT_PURPOSE = 'automation-heartbeat';
 const SESSION_SUMMARY_AUTO_PURPOSE = 'session-summary-auto';
 const modelCache = new Map();
+const failedModelUntil = new Map();
 let heartbeatBackoffUntil = 0;
 const SMART_BACKGROUND_PURPOSES = new Set([
   'happiness-diary',
@@ -169,7 +174,7 @@ function isGemini38FlashModel(model) {
   return /gemini[-_.]?3[._-]8.*flash/i.test(String(model || ''));
 }
 
-function pickBudgetModel(models, { vision = false } = {}) {
+function pickBudgetModels(models, { vision = false } = {}) {
   return [...new Set((Array.isArray(models) ? models : []).map(String).filter(Boolean))]
     .filter(isCandidate)
     .filter(isFlashModel)
@@ -178,7 +183,61 @@ function pickBudgetModel(models, { vision = false } = {}) {
       Number(isGemini38FlashModel(b)) - Number(isGemini38FlashModel(a))
       || budgetScore(a) - budgetScore(b)
       || String(a).localeCompare(String(b))
-    )[0] || '';
+    );
+}
+
+function pickBudgetModel(models, options = {}) {
+  return pickBudgetModels(models, options)[0] || '';
+}
+
+function isRetryableBudgetModelFailure(status, detail = '') {
+  const code = Number(status || 0);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(code)) return true;
+  if (![400, 401, 403, 404].includes(code)) return false;
+  return /model_not_found|unknown model|model.{0,80}not found|no available (?:channel|account|provider)|无可用账号|没有可用账号|模型.{0,30}(?:不可用|未找到|不存在)|风控|risk[\s_-]*control|model.{0,40}(?:blocked|disabled)/i
+    .test(String(detail || ''));
+}
+
+async function budgetModelRetryReason(response) {
+  const status = Number(response?.status || 0);
+  let detail = '';
+  if ([400, 401, 403, 404].includes(status)) {
+    try { detail = await response.clone().text(); } catch {}
+  }
+  return isRetryableBudgetModelFailure(status, detail)
+    ? `HTTP ${status} indicates this model route is unavailable`
+    : '';
+}
+
+async function requestWithModelFallback(models, request, {
+  maxAttempts = MAX_BUDGET_MODEL_ATTEMPTS,
+  shouldRetry = budgetModelRetryReason,
+  onRetry = null,
+} = {}) {
+  if (typeof request !== 'function') throw new TypeError('A model request function is required');
+  const candidates = [...new Set((Array.isArray(models) ? models : []).map(String).filter(Boolean))]
+    .slice(0, Math.max(1, Number(maxAttempts) || 1));
+  for (let index = 0; index < candidates.length; index += 1) {
+    const model = candidates[index];
+    let response;
+    try {
+      response = await request(model, index);
+    } catch (error) {
+      if (typeof onRetry === 'function') {
+        await onRetry({ model, nextModel: candidates[index + 1] || null, error, reason: error?.message || 'network error', attempt: index + 1 });
+      }
+      if (index >= candidates.length - 1) throw error;
+      continue;
+    }
+    const reason = await shouldRetry(response);
+    if (reason && typeof onRetry === 'function') {
+      await onRetry({ model, nextModel: candidates[index + 1] || null, response, reason, attempt: index + 1 });
+    }
+    if (!reason || index >= candidates.length - 1) {
+      return { response, model, attempts: index + 1, retryReason: reason || '' };
+    }
+  }
+  return null;
 }
 
 function parseModels(payload) {
@@ -231,32 +290,90 @@ async function fetchAvailableModels(runtime) {
   return parseModels(await response.json());
 }
 
-async function cheapestModel({ vision = false } = {}) {
+function budgetModelCacheKey(runtime, vision) {
+  return `${runtime.id}:${runtime.base_url}:${vision ? 'vision' : 'text'}`;
+}
+
+function budgetModelFailureKey(cacheKey, model) {
+  return `${cacheKey}::${model}`;
+}
+
+function availableBudgetModels(models, cacheKey, now = Date.now()) {
+  for (const [key, until] of failedModelUntil) {
+    if (until <= now) failedModelUntil.delete(key);
+  }
+  return models.filter(model => (failedModelUntil.get(budgetModelFailureKey(cacheKey, model)) || 0) <= now);
+}
+
+function coolDownBudgetModel(cacheKey, model, status = 0) {
+  if (!cacheKey || !model) return;
+  const duration = [403, 404].includes(Number(status))
+    ? MODEL_PERMISSION_COOLDOWN_MS
+    : MODEL_FAILURE_COOLDOWN_MS;
+  failedModelUntil.set(budgetModelFailureKey(cacheKey, model), Date.now() + duration);
+}
+
+function recoverBudgetModel(cacheKey, model) {
+  if (!cacheKey || !model) return;
+  failedModelUntil.delete(budgetModelFailureKey(cacheKey, model));
+}
+
+async function resolveBudgetModels({ vision = false } = {}) {
   const forced = String(process.env.NON_CHAT_MODEL || '').trim();
   // Background routing is intentionally Flash-only. Even an explicit override
   // must not silently reintroduce a premium non-Flash model.
-  if (forced && isFlashModel(forced) && (!vision || isLikelyVisionModel(forced))) return forced;
+  if (forced && isFlashModel(forced) && (!vision || isLikelyVisionModel(forced))) {
+    return { models: [forced], cacheKey: `forced:${vision ? 'vision' : 'text'}:${forced}` };
+  }
 
   const runtime = await activeProfileRuntime();
-  if (!runtime) return '';
-  const key = `${runtime.id}:${runtime.base_url}:${vision ? 'vision' : 'text'}`;
-  const cached = modelCache.get(key);
-  if (cached?.expiresAt > Date.now()) return cached.model;
+  if (!runtime) return { models: [], cacheKey: '' };
+  const cacheKey = budgetModelCacheKey(runtime, vision);
+  const now = Date.now();
+  const cached = modelCache.get(cacheKey);
+  let candidates = [];
 
-  try {
-    const models = await fetchAvailableModels(runtime);
-    const model = pickBudgetModel(models, { vision });
-    modelCache.set(key, { model, expiresAt: Date.now() + MODEL_CACHE_MS });
-    if (model) console.log(`[budget-model] profile=${runtime.name || runtime.id} ${vision ? 'vision ' : ''}cheapest=${model}`);
-    return model;
-  } catch (error) {
-    console.warn('[budget-model] model list unavailable:', error.message);
-    // Never silently fall back to an expensive active Chat model. A model that is
-    // already clearly in the low-cost family may still be used as a safe fallback.
-    const selected = String(runtime.selected_model || '').trim();
-    if (selected && isFlashModel(selected) && budgetScore(selected) <= 3.8 && (!vision || isLikelyVisionModel(selected))) return selected;
-    return '';
+  if (cached?.expiresAt > now) {
+    candidates = cached.models || [];
+  } else {
+    try {
+      candidates = pickBudgetModels(await fetchAvailableModels(runtime), { vision });
+      const selected = String(runtime.selected_model || '').trim();
+      if (selected && isFlashModel(selected) && budgetScore(selected) <= 3.8
+        && (!vision || isLikelyVisionModel(selected)) && !candidates.includes(selected)) {
+        candidates.push(selected);
+      }
+      modelCache.set(cacheKey, {
+        models: candidates,
+        fetchedAt: now,
+        expiresAt: now + MODEL_CACHE_MS,
+      });
+      if (candidates.length) {
+        console.log(`[budget-model] profile=${runtime.name || runtime.id} ${vision ? 'vision ' : ''}cheapest=${candidates[0]} candidates=${candidates.length}`);
+      }
+    } catch (error) {
+      console.warn('[budget-model] model list unavailable:', error.message);
+      // Never silently fall back to an expensive active Chat model.
+      // Keep a recently successful catalogue through short provider-side /models
+      // rate limits and timeouts. Never fall back to a costly active Chat model.
+      const staleCandidates = cached?.models?.length && cached.fetchedAt
+        && now - cached.fetchedAt <= MODEL_STALE_MAX_MS
+        ? cached.models
+        : [];
+      const selected = String(runtime.selected_model || '').trim();
+      candidates = [...staleCandidates];
+      if (selected && isFlashModel(selected) && budgetScore(selected) <= 3.8
+        && (!vision || isLikelyVisionModel(selected)) && !candidates.includes(selected)) {
+        candidates.push(selected);
+      }
+    }
   }
+
+  return { models: availableBudgetModels(candidates, cacheKey, now), cacheKey };
+}
+
+async function cheapestModel({ vision = false } = {}) {
+  return (await resolveBudgetModels({ vision })).models[0] || '';
 }
 
 function inferPurpose(body) {
@@ -320,29 +437,47 @@ if (typeof providerFetch === 'function') {
     }
 
     const vision = isVisionReaderRequest(body);
-    const model = await cheapestModel({ vision });
-    if (!model) {
+    const { models: modelCandidates, cacheKey } = await resolveBudgetModels({ vision });
+    if (!modelCandidates.length) {
       console.warn(`[budget-model] blocked paid non-chat call; no safe cheapest model purpose=${effectivePurpose} requested=${body.model || ''}`);
       if (heartbeat) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
       return localBudgetError('当前 API 站点暂时没有拿到可确认的省钱模型，后台功能已停止这次调用，避免误用 Chat 的昂贵模型。');
     }
 
-    const headers = new Headers(init.headers || undefined);
-    headers.set('X-OurHome-Call-Purpose', effectivePurpose);
     const originalModel = String(body.model || '');
-    const nextBody = { ...body, model };
-    if (originalModel !== model) console.log(`[budget-model] ${effectivePurpose} ${originalModel} -> ${model}`);
-    let response;
+    let outcome;
     try {
-      response = await providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+      outcome = await requestWithModelFallback(modelCandidates, candidateModel => {
+        const headers = new Headers(init.headers || undefined);
+        headers.set('X-OurHome-Call-Purpose', effectivePurpose);
+        const nextBody = { ...body, model: candidateModel };
+        if (originalModel !== candidateModel) {
+          console.log(`[budget-model] ${effectivePurpose} ${originalModel} -> ${candidateModel}`);
+        }
+        return providerFetch(input, { ...init, headers, body: JSON.stringify(nextBody) });
+      }, {
+        maxAttempts: MAX_BUDGET_MODEL_ATTEMPTS,
+        shouldRetry: budgetModelRetryReason,
+        onRetry: ({ model: failedModel, nextModel, response, error, reason }) => {
+          const status = Number(response?.status || error?.status || 0);
+          coolDownBudgetModel(cacheKey, failedModel, status);
+          console.warn(`[budget-model] ${effectivePurpose} model=${failedModel} failed${status ? ` status=${status}` : ' network-error'}; ${reason || error?.message || 'trying alternate low-cost model'}; next=${nextModel || 'none'}`);
+        },
+      });
     } catch (error) {
-      // Network timeouts throw instead of returning a 5xx response. They must
-      // enter the same cooldown or the next heartbeat can repeat the same slow call.
       if (heartbeat) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
       throw error;
     }
+
+    if (!outcome?.response) {
+      if (heartbeat) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
+      return localBudgetError('当前 API 站点的省钱模型暂时不可用，后台任务已停止这次调用。');
+    }
+
+    const { response, model } = outcome;
+    if (response.ok) recoverBudgetModel(cacheKey, model);
     if (heartbeat) {
-      if (response.status >= 500) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
+      if (!response.ok && response.status >= 500) heartbeatBackoffUntil = Date.now() + HEARTBEAT_BACKOFF_MS;
       else if (response.ok) heartbeatBackoffUntil = 0;
     }
     return response;
@@ -371,6 +506,9 @@ module.exports = {
   isFlashModel,
   isGemini38FlashModel,
   pickBudgetModel,
+  pickBudgetModels,
+  isRetryableBudgetModelFailure,
+  requestWithModelFallback,
   isToyboxRequest,
   isTheaterMemoryRequest,
   isTheaterRequest,
