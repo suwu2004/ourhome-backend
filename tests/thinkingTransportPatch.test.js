@@ -110,7 +110,7 @@ test('旧版摘要提示会被替换为更具体的思考轨迹协议，而不�
     {},
   );
   assert.match(prepared.body.system, /【思考轨迹开始】/);
-  assert.match(prepared.body.system, /关键判断依据、取舍或尚不确定之处/);
+  assert.match(prepared.body.system, /最重要的判断依据、取舍或尚不确定之处/);
   assert.doesNotMatch(prepared.body.system, /用1—3句话概括用户问题/);
   assert.equal((prepared.body.system.match(/【可见思考轨迹】/g) || []).length, 1);
 });
