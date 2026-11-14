@@ -53,7 +53,7 @@ test('上游没有 reasoning 时不本地伪造思考，并允许中转兼容摘
 });
 
 test('server 兼容官方 Anthropic 原生 thinking，传输层不再误删', () => {
-  assert.match(server, /if \(isOfficialAnthropicApi\(settings\)\) \{/);
+  assert.match(server, /if \(isOfficialAnthropicApi\(settings\) && !hybridModel\) \{/);
   assert.doesNotMatch(thinkingTransportPatch, /delete body\.thinking/);
   assert.match(thinkingTransportPatch, /modelRequestsNativeThinking/);
   assert.match(thinkingTransportPatch, /nextBody\.thinking = \{ type: 'enabled'/);
