@@ -52,8 +52,8 @@ test('Anthropic 原生 thinking 请求也会收到中文可见摘要指令', () 
     {},
   );
   assert.deepEqual(prepared.body.thinking, thinking);
-  assert.match(prepared.body.system, /【思考摘要开始】/);
-  assert.match(prepared.body.system, /中文思考摘要/);
+  assert.match(prepared.body.system, /【思考轨迹开始】/);
+  assert.match(prepared.body.system, /高层次判断说明/);
 });
 
 test('旧的要不要想判断仍由本地拦截条件识别', () => {
@@ -71,8 +71,8 @@ test('Gemini thinking relay 会使用统一的可见思考摘要协议', () => {
   );
 
   assert.doesNotMatch(prepared.body.system, /<thinking>/);
-  assert.match(prepared.body.system, /【思考摘要开始】/);
-  assert.match(prepared.body.system, /【思考摘要结束】/);
+  assert.match(prepared.body.system, /【思考轨迹开始】/);
+  assert.match(prepared.body.system, /【思考轨迹结束】/);
 });
 
 test('Hybrid main Chat 型号即使没有 thinking 后缀，也会收到中文摘要提示且不强行设置原生参数', () => {
@@ -82,8 +82,8 @@ test('Hybrid main Chat 型号即使没有 thinking 后缀，也会收到中文�
     { model: '[A]claude-hybrid2', system },
     {},
   );
-  assert.match(prepared.body.system, /【思考摘要开始】/);
-  assert.match(prepared.body.system, /【思考摘要结束】/);
+  assert.match(prepared.body.system, /【思考轨迹开始】/);
+  assert.match(prepared.body.system, /【思考轨迹结束】/);
   assert.equal(prepared.body.thinking, undefined);
 });
 
@@ -95,8 +95,37 @@ test('Gemini main Chat 型号即使没有 thinking 后缀，也会收到中文�
       { model, system },
       {},
     );
-    assert.match(prepared.body.system, /【思考摘要开始】/, model);
-    assert.match(prepared.body.system, /【思考摘要结束】/, model);
+    assert.match(prepared.body.system, /【思考轨迹开始】/, model);
+    assert.match(prepared.body.system, /【思考轨迹结束】/, model);
     assert.equal(prepared.body.thinking, undefined, model);
   }
+});
+
+
+test('旧版摘要提示会被替换为更具体的思考轨迹协议，而不是重复追加', () => {
+  const oldSystem = '基础人设\\n【回复长度】自然回复\\n【OurHome 房间与入口认知（事实规则）】在家\\n\\n【可见思考摘要】\\n用1—3句话概括用户问题。';
+  const prepared = prepareMainChatRequest(
+    'https://api.anthropic.com/v1/messages',
+    { model: 'claude-sonnet-thinking', system: oldSystem },
+    {},
+  );
+  assert.match(prepared.body.system, /【思考轨迹开始】/);
+  assert.match(prepared.body.system, /关键判断依据、取舍或尚不确定之处/);
+  assert.doesNotMatch(prepared.body.system, /用1—3句话概括用户问题/);
+  assert.equal((prepared.body.system.match(/【可见思考轨迹】/g) || []).length, 1);
+});
+
+test('Anthropic system content blocks 也能替换旧版思考提示', () => {
+  const prepared = prepareMainChatRequest(
+    'https://api.anthropic.com/v1/messages',
+    {
+      model: 'claude-sonnet-thinking',
+      system: [
+        { type: 'text', text: '基础人设\\n【可见思考摘要】\\n旧版摘要提示' },
+      ],
+    },
+    {},
+  );
+  assert.match(prepared.body.system[0].text, /【思考轨迹开始】/);
+  assert.doesNotMatch(prepared.body.system[0].text, /旧版摘要提示/);
 });
