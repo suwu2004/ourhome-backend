@@ -194,7 +194,7 @@ function isRetryableBudgetModelFailure(status, detail = '') {
   const code = Number(status || 0);
   if ([408, 425, 429, 500, 502, 503, 504].includes(code)) return true;
   if (![400, 401, 403, 404].includes(code)) return false;
-  return /model_not_found|unknown model|model[^\\n]{0,80}not found|no available (?:channel|account|provider)|无可用账号|没有可用账号|模型[^\\n]{0,30}(?:不可用|未找到|不存在)|风控|risk[\\s_-]*control|model[^\\n]{0,40}(?:blocked|disabled)/i
+  return /model_not_found|unknown model|model.{0,80}not found|no available (?:channel|account|provider)|无可用账号|没有可用账号|模型.{0,30}(?:不可用|未找到|不存在)|风控|risk[\s_-]*control|model.{0,40}(?:blocked|disabled)/i
     .test(String(detail || ''));
 }
 
@@ -295,7 +295,7 @@ function budgetModelCacheKey(runtime, vision) {
 }
 
 function budgetModelFailureKey(cacheKey, model) {
-  return `${cacheKey}\\u0000${model}`;
+  return `${cacheKey}::${model}`;
 }
 
 function availableBudgetModels(models, cacheKey, now = Date.now()) {
