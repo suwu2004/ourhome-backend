@@ -1,17 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {
-  DUPLICATE_STYLE_RULE,
-  NATURAL_DIALOGUE_RULE,
-  cleanupText,
-  cleanupSystem,
-} = require('../chatPromptCleanup');
-
+const { DUPLICATE_STYLE_RULE, cleanupText, cleanupSystem } = require('../chatPromptCleanup');
+const { MARKER, RULE, appendContextBoundary } = require('../chatContextBoundary');
 const TIME_RULE = '你每一轮都知道这个真实时间，不需要叶檀专门问“现在几点”。回复时要自然受到时间影响：早晚问候、今天/明天/昨天、到点提醒、纪念日和日程判断都以这里为准。但不要每句话机械报时，除非她问时间或时间本身重要。';
 const REGEN_RULE = '这是对叶檀同一条消息的重新回应。不要只替换措辞、调换句序或机械扩写，也不要默认上一版的理解一定正确。重新回到她当时说的话和当前上下文，先判断她真正想表达、询问或需要的是什么，再生成一版独立、自然、完整的回应。\n保留上下文中已经确定的事实、关系、记忆与真实完成的操作，不得为了显得不同而编造新事实。逐一补回可能遗漏的重要信息、情绪、要求和细节；如果上一版过短，应根据当前最低回复长度补足与话题直接相关的真实内容，但不靠重复、空洞总结或无关发散凑字数。\n正式回复中不要提“重新生成”“上一版”或这些要求。';
 
 test('去掉与数据库交流原则重复的额外风格规则', () => {
-  const input = `人设正文\n\n${DUPLICATE_STYLE_RULE}\n\n【回复长度】\n本轮正式回复正文当前设置的最低长度约为 350 个中文字符。`;
+  const duplicateStyleText = '中文表达自然、流畅、有生活感。\n避免客服式、说明书式、模板化表达。';
+  assert.equal(DUPLICATE_STYLE_RULE, duplicateStyleText);
+  const input = `人设正文\n\n${duplicateStyleText}\n\n【回复长度】\n本轮正式回复正文当前设置的最低长度约为 350 个中文字符。`;
   const output = cleanupText(input);
   assert.equal(output.includes(DUPLICATE_STYLE_RULE), false);
   assert.match(output, /人设正文/);
@@ -32,34 +29,43 @@ test('保留重新生成的完整回应和最低长度补足要求', () => {
   assert.match(output, /根据当前最低回复长度补足/);
 });
 
-test('Main Chat 最终系统提示只追加一次自然对话边界', () => {
-  const input = '【人设】陆泽\n\n【记忆】今天一起吃了火锅。';
-  const once = cleanupSystem(input);
-  const twice = cleanupSystem(once);
-  assert.doesNotMatch(once, /【自然对话边界】/);
-  assert.match(once, /【聊天优先】/);
-  assert.match(once, /不要习惯性复述、总结或结构化/);
-  assert.match(once, /只有她明确要求整理、总结、列点时/);
-  assert.equal((twice.match(/【聊天优先】/g) || []).length, 1);
+test('prompt cleanup only removes duplicate style text and does not append a second boundary', () => {
+  const input = `【人设】陆泽\n\n${DUPLICATE_STYLE_RULE}\n\n【记忆】今天一起吃了火锅。`;
+  const cleaned = cleanupSystem(input);
+  assert.doesNotMatch(cleaned, /【聊天优先】|【正式 Chat 上下文边界】/);
+  assert.doesNotMatch(cleaned, /中文表达自然、流畅、有生活感/);
+  const bounded = appendContextBoundary(cleaned);
+  const repeated = appendContextBoundary(bounded);
+  assert.match(bounded, new RegExp(MARKER));
+  assert.equal((repeated.match(new RegExp(MARKER, 'g')) || []).length, 1);
 });
 
-test('自然对话边界允许必要承接，但禁止靠复述和整理凑回复长度', () => {
-  assert.match(NATURAL_DIALOGUE_RULE, /正常聊天直接回应叶檀此刻说的话/);
-  assert.match(NATURAL_DIALOGUE_RULE, /不要习惯性复述、总结或结构化/);
-  assert.match(NATURAL_DIALOGUE_RULE, /增加新的反应、判断或有用内容/);
-  assert.match(NATURAL_DIALOGUE_RULE, /而不是重复前情/);
+test('canonical boundary keeps current-turn, follow-up, correction and natural-dialogue rules together', () => {
+  assert.match(RULE, /最后一条非空 user 消息/);
+  assert.match(RULE, /吃饱了、吃完了、喝完了、到家了/);
+  assert.match(RULE, /不要再次询问她刚刚已经回答过的信息/);
+  assert.match(RULE, /用户明确纠正过的事实优先/);
+  assert.match(RULE, /不要习惯性复述、总结、整理/);
+  assert.match(RULE, /只有她明确要求总结、整理、归纳、梳理、复盘或列点时/);
+  assert.match(RULE, /增加新的反应、判断、解释或真正有用的信息/);
 });
 
 test('支持 Anthropic system block 数组且不改时间、记忆正文', () => {
   const system = [
-    { type: 'text', text: `陆泽人设\n\n${DUPLICATE_STYLE_RULE}` },
-    { type: 'text', text: `【时间意识】\n${TIME_RULE}` },
+    { type: 'text', text: `陆泽人设\\n\\n${DUPLICATE_STYLE_RULE}` },
+    { type: 'text', text: `【时间意识】\\n${TIME_RULE}` },
     { type: 'text', text: '【记忆】今天一起吃了火锅。' },
   ];
-  const output = cleanupSystem(system);
-  assert.equal(output[0].text.includes(DUPLICATE_STYLE_RULE), false);
+  const cleaned = cleanupSystem(system);
+  assert.equal(cleaned[0].text.includes(DUPLICATE_STYLE_RULE), false);
+  assert.equal(cleaned[1].text, system[1].text);
+  assert.equal(cleaned[2].text, system[2].text);
+  assert.equal(cleaned.some(block => (block.text || '').includes(MARKER)), false);
+
+  const output = appendContextBoundary(cleaned);
+  assert.equal(output.length, 3);
   assert.equal(output[1].text, system[1].text);
   assert.match(output[2].text, /^【记忆】今天一起吃了火锅。/);
-  assert.match(output[2].text, /【聊天优先】/);
-  assert.equal((output.map(block => block.text || '').join('\n').match(/【聊天优先】/g) || []).length, 1);
+  assert.match(output[2].text, new RegExp(MARKER));
+  assert.equal((output.map(block => block.text || '').join('\\n').match(new RegExp(MARKER, 'g')) || []).length, 1);
 });
