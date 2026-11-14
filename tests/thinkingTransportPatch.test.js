@@ -75,6 +75,18 @@ test('Gemini thinking relay 会使用统一的可见思考摘要协议', () => {
   assert.match(prepared.body.system, /【思考摘要结束】/);
 });
 
+test('Hybrid main Chat 型号即使没有 thinking 后缀，也会收到中文摘要提示且不强行设置原生参数', () => {
+  const system = '基础人设\\n【回复长度】自然回复\\n【OurHome 房间与入口认知（事实规则）】在家';
+  const prepared = prepareMainChatRequest(
+    'https://relay.example.com/v1/messages',
+    { model: '[A]claude-hybrid2', system },
+    {},
+  );
+  assert.match(prepared.body.system, /【思考摘要开始】/);
+  assert.match(prepared.body.system, /【思考摘要结束】/);
+  assert.equal(prepared.body.thinking, undefined);
+});
+
 test('Gemini main Chat 型号即使没有 thinking 后缀，也会收到中文摘要提示且不强行设置原生参数', () => {
   const system = '基础人设\\n【回复长度】自然回复\\n【OurHome 房间与入口认知（事实规则）】在家';
   for (const model of ['[C]gemini-3.1-pro-preview', '[A]gemini-4-hydrogen', '[B]gemini-3.8-flash']) {
