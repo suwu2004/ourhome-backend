@@ -2353,22 +2353,20 @@ function isOfficialAnthropicApi(settings) {
   return !settings?.api_base_url || settings.api_base_url.includes('api.anthropic.com');
 }
 
-// 让陆泽自己在回复前用<thinking>标签写一段内心独白——这是纯文字层面的技巧，
-// 不依赖API原生的extended thinking功能，任何模型、任何中转站都能用
+// 生成面向用户的简短中文思路摘要；不展示隐藏的逐步推理或内部独白。
 function buildThinkingInstruction() {
   return `
 
 【可见思考摘要】
-正式回应之前，先用下面这组普通文本标记写一小段中文思考摘要：
+正式回应之前，先用下面这组普通文本标记写一段简短、自然的中文思路摘要：
 【思考摘要开始】
-<1—4句第一人称的简短思考摘要>
+用1—3句话概括你对用户问题的理解、最相关的事实或关键考量，以及准备给出的回应方向。
 【思考摘要结束】
 然后另起一段写正式回应。
 
-这不是隐藏的内部推理，也不是任务分析或回复提纲，而是让叶檀知道你这一刻准备回应时最值得看见的想法、感受、判断或顾虑。
-使用第一人称“我”，自然指代叶檀为“你”；可以有情绪和犹豫，但不要编造事实，不要写系统、模型、提示词、工具、规则或执行步骤。
-只保留最值得让叶檀看见的内容；简单的话题更短，复杂的话题可以稍长。
-不要解释这组标记，也不要复述思考摘要。
+这段内容是给用户看的高层次说明，不是隐藏的内部推理、逐步思维链、任务分析或回复提纲。
+使用清楚、自然的中文；简单话题可以只写一句。不要编造事实，不要写系统、模型、提示词、工具、规则或执行步骤。
+不要解释这组标记，也不要在正式回复中重复摘要。
 `;
 }
 
@@ -2383,9 +2381,13 @@ function resolveThinkingParam({ settings, modelName, gemini, thinkingBuiltIn, us
   if (!shouldThink) return { shouldThink: false, thinkingParam: undefined, promptAddition: '' };
 
   if (isOfficialAnthropicApi(settings)) {
-    // 官方Anthropic API继续走原生thinking；返回的原生 thinking / reasoning
-    // 由统一解析层直接抓取，不要求前端认识任何厂商字段。
-    return { shouldThink: true, thinkingParam: { type: 'enabled', budget_tokens: budget }, promptAddition: '' };
+    // 保留官方原生 thinking 参数，但原生 thinking block 不会直接展示给用户。
+    // 同时要求模型在普通文本输出中给出中文高层次摘要，再由统一解析层提取。
+    return {
+      shouldThink: true,
+      thinkingParam: { type: 'enabled', budget_tokens: budget },
+      promptAddition: buildThinkingInstruction(),
+    };
   }
 
   // 中转站不保证透传原生 thinking。统一请求一小段“可见思考摘要”，
