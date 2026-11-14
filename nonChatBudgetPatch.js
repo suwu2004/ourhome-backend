@@ -158,6 +158,7 @@ function budgetScore(model) {
   if (/flash[-_ ]?lite|nano/.test(value)) score = 1;
   else if (/haiku|mini|lite|small/.test(value)) score = 2;
   else if (/flash|instant/.test(value)) score = 3;
+  else if (/hybrid/.test(value)) score = 4.2;
   else if (/sonnet/.test(value)) score = 7;
   else if (/opus|pro|max/.test(value)) score = 12;
   if (/thinking|reasoning/.test(value)) score += 0.8;
@@ -166,6 +167,14 @@ function budgetScore(model) {
 
 function isFlashModel(model) {
   return /flash/i.test(String(model || ''));
+}
+
+function isHybridModel(model) {
+  return /hybrid/i.test(String(model || ''));
+}
+
+function isBudgetModel(model) {
+  return isFlashModel(model) || isHybridModel(model);
 }
 
 function isGemini38FlashModel(model) {
@@ -177,7 +186,7 @@ function isGemini38FlashModel(model) {
 function pickBudgetModels(models, { vision = false } = {}) {
   return [...new Set((Array.isArray(models) ? models : []).map(String).filter(Boolean))]
     .filter(isCandidate)
-    .filter(isFlashModel)
+    .filter(isBudgetModel)
     .filter(model => !vision || isLikelyVisionModel(model))
     .sort((a, b) =>
       Number(isGemini38FlashModel(b)) - Number(isGemini38FlashModel(a))
@@ -320,9 +329,9 @@ function recoverBudgetModel(cacheKey, model) {
 
 async function resolveBudgetModels({ vision = false } = {}) {
   const forced = String(process.env.NON_CHAT_MODEL || '').trim();
-  // Background routing is intentionally Flash-only. Even an explicit override
-  // must not silently reintroduce a premium non-Flash model.
-  if (forced && isFlashModel(forced) && (!vision || isLikelyVisionModel(forced))) {
+  // Background routing permits Flash first and Hybrid as a controlled fallback.
+  // Never silently reintroduce a premium Chat model through an override.
+  if (forced && isBudgetModel(forced) && (!vision || isLikelyVisionModel(forced))) {
     return { models: [forced], cacheKey: `forced:${vision ? 'vision' : 'text'}:${forced}` };
   }
 
@@ -339,7 +348,7 @@ async function resolveBudgetModels({ vision = false } = {}) {
     try {
       candidates = pickBudgetModels(await fetchAvailableModels(runtime), { vision });
       const selected = String(runtime.selected_model || '').trim();
-      if (selected && isFlashModel(selected) && budgetScore(selected) <= 3.8
+      if (selected && isBudgetModel(selected) && budgetScore(selected) <= 4.5
         && (!vision || isLikelyVisionModel(selected)) && !candidates.includes(selected)) {
         candidates.push(selected);
       }
@@ -504,6 +513,8 @@ module.exports = {
   SESSION_SUMMARY_AUTO_PURPOSE,
   budgetScore,
   isFlashModel,
+  isHybridModel,
+  isBudgetModel,
   isGemini38FlashModel,
   pickBudgetModel,
   pickBudgetModels,
