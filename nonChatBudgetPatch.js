@@ -353,6 +353,7 @@ async function resolveBudgetModels({ vision = false } = {}) {
       }
     } catch (error) {
       console.warn('[budget-model] model list unavailable:', error.message);
+      // Never silently fall back to an expensive active Chat model.
       // Keep a recently successful catalogue through short provider-side /models
       // rate limits and timeouts. Never fall back to a costly active Chat model.
       const staleCandidates = cached?.models?.length && cached.fetchedAt
