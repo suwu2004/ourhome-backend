@@ -151,3 +151,32 @@ test('不把普通正文中的 thinking 标签误当成 provider 思考', () => 
   assert.equal(extractThinkingText({ content: [{ type: 'text', text }] }), '');
   assert.equal(stripThinkingMarkup(text), '正式回复。');
 });
+
+
+test('从同一次回复中提取思考轨迹，但仍然隐藏未标记的原始 reasoning', () => {
+  const trace = '我理解你在意的不是单纯翻译，而是希望陆泽能把判断过程表达得更连贯。当前实现已经有安全的摘要字段，我会在不增加请求次数的前提下扩展呈现。';
+  const result = {
+    reasoning_content: 'private raw chain that must stay hidden',
+    content: [{ type: 'text', text: `【思考轨迹开始】${trace}【思考轨迹结束】\n正式回复。` }],
+  };
+  assert.equal(extractThinkingText(result), trace);
+  assert.equal(stripThinkingMarkup(result.content[0].text), '正式回复。');
+});
+
+test('思考轨迹和摘要标记均可兼容解析并从正式回复中剥离', () => {
+  const text = '【思考记录开始】我先确认上下文，再说明当前判断。【思考记录结束】\n【思考轨迹开始】我会接着处理。【思考轨迹结束】\n正式回复。';
+  assert.equal(extractThinkingText({ content: [{ type: 'text', text }] }), '我先确认上下文，再说明当前判断。\n我会接着处理。');
+  assert.equal(stripThinkingMarkup(text), '正式回复。');
+});
+
+
+test('把上游明确标记的公开 thought_summary 与同次思考轨迹合并', () => {
+  const providerSummary = '我先识别核心诉求，再核对相关上下文。';
+  const trace = '这次重点是让回复前的判断更连贯，同时不增加额外请求。';
+  const result = {
+    thought_summary: providerSummary,
+    reasoning_content: 'private raw reasoning stays hidden',
+    content: [{ type: 'text', text: `【思考轨迹开始】${trace}【思考轨迹结束】` }],
+  };
+  assert.equal(extractThinkingText(result), `${trace}\n${providerSummary}`);
+});
