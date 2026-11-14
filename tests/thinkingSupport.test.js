@@ -178,5 +178,5 @@ test('把上游明确标记的公开 thought_summary 与同次思考轨迹合并
     reasoning_content: 'private raw reasoning stays hidden',
     content: [{ type: 'text', text: `【思考轨迹开始】${trace}【思考轨迹结束】` }],
   };
-  assert.equal(extractThinkingText(result), `${trace}\\n${providerSummary}`);
+  assert.equal(extractThinkingText(result), `${trace}\n${providerSummary}`);
 });
