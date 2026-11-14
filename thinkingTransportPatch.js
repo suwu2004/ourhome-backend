@@ -104,8 +104,10 @@ function prepareMainChatRequest(url, body, headersInit) {
   // thinking suffix. On main Chat requests, ask the same completion for a visible
   // Chinese summary; the raw block remains private and no Anthropic thinking params
   // are forced onto Gemini relay models.
-  const geminiChatModel = isMainChatRequest(url, nextBody) && /gemini/i.test(String(nextBody.model || ''));
-  if (thinkingModel || geminiChatModel) {
+  const mainChatRequest = isMainChatRequest(url, nextBody);
+  const geminiChatModel = mainChatRequest && /gemini/i.test(String(nextBody.model || ''));
+  const hybridChatModel = mainChatRequest && /hybrid/i.test(String(nextBody.model || ''));
+  if (thinkingModel || geminiChatModel || hybridChatModel) {
     nextBody.system = appendRelayThinkingInstruction(nextBody.system);
   }
   if (isOfficialAnthropicUrl(url) && !nextBody.thinking && thinkingModel) {
