@@ -2,7 +2,7 @@
 
 // Remove duplicated style text only. Current-turn priority and natural dialogue
 // are owned by the canonical chatContextBoundary module.
-const DUPLICATE_STYLE_RULE = '中文表达自然、流畅、有生活感。\n避免客服式、说明书式、模板化表达.';
+const DUPLICATE_STYLE_RULE = '中文表达自然、流畅、有生活感。\n避免客服式、说明书式、模板化表达。';
 
 function cleanupText(value) {
   if (typeof value !== 'string' || !value) return value;
