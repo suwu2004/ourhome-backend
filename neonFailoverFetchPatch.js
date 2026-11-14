@@ -1286,33 +1286,72 @@ async function neonFallback(input, init = {}) {
   return execute();
 }
 
-if (typeof upstreamFetch === 'function' && pool) {
-  globalThis.fetch = async function ourHomeNeonFailoverFetch(input, init = {}) {
-    const response = await upstreamFetch(input, init);
-    if (response.status !== 402 || !isSupabaseRestUrl(requestUrl(input))) return response;
+function createNeonFailoverFetch({
+  upstreamFetch: baseFetch,
+  fallbackFetch = neonFallback,
+  isSupabaseRest = isSupabaseRestUrl,
+  logger = console,
+} = {}) {
+  if (typeof baseFetch !== 'function') throw new TypeError('upstreamFetch is required');
+  if (typeof fallbackFetch !== 'function') throw new TypeError('fallbackFetch is required');
+
+  return async function ourHomeNeonFailoverFetch(input, init = {}) {
+    const url = requestUrl(input);
+    const method = requestMethod(input, init);
+    let response;
+
     try {
-      const fallback = await neonFallback(input, init);
+      response = await baseFetch(input, init);
+    } catch (error) {
+      const signal = init.signal || input?.signal;
+      const safeRead = method === 'GET' || method === 'HEAD';
+      // Network errors are ambiguous for writes. Only replay-safe reads may use
+      // Neon here, and caller cancellation must remain cancellation.
+      if (!isSupabaseRest(url) || !safeRead || error?.name === 'AbortError' || signal?.aborted) {
+        throw error;
+      }
+      try {
+        const fallback = await fallbackFetch(input, init);
+        if (fallback) {
+          logger.warn(`[neon-failover] network ${method} ${new URL(url).pathname}`);
+          return fallback;
+        }
+      } catch (fallbackError) {
+        logger.error('[neon-failover] network fallback failed:', String(fallbackError?.message || fallbackError).slice(0, 300));
+      }
+      throw error;
+    }
+
+    if (response.status !== 402 || !isSupabaseRest(url)) return response;
+    try {
+      const fallback = await fallbackFetch(input, init);
       if (fallback) {
-        console.warn(`[neon-failover] ${requestMethod(input, init)} ${new URL(requestUrl(input)).pathname}`);
+        logger.warn(`[neon-failover] 402 ${method} ${new URL(url).pathname}`);
         return fallback;
       }
     } catch (error) {
-      console.error('[neon-failover] request failed:', String(error?.message || error).slice(0, 300));
+      logger.error('[neon-failover] request failed:', String(error?.message || error).slice(0, 300));
     }
     return response;
   };
-  console.warn('[neon-failover] armed; Supabase remains primary and Neon handles REST status 402 only');
+}
+
+if (typeof upstreamFetch === 'function' && pool) {
+  globalThis.fetch = createNeonFailoverFetch({ upstreamFetch });
+  console.warn('[neon-failover] armed; Supabase remains primary; Neon handles REST 402 and network-failed reads');
 } else if (enabled) {
   console.warn('[neon-failover] enabled but OURHOME_NEON_DATABASE_URL is missing');
 }
 
 module.exports = {
+  createNeonFailoverFetch,
   activateApiProfile,
   applyFilters,
   applyOrder,
   buildSqlReadPlan,
   claimDailyJournal,
   commitContextLedger,
+  createNeonFailoverFetch,
   createVaultTransaction,
   deleteVaultTransaction,
   deleteApiProfile,
