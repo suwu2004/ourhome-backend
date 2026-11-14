@@ -26,15 +26,17 @@ test('current-turn guard preserves provider messages unchanged', () => {
   assert.match(next.system, /最近原始对话是承接上下文的第一手材料/);
   assert.match(next.system, /不要再次询问她刚刚已经回答过的信息/);
   assert.match(next.system, /用户明确纠正过的事实优先/);
-  assert.match(next.system, /只有原始对话确实没有提供答案时/);
+  assert.match(next.system, /只有原始对话确实没有提供必要答案时/);
   assert.equal(next.messages.at(-1).content, '这一条才是现在的问题');
 });
 
-test('array system keeps existing blocks and adds one guard block', () => {
+test('array system preserves existing blocks and appends one boundary to the last text block', () => {
   const system = [{ type: 'text', text: 'base' }];
   const first = appendGuard(system);
-  assert.equal(first.length, 2);
-  assert.equal(first[0].text, 'base');
+  assert.equal(first.length, 1);
+  assert.match(first[0].text, /^base/);
+  assert.match(first[0].text, new RegExp(MARKER));
   const second = appendGuard(first);
-  assert.equal(second.length, 2);
+  assert.equal(second.length, 1);
+  assert.equal((second[0].text.match(new RegExp(MARKER, 'g')) || []).length, 1);
 });
