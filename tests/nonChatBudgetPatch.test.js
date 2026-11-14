@@ -201,6 +201,39 @@ test('budget fallback does not fan out on ordinary malformed-request responses',
   assert.equal(outcome.model, 'gemini-3.8-flash');
 });
 
+
+test('the final failed low-cost route is also reported for cooldown', async () => {
+  const events = [];
+  const response = { status: 503, ok: false };
+  const outcome = await requestWithModelFallback(
+    ['gemini-3.8-flash'],
+    async () => response,
+    {
+      shouldRetry: async result => isRetryableBudgetModelFailure(result.status) ? 'HTTP 503' : '',
+      onRetry: event => events.push(event),
+    },
+  );
+  assert.equal(outcome.response, response);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].nextModel, null);
+  assert.equal(events[0].model, 'gemini-3.8-flash');
+});
+
+test('the final network failure is reported for cooldown before it is rethrown', async () => {
+  const events = [];
+  await assert.rejects(
+    requestWithModelFallback(
+      ['gemini-3.8-flash'],
+      async () => { throw new Error('upstream timeout'); },
+      { onRetry: event => events.push(event) },
+    ),
+    /upstream timeout/,
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].nextModel, null);
+  assert.equal(events[0].reason, 'upstream timeout');
+});
+
 test('model-list failure fallback cannot reintroduce a non-Flash selected model', () => {
   assert.match(source, /selected && isFlashModel\(selected\)/);
 });
